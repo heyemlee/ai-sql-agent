@@ -18,6 +18,20 @@ from .keyword_extractor_client import (
     AliyunKeywordExtractorConfig,
 )
 
+from .embedding_client import (
+    AliyunEmbeddingClient,
+    AliyunEmbeddingConfig,
+)
+
+from .vector_index import VectorIndex
+
+from .rrf_fusion_client import (
+    RRFFusionClient,
+    RRFFusionConfig,
+    RouteRecallResult,
+    RRFFusionHit,
+)
+
 __all__ = [
     "IndexTextBundle",
     "TableSchema",
@@ -32,4 +46,11 @@ __all__ = [
     "SchemaRetriever",
     "AliyunKeywordExtractor",
     "AliyunKeywordExtractorConfig",
+    "AliyunEmbeddingClient",
+    "AliyunEmbeddingConfig",
+    "VectorIndex",
+    "RRFFusionClient",
+    "RRFFusionConfig",
+    "RouteRecallResult",
+    "RRFFusionHit",
 ]
