@@ -1,0 +1,26 @@
+# AI SQL Agent 直接依赖清单。
+#
+# 只列项目真正 import 的包（原先是 pip freeze 全量导出，混着传递依赖和
+# 一整套用不到的 GPU/训练栈）。传递依赖交给 pip 解析。
+
+# ---- 服务层 ----
+fastapi==0.141.1
+uvicorn[standard]==0.32.1
+pydantic==2.13.4
+pydantic-settings==2.1.0
+
+# ---- 模型调用 ----
+httpx==0.28.1
+python-dotenv==1.2.2
+
+# ---- 数值计算 ----
+numpy==2.2.6
+
+# ---- 向量存储：PostgreSQL + pgvector ----
+# Schema 检索与长期记忆共用同一套向量栈；
+# 未配置 AI_SQL_PGVECTOR_DSN 时回退内存索引，这两个包可不装。
+psycopg[binary]==3.3.4
+pgvector==0.5.0
+
+# ---- MCP ----
+mcp==2.0.0

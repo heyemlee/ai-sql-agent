@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# 密钥与本机配置
+.env
+deploy/api_keys.json
+
+# 本机运行期产物（记忆库、审计库、Demo 数据）
+runtime_data/
+
+# 本地私有文档（不公开）
+docs/
+
+# 编辑器 / 工具本地配置
+.claude/
+.idea/
+.vscode/
