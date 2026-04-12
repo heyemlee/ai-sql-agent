@@ -5,6 +5,8 @@ AI SQL Agent 横切基础设施：配置、日志与链路追踪、模型调用�
 「生产可运维性」——配置收口、结构化日志、超时重试、错误分类、用量统计。
 """
 
+from .circuit import REGISTRY as CIRCUIT_REGISTRY
+from .circuit import CircuitState
 from .errors import (
     SqlAgentError,
     ModelAuthError,
@@ -28,9 +30,18 @@ from .trace import (
     usage_summary,
     use_trace_id,
 )
+from .transport import (
+    ModelTransport,
+    RetryPolicy,
+    build_chat_payload,
+    extract_chat_content,
+    get_http_client,
+)
 
 __all__ = [
     "SqlAgentError",
+    "CIRCUIT_REGISTRY",
+    "CircuitState",
     "SqlAgentSettings",
     "ModelAuthError",
     "ModelBadRequestError",
@@ -41,8 +52,13 @@ __all__ = [
     "ModelResponseError",
     "ModelServerError",
     "ModelTimeoutError",
+    "ModelTransport",
     "REGISTRY",
+    "RetryPolicy",
+    "build_chat_payload",
     "configure_logging",
+    "extract_chat_content",
+    "get_http_client",
     "get_logger",
     "get_settings",
     "get_trace_id",
