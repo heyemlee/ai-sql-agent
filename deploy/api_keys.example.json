@@ -1,0 +1,68 @@
+{
+  "keys": [
+    {
+      "key": "REPLACE_ME_bi_portal__python -c \"import secrets;print(secrets.token_urlsafe(32))\"",
+      "caller": "bi-portal",
+      "roles": [
+        "analyst"
+      ],
+      "can_impersonate": true,
+      "rate_limit_per_minute": 120,
+      "daily_query_quota": 5000,
+      "daily_token_quota": 5000000,
+      "is_admin": true
+    },
+    {
+      "key": "REPLACE_ME_li",
+      "caller": "estimator-zhang",
+      "user_id": "estimator-zhang",
+      "roles": [
+        "estimating"
+      ],
+      "rate_limit_per_minute": 30,
+      "daily_query_quota": 200
+    },
+    {
+      "key": "REPLACE_ME_intern",
+      "caller": "workshop-01",
+      "user_id": "workshop-01",
+      "roles": [
+        "workshop"
+      ],
+      "rate_limit_per_minute": 10,
+      "daily_query_quota": 50
+    }
+  ],
+  "policies": {
+    "analyst": {
+      "allow_tables": [
+        "erp_db.*",
+        "pm_db.*",
+        "mes_db.*",
+        "wms_db.*"
+      ],
+      "deny_columns": [
+        "*.*.id_card_no",
+        "*.*.phone_no"
+      ]
+    },
+    "estimating": {
+      "comment": "估价：看订单、项目、采购，但看不到批次成本单价",
+      "allow_tables": [
+        "erp_db.*",
+        "pm_db.*",
+        "wms_db.material",
+        "wms_db.stock_snapshot"
+      ],
+      "deny_columns": [
+        "wms_db.batch.unit_cost"
+      ]
+    },
+    "workshop": {
+      "comment": "车间：只看生产域，接触不到客户与合同金额",
+      "allow_tables": [
+        "mes_db.*"
+      ]
+    }
+  }
+}
