@@ -1,42 +1,44 @@
 # mcp_router
 
-MCP 路由执行模块。
+MCP routing and execution.
 
-## 目录结构
+## Layout
 
 ```text
 mcp_router/
 ├── __init__.py
-├── objects.py                # MCP执行请求和执行结果
-├── sqlite_executor.py        # 进程内SQLite执行器（默认）
-├── mcp_protocol_executor.py  # 真实MCP stdio协议执行器
-└── router.py                 # MCP路由器：按database路由到执行器
+├── objects.py                # Execution request and result
+├── sqlite_executor.py        # In-process SQLite executor (default)
+├── mcp_protocol_executor.py  # Real MCP stdio protocol executor
+└── router.py                 # Routes by database name to an executor
 ```
 
-## 执行治理
+## Execution governance
 
-两种执行器共享同一套治理约束：
+Both executors share the same constraints:
 
-- **只读**：仅允许 SELECT / WITH（模拟只读账号）；
-- **行数上限**：单查询最多返回 `max_rows` 行（默认 1000），超出截断并置 `truncated`；
-- **执行超时**：`max_execution_seconds`（默认 10s）后由 progress handler 中止查询。
+- **Read-only**: only SELECT / WITH are allowed (mirroring a read-only account);
+- **Row cap**: at most `max_rows` rows per query (default 1000); beyond that the
+  result is truncated and `truncated` is set;
+- **Execution timeout**: after `max_execution_seconds` (default 10s) a progress
+  handler aborts the query.
 
-## 两种执行路径
+## Two execution paths
 
 ```text
-默认（离线快速）：
+Default (fast, offline):
   Pipeline → MCPRouter → SQLiteMCPExecutor → SQLite
 
-MCP 协议（PipelineConfig(use_mcp_protocol=True)）：
+MCP protocol (PipelineConfig(use_mcp_protocol=True)):
   Pipeline → MCPRouter → MCPProtocolExecutor
     → MCP stdio tool call → mcp_server.execute_sql → SQLite
 ```
 
-## 执行请求格式
+## Request format
 
 ```json
 {
-  "database": "showroom_db",
+  "database": "erp_db",
   "sql": "SELECT ..."
 }
 ```

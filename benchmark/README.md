@@ -1,184 +1,244 @@
 # benchmark
 
-150 条执行准确率评测、15 条留出集，以及卡「企业落地合理线」的发布门禁。
+150 execution-accuracy cases, a 40-case holdout set, and a release gate that
+enforces the thresholds a tool has to clear to be usable in production.
 
-## 四项落地指标与合理线
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-落地要回答的是「这个工具能不能被业务信任地用」，不是「跑分好不好看」。
-四项主指标各自对应一种会让工具被弃用的失败模式；每项配一个**对偶护栏**，
-堵住把指标廉价刷上去的路。阈值写在 `thresholds.json`，`gate.py` 直接读它。
+## Four headline metrics and their thresholds
 
-| # | 指标 | 合理线 | 实测 | 对偶护栏 | 不达标会怎样 |
+The question production has to answer is "can the business trust this tool",
+not "does the score look good". Each of the four headline metrics maps to a
+failure mode that would get the tool abandoned, and each is paired with a
+**guardrail** that closes off the cheap way to inflate it. Thresholds live in
+`thresholds.json`, which `gate.py` reads directly.
+
+| # | Metric | Threshold | Measured | Guardrail | What failing it costs |
 |---|---|---|---|---|---|
-| 1 | 字段召回率（**留出集**，40 条） | **≥ 85%** | **97.5%** ✅ | 平均进图字段占比 ≤ 40%（37.2% ✅） | 字段没进 Schema 图，后面生成再准也答不出来 |
-| 1' | 字段召回率（评测集，进 Prompt 口径） | ≥ 95% | **100%** ✅ | 同上 | 退化下限，不作为达标依据 |
-| 2 | 单库执行准确率 | **≥ 85%** | **90.4%** ✅ | — | 每个结果都得人工复核，「问一句」省的时间被复核吃回去 |
-| 3 | 跨库执行准确率 | **≥ 90%** | **76~80%（cross_db 25 条 × 3 臂，单次）** ❌ | — | 用户退回单库自己查两次再拼，跨库能力形同虚设 |
-| 4 | 静默错误率 | **≤ 3%** | **5.3%** ❌ | 风险提示误报率 ≤ 20%（2.3% ✅） | 错误数字被当成事实抄进周报，一次就足以让工具下线 |
-| — | 检索/进Prompt 召回落差 | **≤ 3pp** | **0pp** ✅ | — | 检索捞到了、模型没看到：这时加大召回只会更糟 |
+| 1 | Column recall (**holdout set**, 40 cases) | **≥ 85%** | **97.5%** ✅ | Average share of columns in the graph ≤ 40% (37.2% ✅) | If a column never reaches the schema graph, no amount of generation accuracy can answer the question |
+| 1' | Column recall (evaluation set, in-prompt) | ≥ 95% | **100%** ✅ | same | A regression floor, not evidence of passing |
+| 2 | Single-database execution accuracy | **≥ 85%** | **90.4%** ✅ | — | Every result needs manual review, and the review eats the time the question saved |
+| 3 | Cross-database execution accuracy | **≥ 90%** | **76–80% (25 cross_db cases × 3 arms, single run)** ❌ | — | Users fall back to querying each database themselves and stitching the results, which makes the capability pointless |
+| 4 | Silent-error rate | **≤ 3%** | **5.3%** ❌ | Risk-warning false-alarm rate ≤ 20% (2.3% ✅) | A wrong number gets copied into a weekly report as fact; once is enough to get the tool switched off |
+| — | Retrieval vs in-prompt recall gap | **≤ 3pp** | **0pp** ✅ | — | Retrieval found it, the model never saw it — widening recall here only makes things worse |
 
-> **数字口径与样本量，必须一起看**：
+> **The numbers and their sample sizes have to be read together:**
 >
-> | 数字 | 来源 | 样本量 |
+> | Number | Source | Sample |
 > |---|---|---|
-> | 单库 90.4%、整体 85.3% | 150 条全量、②配置、C 口径 + 收紧后静态检查 + gold 去重约定，**离线重算** | 单库 125 条，单次 |
-> | 跨库 76 / 80 / 76% | **消融三臂，只跑 cross_db** | 每臂 25 条，各单次 |
-> | 评测集召回 100%、落差 0pp | 消融三臂一致 | 25 条 × 3 |
-> | 静默 5.3%、误报 2.3% | 同上，三项测量修复叠加后离线重算 | 150 条 |
-> | 留出集 97.5% | 40 条口语问法，独立跑 | 40 条，单次 |
+> | 90.4% single-database, 85.3% overall | All 150 cases, configuration ②, criterion C plus the tightened static checks and the gold de-duplication convention, **recomputed offline** | 125 single-database cases, one run |
+> | 76 / 80 / 76% cross-database | **Three ablation arms, cross_db only** | 25 cases per arm, one run each |
+> | 100% evaluation-set recall, 0pp gap | Consistent across all three arms | 25 cases × 3 |
+> | 5.3% silent, 2.3% false alarm | Same runs, recomputed offline after all three measurement fixes | 150 cases |
+> | 97.5% holdout recall | 40 colloquially phrased cases, run separately | 40 cases, one run |
 >
-> **跨库不写成均值 77.3%**：n=25 时一条题就是 4pp，三臂的差距全在一条题以内，
-> 写成一个精确均值会显得比实际确定得多。写区间，让读者看到样本量。
+> **The cross-database figure is deliberately not reported as a 77.3% mean.** At
+> n=25 a single case is 4pp, and the spread across the three arms is smaller than
+> one case. A precise-looking mean would claim more certainty than the data
+> supports. The range shows the reader the sample size.
 >
-> ⚠️ **全量 150 条尚未在当前配置上跑过**。跨库那三个数是子集实测，
-> 单库 / 整体是旧配置实测。引用时按上表标注，不要把两者拼成一组"当前水位"。
+> ⚠️ **The full 150 cases have not been run on the current configuration.** The
+> three cross-database numbers come from a measured subset; the single-database
+> and overall numbers come from an older configuration. Cite them with the
+> qualifiers above — do not splice the two into one "current" figure.
 
-### 可引用口径：`--repeat 3` 的均值与区间
+### The citable form: mean and range over `--repeat 3`
 
-执行准确率类指标**单次跑分不作数**：同一份代码、同一批 25 条跨库题，
-实测在 16%~36% 之间波动，一条题就是 4pp。规矩：
+**A single run of an execution-accuracy metric does not count.** The same code
+over the same 25 cross-database cases has been measured anywhere between 16% and
+36%; one case is 4pp. The rules:
 
-- **对外引用的数字**（文档、汇报）必须是 `--repeat 3` 的均值，并附区间；
-- **判断改动是否有效**，差值要大于区间跨度才算数；
-- **发布门禁**用 `python -m benchmark.gate --repeat 3`，
-  单轮模式会打印警告；门禁会把每项指标的区间一并打出来——
-  均值达标但区间下沿在线下，说明只是这次运气好，不是真达标；
-- **单次跑出来的数字**（例如本文表格里的实测值）必须标注「单次运行」，
-  不能当成稳定水位引用。
+- **Any number quoted externally** (docs, reports) must be the mean over
+  `--repeat 3`, with the range attached;
+- **To decide whether a change helped**, the difference has to exceed the spread
+  of the range;
+- **The release gate** runs `python -m benchmark.gate --repeat 3`, and warns when
+  run in single-round mode. The gate prints the range alongside each metric — a
+  mean above the line with the low end of the range below it means the run got
+  lucky, not that the metric passes;
+- **Numbers from a single run** (including the measured values in the table
+  above) must be labelled as such and never quoted as a stable level.
 
-### 每条线是怎么定的
+### How each threshold was set
 
-**字段召回率 ≥ 85%（留出集口径）**
-召回是硬前置：gold 字段漏一个，下游必错，而且往往错成「用了另一个语义相近的字段」——
-正是静默错误的主要来源。
-门禁卡留出集而不是评测集：短语表、字段别名、枚举取值词表都是对着评测集补的，
-那个 100% 里有多少是调出来的说不清；留出集用完全不同的口语问法、不参与任何调参，
-才是「上线后遇到真实用户」的估计值。
-85% 的含义是「六个口语问法里最多漏一个」，剩下的用户改口重问还能救回来。
-不定 95%：「料快没了」↔ `safety_stock` 这类语义鸿沟靠持续补别名，
-是随业务反馈迭代的运营工作，不是一次性能做完的工程。
+**Column recall ≥ 85% (holdout set)**
+Recall is a hard prerequisite: miss one gold column and everything downstream is
+wrong, and usually wrong in a specific way — the model substitutes a
+semantically adjacent column, which is the main source of silent errors.
 
-**平均进图字段占比 ≤ 40%（护栏）**
+The gate uses the holdout set rather than the evaluation set because the phrase
+tables, column aliases and enum vocabularies were all built against the
+evaluation set. There is no way to say how much of that 100% was tuned in. The
+holdout set uses entirely different colloquial phrasings and takes no part in
+tuning, which makes it the estimate for "what happens when real users show up".
 
-> ⚠️ 这条线在 2026-08-20 从 30% 重标为 40%。原值是按**离线规则抽词**口径定的（24.6%），
-> 但门禁跑的是生产路径（模型抽词 + 业务术语表），实测 34~42%。
-> **是口径定错了，不是够不着才放宽**——同一份代码在两条路径上本来就不是一个数，
-> 拿离线数字去卡生产路径，卡的是"有没有配 API Key"，不是"检索有没有失焦"。
+85% means "at most one miss in six colloquial phrasings"; the rest of the time a
+user who rephrases still gets an answer. It is not set at 95% because semantic
+gaps like "we're running low on stock" ↔ `safety_stock` are closed by adding
+aliases over time. That is operational work driven by business feedback, not
+engineering that can be finished in one pass.
 
-把全库 86 个字段一股脑塞进 Schema 图，召回率必然 100%，但三级检索就失去了意义，
-Prompt 也被无关字段稀释（实测无关字段是干扰项，字段越多模型选错的概率越高）。
-两个数必须一起报——单独一个召回率不说明任何事。
+**Average share of columns in the graph ≤ 40% (guardrail)**
 
-**单库执行准确率 ≥ 85%**
-低于这条线，用户对每个结果都要人工复核，工具没有净收益。
-85% 也对得上公开水位：Spider 上顶尖模型 85~90%，本项目是闭域 + 人工维护元数据，
-条件更好，不应该低于公开榜。
+> ⚠️ This line was re-baselined from 30% to 40% on 2026-08-20. The original came
+> from the **offline rule-based keyword extraction** path (24.6%), but the gate
+> runs the production path (model extraction plus the business glossary), which
+> measures 34–42%.
+> **The baseline was defined against the wrong path — this is not a threshold
+> loosened because it could not be met.** The same code genuinely produces
+> different numbers on the two paths, and gating the production path with an
+> offline number gates "is an API key configured", not "has retrieval lost
+> focus".
 
-**跨库执行准确率 ≥ 90%**
+Dumping all 86 columns into the schema graph guarantees 100% recall, but it makes
+three-stage retrieval pointless and dilutes the prompt with irrelevant columns.
+Irrelevant columns measurably act as distractors: the more columns there are, the
+more often the model picks the wrong one. The two numbers must always be reported
+together — a recall figure on its own says nothing.
 
-线定在 90%，含义是**跨库不该比单库差**——用户不该因为"这个问题要跨两个系统"
-就得到明显更差的答案，否则他会绕开这个能力，跨库等于没做。
+**Single-database execution accuracy ≥ 85%**
+Below this line the user has to manually review every result and the tool has no
+net benefit. 85% is also consistent with published levels: top models reach
+85–90% on Spider, and this project works in a closed domain with hand-maintained
+metadata, so it should not come in below the public leaderboard.
 
-早前按「跨库天生要打折」推导过一个 78%：
+**Cross-database execution accuracy ≥ 90%**
 
+The line is set at 90%, meaning **cross-database should not be worse than
+single-database**. A user should not get a visibly worse answer merely because
+the question spans two systems; otherwise they route around the capability and
+it may as well not exist.
 
+An earlier derivation produced 78% on the assumption that cross-database work is
+inherently discounted:
 
-- **从用户行为倒推**：跨库比单库难，但不能难太多——差距一旦明显，
-  用户就会发现「跨库问不如自己查两次再拼」，跨库能力等于没做。
-  单库线 85%，允许跨库因多步连乘打一个约 8pp 的折，得 **78%**；
-- **从链路倒推**：跨库要连续做对四件事——判断需要拆步 → 每步路由到对的库 →
-  第一步输出对的关联键 → 第二步把上一步结果当字面量回填。四步连乘，
-  单步需要约 94% 的可靠度才得 0.94⁴ ≈ **78%**。
+- **Working back from user behaviour**: cross-database is harder, but it cannot
+  be much harder. Once the gap is obvious, users conclude that "asking across
+  databases is worse than querying twice myself", and the capability is dead.
+  With the single-database line at 85% and roughly 8pp allowed for multi-step
+  compounding, that gives **78%**;
+- **Working back from the chain**: a cross-database query has to get four things
+  right in a row — recognize that it needs splitting, route each step to the
+  right database, emit the correct join key in step one, and inline step one's
+  result as a literal in step two. Four steps compounding need about 94%
+  per-step reliability to give 0.94⁴ ≈ **78%**.
 
-——但那条推导是把「四步连乘的折损」当成了不可消除的物理约束。
-消融的结果不支持这个假设：修掉测量缺陷和预算裁剪之后，跨库从 56% 直接到 76~80%，
-说明此前的差距**主要是工程缺陷，不是链路长度**。既然如此，
-线就该按「和单库同等要求」定，而不是预留一个折扣。
+That derivation treated the four-step compounding loss as an irreducible physical
+constraint. The ablations do not support that assumption: once the measurement
+defects and the budget trimming were fixed, cross-database went from 56% straight
+to 76–80%. The gap was **mostly engineering defects, not chain length**. Given
+that, the line should demand parity with single-database rather than reserving a
+discount.
 
-当前实测 76~80%，距 90% 还差 10~14pp。
+Currently measured at 76–80%, so 10–14pp short of 90%.
 
-**静默错误率 ≤ 3%**
-四项里唯一越低越好的一项，也是最贵的一类错误。信任成本是不对称的：
-「跑不出来」用户会自己去查，「不确定，请核对」用户会去核对，
-只有**跑通了、有结果、没有任何提示、但是错的数字**会被直接抄进周报和决策。
-3% ≈ 33 条里最多 1 条。早前定的 5% 是「内部分析可接受的上限」，
-收紧到 3% 是因为实测发现**压低静默错误率并不必然推高误报率**：
-静态形状检查把静默从 8.7% 压到 6.7% 的同时，误报只从 1.6% 到 4.0%（护栏线 20%）。
-既然还有这么大余量，就没有理由把线停在 5%。
+**Silent-error rate ≤ 3%**
+The only metric of the four where lower is better, and the most expensive class
+of error. The cost of trust is asymmetric: when a query fails, the user goes and
+looks it up; when it says "uncertain, please verify", the user verifies. Only a
+result that **ran cleanly, produced a number, carried no warning, and is wrong**
+gets copied straight into a report and a decision.
 
-代价确实存在，只是不在误报上：静态检查靠"问句有没有汇总词"这类启发式判断，
-规则堆多了会难以维护、也会开始误伤边缘情况。真正的天花板在下一节。
+3% is roughly one case in 33. The earlier line of 5% was "the ceiling acceptable
+for internal analysis"; tightening to 3% follows from the measurement that
+**pushing the silent-error rate down does not necessarily push the false-alarm
+rate up**: the static shape checks took silent errors from 8.7% to 6.7% while
+false alarms only moved from 1.6% to 4.0%, against a guardrail of 20%. With that
+much headroom left, there was no reason to stop at 5%.
 
-**风险提示误报率 ≤ 20%（护栏）**
-静默错误率可以靠「把每条结果都标成可疑」刷到 0，这是它唯一的作弊路径。
-正确答案里被打上风险提示的比例超过 1/5，用户就会开始无视提示，提示等于不存在。
+There is a real cost, just not in false alarms. The static checks rely on
+heuristics such as "does the question contain an aggregation word", and a growing
+pile of rules gets hard to maintain and starts catching edge cases it should not.
+The actual ceiling is discussed in the next section.
 
-### 字段召回率的判定口径：按「进 Prompt」算，不是「被检索到」
+**Risk-warning false-alarm rate ≤ 20% (guardrail)**
+The silent-error rate can be driven to zero by flagging every result as
+suspicious, and that is its only cheat. Once more than one in five correct
+answers carries a warning, users start ignoring warnings, and the warning may as
+well not exist.
 
-一条 gold 字段算命中，要求它出现在**Token 预算裁剪之后**的 Schema 上下文里
-（`PipelineResult.prompt_columns`），而不是检索输出（`retrieved_columns`）里。
+### How column recall is judged: in-prompt, not retrieved
 
-这个区分不是学究气，是踩出来的。`fit_schema` 对渲染好的 Schema 文本做字符级截断，
-超预算的部分直接消失。实测一条跨库查询检索命中 46 个字段、其中 **10 个被裁掉**，
-召回率照报 100%，而规划模型在同一次调用里写出：
+A gold column counts as recalled only if it appears in the schema context
+**after token-budget trimming** (`PipelineResult.prompt_columns`), not in the
+retrieval output (`retrieved_columns`).
+
+This distinction is not pedantry; it was learned the hard way. `fit_schema`
+truncated the rendered schema text at the character level, and anything over
+budget simply vanished. One measured cross-database query retrieved 46 columns,
+**10 of which were trimmed away**, and recall still reported 100% — while the
+planning model wrote, in that same call:
 
 ```
-处理对象: work_order表（字段：job_no；Schema未提供"当前生产工序"对应字段及完整表结构）
+Target: work_order table (column: job_no; the schema does not provide a column
+for "current production step" or the full table structure)
 ```
 
-随后生成 `SELECT job_no, NULL AS current_production_process`。
-**指标显示字段全召回，模型说它看不到字段——两边都没说谎，是指标测错了阶段。**
-按检索输出算召回率，越高越危险：它掩盖的恰恰是「模型没拿到字段」这个真实失败原因。
+and then generated `SELECT job_no, NULL AS current_production_process`.
+**The metric said every column was recalled and the model said it could not see
+them. Neither was lying — the metric was measuring the wrong stage.** Scoring
+recall on the retrieval output gets more dangerous the higher it goes, because
+what it hides is exactly the real cause of failure: the model never got the
+columns.
 
-报告里两个数都出：
+The report emits both:
 
-| 口径 | 字段 | 用途 |
+| Measure | Columns counted | Purpose |
 |---|---|---|
-| `column_recall` | 进 Prompt | **门禁卡这个**，模型能用的才算数 |
-| `retrieval_recall` | 检索命中 | 只做诊断：两者拉开差距＝瓶颈在预算分配而不在检索 |
+| `column_recall` | In-prompt | **What the gate enforces** — only what the model can use counts |
+| `retrieval_recall` | Retrieved | Diagnostic only: a gap between the two means the bottleneck is budget allocation, not retrieval |
 
-配套的修复在 `PromptBudgetManager.fit_schema_sections`：Schema 预算**按库分配**，
-不再把拼好的整段头部截断——整段截断等于优先把最后一个库整段砍掉，
-而跨库查询恰恰依赖第二个库。
+The accompanying fix is in `PromptBudgetManager.fit_schema_sections`: the schema
+budget is now **allocated per database** instead of truncating the assembled text
+from the end. Truncating the whole block amounts to cutting the last database
+entirely — and a cross-database query depends on precisely that second database.
 
-### 检出静默错误的四道检查
+### The four checks that catch silent errors
 
-静默错误率要往下走，靠的是**提高检出覆盖**，而不是提高模型准确率。
-四道检查按成本从低到高排，前两道是静态的（正则 + 计划文本，不调模型、不看结果），
-成本接近零，因此可以对每条查询全量铺开：
+Driving the silent-error rate down is about **increasing detection coverage**,
+not about making the model more accurate. The four checks are ordered by cost.
+The first two are static — regex plus plan text, no model call, no look at the
+results — so they cost almost nothing and can run on every single query:
 
-| 检查 | 成本 | 抓什么 |
+| Check | Cost | What it catches |
 |---|---|---|
-| `aggregation_unrequested` | 静态 | 问句没要求汇总，SQL 却把明细**折叠成一个数** |
-| `shape_contradicts_plan` | 静态 | 计划说「数条」，SQL 结构上只能出一行（漏了 GROUP BY） |
-| `empty_result` / `cardinality_deviation` | 看结果 | 空结果、行数比计划预期多一个量级 |
-| `semantic_mismatch` | 2 次模型调用 | SQL 实际算的与问题对不上（最终步骤 + 中间步骤各自比对） |
+| `aggregation_unrequested` | Static | The question asked for no aggregation, but the SQL **collapses detail into a single number** |
+| `shape_contradicts_plan` | Static | The plan says "several rows", the SQL can structurally only return one (a missing GROUP BY) |
+| `empty_result` / `cardinality_deviation` | Reads results | Empty results, or a row count an order of magnitude above the plan's expectation |
+| `semantic_mismatch` | 2 model calls | What the SQL actually computes does not match the question (final step and intermediate steps compared separately) |
 
-**为什么静态检查是关键的一环**：语义自检很准（误报率 1.7%）但贵且抓得少。
-静态检查便宜到可以全量铺，用精度换覆盖——实测把静默错误率从 8.7% 压到 6.7%。
+**Why the static checks matter most**: the semantic self-check is precise (1.7%
+false-alarm rate) but expensive and catches little. The static checks are cheap
+enough to run everywhere, trading precision for coverage — measured, they took
+the silent-error rate from 8.7% to 6.7%.
 
-**`aggregation_unrequested` 只报整表折叠，不报分组聚合。**
-实测 10 条误报里 8 条是分组聚合：模型按用户提到的实体分组，那通常正是他要的。
-去掉它们，提示精度从 38% 升到 71%，只漏 1 条真阳。
-这个取舍有明确依据——**提示一旦被当噪音忽略，真正的静默错误也跟着漏过去**，
-所以宁可少报。cross_db 子集上误报率一度冲到 21%~30%（越过 20% 护栏），
-就是这个风险的实证。
+**`aggregation_unrequested` only reports whole-table collapse, never grouped
+aggregation.** Of 10 measured false alarms, 8 were grouped aggregation: the model
+grouped by the entity the user mentioned, which is usually what they wanted.
+Dropping those raised warning precision from 38% to 71% and lost exactly one true
+positive. The trade-off has a clear basis — **once warnings are treated as noise,
+the real silent errors slip through with them** — so under-reporting is the safer
+side. On the cross_db subset the false-alarm rate reached 21–30% at one point,
+crossing the 20% guardrail, which is the empirical case for that risk.
 
-### 消融开关
+### Ablation switches
 
-每项影响准确率的改动都有独立开关，用来事后归因，而不是"改了一堆然后看总分"：
+Every change that affects accuracy has its own switch, so results can be
+attributed after the fact instead of "changing a pile of things and watching the
+total":
 
-| 开关 | 默认 | 控制 |
+| Switch | Default | Controls |
 |---|---|---|
-| `enable_keyword_glossary` | on | 抽词时附带业务术语表（口语 → Schema 术语映射） |
-| `enable_cross_db_fewshot` | on | 规划 Prompt 注入跨库范例 |
-| `enable_plan_db_check` | on | 步骤-库一致性校验 + 冲突重新规划 |
-| `enable_intermediate_self_check` | on | 中间步骤也做语义自检 |
-| `enable_cross_db_guard` | on | 生成的 SQL 越库引用时重生成 |
-| `enable_short_path` / `enable_repair` / `enable_validation` | on | 短路径 / 修复回路 / 软异常校验 |
+| `enable_keyword_glossary` | on | Attach the business glossary (colloquial → schema term) during keyword extraction |
+| `enable_cross_db_fewshot` | on | Inject cross-database examples into the planning prompt |
+| `enable_plan_db_check` | on | Step/database consistency check plus replanning on conflict |
+| `enable_intermediate_self_check` | on | Run the semantic self-check on intermediate steps too |
+| `enable_cross_db_guard` | on | Regenerate SQL that references a database outside its step |
+| `enable_short_path` / `enable_repair` / `enable_validation` | on | Short path / repair loop / soft-anomaly validation |
 
 ```bash
-# 单臂消融：一个进程只跑一臂（跨臂复用会累积 SQLite 连接，实测会耗尽句柄）
+# One arm per process: reusing a process across arms accumulates SQLite
+# connections and measurably exhausts the handle limit
 python -c "
 from benchmark.runner import BenchmarkRunner
 from ai_sql_pipeline import Text2SQLPipeline
@@ -188,203 +248,249 @@ r = BenchmarkRunner(pipeline=Text2SQLPipeline(
 print(f'{r.correct}/{r.total}')"
 ```
 
-### 误报率：全集数字掩盖了分布差异
+### False alarms: the full-set number hides the distribution
 
-护栏 `false_alarm_rate ≤ 20%` 是按**全集**算的，实测 2.3%，过得很轻松。
-但按类目拆开看，cross_db 子集上反复越过 20%（消融五臂：21.1 / 30.0 / 15.8 / 27.8 / 21.1%）。
+The `false_alarm_rate ≤ 20%` guardrail is computed over the **full set**, where
+it measures 2.3% and passes comfortably. Broken down by category, though, the
+cross_db subset crosses 20% repeatedly — 21.1 / 30.0 / 15.8 / 27.8 / 21.1% across
+five ablation arms.
 
-**跨库问题触发风险提示的密度明显更高**——主要问跨库的用户，看到的是每四条里
-一条被标「待核对」，体感与全集数字完全不同。护栏按全集测是过的，
-但这个差异不该被平均值掩盖，也是「静态检查不能再往松放」的实证依据。
+**Cross-database questions trigger risk warnings at a visibly higher density.** A
+user who mostly asks cross-database questions sees roughly one in four answers
+flagged "needs verification", which feels nothing like the full-set number. The
+guardrail passes as measured, but this difference should not be buried by the
+average, and it is the empirical reason the static checks cannot be loosened
+further.
 
-### 静默错误率的判定口径
+### How silent errors are judged
 
-一条评测项判为静默错误，要**同时**满足三条：
+A case counts as a silent error only if **all three** hold:
 
-1. 结果集与 gold 不等价（答错了）；
-2. 最终步骤执行成功、且没走降级链路（界面上呈现为一个正常答案）；
-3. 所有步骤的软异常校验都没有 finding（用户没收到任何提示）。
+1. the result set is not equivalent to gold (the answer is wrong);
+2. the final step executed successfully and did not go through the degradation
+   path (the UI presents it as a normal answer);
+3. no step's soft-anomaly validation produced a finding (the user received no
+   warning at all).
 
-下面这些**不算**静默错误——错是错了，但用户看得见：
+The following do **not** count as silent errors — still wrong, but visibly so:
 
-| 情况 | 用户看到的 |
+| Situation | What the user sees |
 |---|---|
-| 语法错 / 字段不存在（修复后仍失败） | 明确报错 |
-| 空结果 | 「返回 0 行，可能是过滤条件写错」告警 |
-| 行数与计划预期量级差一个数量级 | 基数异常告警 |
-| 语义自检判为不一致 | 语义不一致告警 |
-| 模型不可用 | 降级答复 + `degrade_reason` |
+| Syntax error / unknown column (still failing after repair) | An explicit error |
+| Empty result | "0 rows returned, the filter may be wrong" |
+| Row count an order of magnitude off the plan | A cardinality warning |
+| Semantic self-check disagrees | A semantic-mismatch warning |
+| Model unavailable | A degraded answer plus `degrade_reason` |
 
-分母是**全部条目**而不是错误条目：用户关心「问 100 次会被悄悄骗几次」；
-用错误条目做分母，准确率一升这个比例就虚高，两个方向的改动混在一个数里分不清。
+The denominator is **all cases**, not just the wrong ones. Users care about "out
+of 100 questions, how many quietly mislead me"; using wrong cases as the
+denominator inflates the ratio as accuracy improves, mixing two directions of
+change into one number.
 
-**这个指标只能离线测。** 生产上没有 gold 结果，无法判断一条答案对不对，
-也就无法直接统计静默错误率。线上能看的是它的两个代理量：
-`ai_sql_result_anomalies_total`（提示打了多少）与用户反馈里的纠错率。
-指标本身靠发布门禁在上线前卡住，线上靠「提示必须显示给用户」这条设计兜底——
-所以 `has_risk` / `risk_findings` 进响应和界面是这个指标成立的前提，不是附加功能。
+**This metric can only be measured offline.** Production has no gold results, so
+there is no way to tell whether an answer is right and no way to compute the rate
+directly. What is observable in production are its two proxies:
+`ai_sql_result_anomalies_total` (how many warnings were raised) and the
+correction rate in user feedback. The metric itself is enforced before release by
+the gate; in production the backstop is the design rule that **warnings must be
+shown to the user**. That makes `has_risk` / `risk_findings` in the response and
+the UI a precondition for this metric to mean anything, not an optional extra.
 
-## 评测集自身的缺陷：形状歧义
+## A defect in the evaluation set itself: shape ambiguity
 
-发布门禁的地基是评测集。地基有歧义时，指标测的是「模型有没有猜中出题人的习惯」，
-不是「答得对不对」——而且它给准确率设了一个再优化也过不去的天花板。
+The release gate rests on the evaluation set. When the foundation is ambiguous,
+the metric measures "did the model guess the author's habits", not "is the answer
+right" — and it puts a ceiling on accuracy that no amount of optimization can
+pass.
 
-本次跨库调优卡在 52~64% 上不去，逐条比对 gold 才发现问题不在系统：
+Cross-database tuning was stuck at 52–64% until a case-by-case comparison against
+gold showed the problem was not in the system:
 
-| 题 | 问句 | gold 的形状 | 模型给的 |
+| Case | Question | Gold's shape | What the model produced |
 |---|---|---|---|
-| q101 | 超预算的项目的**采购总金额** | `GROUP BY job_no`（逐项目） | 单个 `SUM` |
-| q115 | 准时率低于0.8的供应商的**入库总量** | 单个 `SUM`（不分组） | `GROUP BY supplier_id` |
+| q101 | **Total purchase amount** for over-budget projects | `GROUP BY job_no` (per project) | A single `SUM` |
+| q115 | **Total inbound quantity** for suppliers with on-time rate below 0.8 | A single `SUM` (no grouping) | `GROUP BY supplier_id` |
 
-**同一种「<筛选>的<实体>的<聚合量>」句式，两条 gold 方向正好相反。**
-模型两次都判错形状，但题面本身没有可判的依据——两种读法都成立。
-这类题测不出能力，只测运气。
+**The same "<filter> → <entity> → <aggregate>" phrasing, with two gold answers
+pointing in opposite directions.** The model got the shape wrong both times, but
+the questions gave it nothing to go on — both readings are valid. Cases like this
+measure luck, not capability.
 
-修法是把**问句**改到只有一种读法，**以 gold 为准**（q101 → "各个项目的采购总金额"，
-q115/q116 → "入库总量合计"）。反过来把 gold 改成模型的输出就是刷分。
+The fix is to rewrite the **question** so only one reading survives, **taking gold
+as authoritative** (q101 → "total purchase amount per project", q115/q116 →
+"combined total inbound quantity"). Rewriting gold to match the model's output
+would be gaming the score.
 
-两条纪律：
+Two rules:
 
-- **规则对全集统一应用**，不是只挑模型答错的改。命中该句式的一共 3 条，
-  3 条全改了——恰好也全是错题，但这是句式筛出来的结果，不是按对错筛的；
-- **消歧前后的数字不可直接比较**，引用时必须标注是哪一侧的口径。
+- **The rule is applied to the whole set uniformly**, not only to the cases the
+  model got wrong. Three cases matched that phrasing and all three were rewritten
+  — they happened to all be failures, but they were selected by phrasing, not by
+  correctness;
+- **Numbers from before and after disambiguation are not comparable**, and any
+  citation has to say which side it comes from.
 
-`tests/test_dataset_quality.py` 把这条规则固化成 lint：新增题目若命中该句式
-又没写明输出形状，测试直接失败。这比修好这 3 条更有价值——
-它挡住的是以后还会再犯的同一类错。
+`tests/test_dataset_quality.py` freezes this as a lint: a new case matching that
+phrasing without stating its output shape fails the test outright. That is worth
+more than fixing the three cases — it blocks the same mistake from recurring.
 
-## gold 标注约定（改过一次，已用测试锁住）
+## Gold annotation conventions (revised once, now locked by tests)
 
-评测集第二类缺陷：**gold 自己的标注不一致**，导致语义正确的答案被判错，
-而且因为 SQL 跑通、无告警，还被计进最贵的静默错误率——把「答对了」算成「悄悄答错」。
+The second defect in the evaluation set: **gold was not internally consistent**,
+so semantically correct answers were scored wrong — and because the SQL ran
+without warnings, they counted toward the most expensive metric of all, the
+silent-error rate. Correct answers were being recorded as quiet failures.
 
-### 约定一：无聚合的 gold 不得返回重复行 —— 已改 2 条
+### Convention 1: gold without aggregation must not return duplicate rows — 2 cases fixed
 
-`q033`「查询付款状态为paid的采购单的工程号」gold 返回 8 行、只有 6 个不同工程号
-（`J24001` 出现两次）；`q045`「工单所属车间」返回 3 行全是「一车间」。
-问「哪些 X」拿到重复行，那是 join 扇出的副产品，没有信息量。
-**gold 加 `DISTINCT`**；模型本来就加了，反而被判错。
+`q033` ("job numbers of purchase orders with payment status paid") had gold
+returning 8 rows containing only 6 distinct job numbers (`J24001` appeared
+twice); `q045` ("the workshop a work order belongs to") returned 3 rows, all
+"workshop 1". Asking "which X" and getting duplicates is a by-product of join
+fan-out and carries no information. **`DISTINCT` was added to gold**; the model
+had it already and was being marked wrong for it.
 
-判定方式是**数据驱动的**：执行每条 gold，无聚合却返回重复行即违规。
-不是靠正则猜，也不是靠"模型答了什么"倒推。全集扫描命中 2 条，2 条全改。
+The judgment is **data-driven**: execute each gold statement, and flag any that
+returns duplicate rows without aggregation. Not guessed by regex, and not
+inferred from what the model answered. A full scan matched 2 cases and both were
+fixed.
 
-### 约定二：「每个/各 X」按主键分组 —— **不改**
+### Convention 2: "per X" groups by primary key — **not changed**
 
-全集 5 条这类题，gold 一律按 `job_no` / `supplier_id` / `project_code` /
-`work_order_id` / `material_code` 分组——**本身是一致的，而且是对的**：
-按名称分组有重名风险，按主键没有。模型改按 `material_name` 分组是**真错，不是歧义**。
+Five cases in the set are of this kind, and gold consistently groups by `job_no`
+/ `supplier_id` / `project_code` / `work_order_id` / `material_code` — which is
+**both internally consistent and correct**: grouping by name risks collisions,
+grouping by primary key does not. The model switching to `material_name` is a
+**genuine error, not an ambiguity**.
 
-**不能为了让它通过而把问句改简单。** 把测试改简单能让数字好看，
-但掩盖的是一个真实缺陷。
+**The question must not be simplified just to let it pass.** Simplifying the test
+makes the number look better while hiding a real defect.
 
-### 关于 q057：我先前判错了，gold 是对的
+### On q057: the earlier judgment was wrong, gold is right
 
-`payment` 表里 `pay_status='partial'` 的行也有 `paid_amt`（79000、371000），
-那是**已经付出去的钱**。「已付款总金额」就该是全表 `SUM(paid_amt)`；
-模型加 `WHERE pay_status='paid'` 反而漏算了部分付款。
-先前把它归进「gold 可议」是错的，此处更正。
+Rows in `payment` with `pay_status='partial'` also carry a `paid_amt` (79000,
+371000) — money that has actually been paid. "Total amount paid" is therefore
+`SUM(paid_amt)` over the whole table; the model's added `WHERE pay_status='paid'`
+undercounts by dropping partial payments. Filing this under "gold is debatable"
+was a mistake, corrected here.
 
-两条约定都由 `tests/test_dataset_quality.py` 锁住，新增题目违反即测试失败。
+Both conventions are locked by `tests/test_dataset_quality.py`; a new case
+violating either fails the test.
 
-## 数据集
+## The dataset
 
-`dataset.json`（由 `dataset_builder.py` 生成）：
+`dataset.json`, generated by `dataset_builder.py`:
 
-- `single_table`：25 条，单表过滤 + 投影
-- `multi_join`：25 条，同库多表关联
-- `aggregation`：25 条，分组统计
-- `having`：25 条，聚合后过滤
-- `time_range`：25 条，时间区间
-- `cross_db`：40 条，跨库两步
+- `single_table`: 25 cases, single-table filter and projection
+- `multi_join`: 25 cases, multi-table joins within one database
+- `aggregation`: 25 cases, grouped aggregation
+- `having`: 25 cases, post-aggregation filtering
+- `time_range`: 25 cases, time ranges
+- `cross_db`: 25 cases, two-step cross-database
 
-每条包含中文 Query 与 gold SQL。gold SQL 使用 ATTACH 别名
-（`erp.xxx` / `pm.xxx` / `mes.xxx` / `wms.xxx`），由 `GoldExecutor` 在四库 ATTACH
-连接上执行。
+Each case holds a Chinese-language query and a gold SQL statement. Gold SQL uses
+ATTACH aliases (`erp.xxx` / `pm.xxx` / `mes.xxx` / `wms.xxx`) and runs through
+`GoldExecutor` on a connection with all four databases attached.
 
-## 判定口径
+## Judging criterion
 
-执行准确率（execution accuracy）：Pipeline 最终步骤的结果集与
-gold 结果集做归一化比对（行序无关、列名无关、浮点保留 6 位）。
+Execution accuracy: the result set from the pipeline's final step is compared
+against the gold result set after normalization — row order ignored, column names
+ignored, floats kept to 6 decimal places.
 
-## 运行
+## Running
 
 ```bash
-# 完整评测：需要模型凭证 OPENAI_API_KEY / ANTHROPIC_API_KEY（Mock 模型只能覆盖冒烟样例）
+# Full run: needs OPENAI_API_KEY / ANTHROPIC_API_KEY
+# (the mock model only covers the smoke subset)
 python -m benchmark.run_benchmark --output runtime_data/benchmark_report.json
 
-# 要引用的数字跑 3 轮取均值，单次不可靠
+# Anything you intend to quote: 3 rounds, take the mean — a single run is not reliable
 python -m benchmark.run_benchmark --repeat 3
 
-# 发布门禁也用 3 轮：均值判定 + 打印区间
+# The release gate uses 3 rounds too: mean for the verdict, range printed alongside
 python -m benchmark.gate --repeat 3
 
-# 离线冒烟子集
+# Offline smoke subset
 python -m benchmark.run_benchmark --smoke
 
-# 发布门禁：任一指标未达合理线时退出码非 0，可挂 CI
+# Release gate: non-zero exit if any metric misses its threshold, so it can run in CI
 python -m benchmark.gate
 ```
 
-## 重新生成数据集
+## Regenerating the dataset
 
 ```bash
 python -m benchmark.dataset_builder
 ```
 
-## 指标之间的关系
+## How the metrics relate
 
-| 指标 | 看什么 | 是否依赖模型 |
+| Metric | What it measures | Needs a real model |
 |---|---|---|
-| **字段召回率** | 检索：gold 字段是否全部进了 Schema 图 | 否，离线可测 |
-| **执行准确率** | 端到端：结果集与 gold 等价（忽略行列顺序） | 是，需真实模型 |
-| **静默错误率** | 可信度：错了有没有告诉用户 | 是，需真实模型 |
+| **Column recall** | Retrieval: did every gold column reach the schema graph | No, measurable offline |
+| **Execution accuracy** | End to end: result set equivalent to gold, ignoring row and column order | Yes |
+| **Silent-error rate** | Trustworthiness: when it was wrong, was the user told | Yes |
 
-前两者相互独立：字段召回不到，后面生成再准也没用；召回到了也可能生成错。
-分开看才能定位瓶颈在检索还是生成。
-第三个与准确率**不是同一件事**：准确率降 1pp 但错误全部被告警拦下，
-落地体验反而更好——所以它单列，不折进准确率。
+The first two are independent: without recall, generation accuracy is irrelevant;
+with recall, generation can still be wrong. Keeping them apart is what localizes
+the bottleneck to retrieval or to generation.
 
-离线（Mock 模型）下字段召回率可完整测量，执行准确率只覆盖冒烟子集。
+The third is **not the same thing as accuracy**: accuracy dropping 1pp while every
+error gets caught by a warning is a better outcome in practice — which is why it
+is reported separately rather than folded into accuracy.
 
-## 回溯增益
+Offline, with the mock model, column recall is fully measurable while execution
+accuracy only covers the smoke subset.
 
-同一评测集开关回溯各跑一次，两次执行准确率之差即增益：
+## Repair-loop gain
+
+Run the same evaluation set twice with the switch flipped; the difference in
+execution accuracy is the gain:
 
 ```bash
-python -m benchmark.run_benchmark              # 开启回溯
-python -m benchmark.run_benchmark --no-repair  # 关闭回溯
+python -m benchmark.run_benchmark              # repair on
+python -m benchmark.run_benchmark --no-repair  # repair off
 ```
 
-## 留出集（holdout.json）
+## The holdout set (holdout.json)
 
-评测集上的召回率会被调参推高——短语表、字段别名、枚举取值词表都是对着
-评测集补的。`holdout.json` 用完全不同的**口语说法**提同样的业务问题，
-量化「这个数字有多少是调出来的」，并作为门禁里字段召回率那一项的实际口径。
+Recall on the evaluation set gets pushed up by tuning — the phrase tables, column
+aliases and enum vocabularies were all built against it. `holdout.json` asks the
+same business questions in **entirely different colloquial phrasings**, which
+quantifies how much of the number was tuned in, and serves as the actual basis
+for the column-recall metric in the gate.
 
-**40 条，不是 15 条**：门禁线是 85%，15 条时一条题 = 6.7pp，
-13/15（86.7%）过、12/15（80%）不过——一条题就能翻转门禁结论，
-这样的门禁挡不住真实退化，也会因为噪声误伤。扩到 40 条后一条题 = 2.5pp，
-同时把此前完全没被问到的字段（`plan_qty`、`unit_cost`、`locked_qty`、
-`capacity_stat` 整张表等）纳入覆盖。
+**40 cases, not 15.** With the gate at 85%, 15 cases make one case worth 6.7pp:
+13/15 (86.7%) passes and 12/15 (80%) fails, so a single case flips the verdict. A
+gate like that neither stops real regressions nor survives noise. At 40 cases one
+case is 2.5pp, and the expansion also brought in columns that were previously
+never asked about at all (`plan_qty`, `unit_cost`, `locked_qty`, the whole
+`capacity_stat` table, and others).
 
-新增的 25 条是**一次写完就固定**的：照着 Schema 逐表挑没覆盖到的字段编口语问法，
-写完直接入库，不看检索结果、不按命中情况回头改措辞。
-改措辞等于把留出集调成第二个训练集。
+The 25 added cases were **written once and frozen**: go through the schema table
+by table, pick columns that were not covered, phrase a colloquial question, and
+commit it — without looking at retrieval results, and without going back to
+reword based on what did or did not match. Rewording turns the holdout set into a
+second training set.
 
 ```bash
 python -m pytest tests/test_recall_generalization.py -v
 ```
 
-**这些问法不允许被反向补进短语表或别名**，否则留出集就失去意义，
-只是把过拟合换了个地方。
+**These phrasings must never be fed back into the phrase tables or the alias
+list**, or the holdout set loses its meaning and simply relocates the
+overfitting.
 
-实测差距（同一套检索）：
+Measured gap, same retrieval stack:
 
-| 抽词方式 | 评测集 | 留出集 | 合理线 |
+| Keyword extraction | Evaluation set | Holdout set | Threshold |
 |---|---|---|---|
-| 规则抽词（离线 Mock） | 100% | 46.7% | — |
-| 模型抽词（生产口径） | — | 66.7% | ≥ 85% |
+| Rule-based (offline mock) | 100% | 46.7% | — |
+| Model-based (production path) | — | 66.7% | ≥ 85% |
 
-差距主要来自口语与 Schema 元数据之间的语义鸿沟（「料快没了」↔ safety_stock、
-「做坏的比例」↔ yield_rate）。缓解手段是持续补充字段别名——这是真实部署里
-随业务反馈迭代的工作，不是一次性能做完的。
+The gap comes mainly from the semantic distance between colloquial phrasing and
+schema metadata ("we're running low on stock" ↔ `safety_stock`, "the share that
+comes out defective" ↔ `yield_rate`). The mitigation is to keep adding column
+aliases — work that follows business feedback in a real deployment, not something
+that can be finished in one pass.

@@ -1,68 +1,71 @@
 # ai_sql_pipeline
 
-端到端 Text2SQL Demo。
+End-to-end Text2SQL orchestration, with runnable demos.
 
-## 目录结构
+## Layout
 
 ```text
 ai_sql_pipeline/
 ├── __init__.py
-├── demo_data.py             # 测试数据库创建与业务Schema元数据
-├── create_demo_db.py        # 单独创建SQLite测试库
-├── sql_execution_demo.py    # 最小MCP SQL执行Demo
-├── local_clients.py         # 本地Mock关键词抽取和Embedding
-├── objects.py               # Pipeline数据结构
-├── text2sql_pipeline.py     # 端到端流程编排
-└── end_to_end_demo.py       # 完整Text2SQL Demo
+├── demo_data.py             # Demo database creation and business schema metadata
+├── create_demo_db.py        # Create the SQLite demo database on its own
+├── sql_execution_demo.py    # Minimal MCP SQL execution demo
+├── local_clients.py         # Local mock keyword extraction and embedding
+├── objects.py               # Pipeline data structures
+├── text2sql_pipeline.py     # End-to-end orchestration
+└── end_to_end_demo.py       # Full Text2SQL demo
 ```
 
-## 1. 创建测试数据库
+## 1. Create the demo database
 
 ```bash
 python -m ai_sql_pipeline.create_demo_db
 ```
 
-会生成：
+Produces:
 
 ```text
 runtime_data/erp_demo.db
 ```
 
-测试数据 SQL 在：
+The seed SQL lives in:
 
 ```text
 sql/create_erp_demo.sql
 ```
 
-## 2. 只测试SQL执行环境
+## 2. Test the execution path only
 
 ```bash
 python -m ai_sql_pipeline.sql_execution_demo
 ```
 
-这个 Demo 不走大模型，只验证 MCP 路由和 SQLite 执行。
+This demo calls no model; it only exercises MCP routing and SQLite execution.
 
-## 3. 运行端到端流程
+## 3. Run the end-to-end pipeline
 
 ```bash
 python -m ai_sql_pipeline.end_to_end_demo
 ```
 
-## 4. 运行动态路由 + 长短期记忆 Demo
+## 4. Run dynamic routing with short- and long-term memory
 
 ```bash
 python ai_sql_pipeline/memory_end_to_end_demo.py
 ```
 
-统一入口为 `DynamicSqlAgentService`：
+`DynamicSqlAgentService` is the single entry point:
 
-- `database_query`：进入 Schema 检索、CoT、SQL 生成和数据库执行；
-- `data_qa`：用于结果解释、指标说明、历史结果追问、数据分析和业务知识问答，不执行 SQL；
-- 路由前先读取短期上下文，并按用户开关决定是否召回长期记忆；
-- 配置模型 API Key 时优先使用模型分类，无模型或模型输出异常时使用规则兜底；
-- 路由结论会随助手消息写入记忆元信息。
+- `database_query`: runs schema retrieval, planning, SQL generation and execution;
+- `data_qa`: explains results, defines metrics, answers follow-ups about past
+  results, and handles analysis and general business questions — no SQL is run;
+- short-term context is loaded before routing, and long-term memory is recalled
+  only if the user has enabled it;
+- with a model API key configured, routing is model-classified, falling back to
+  rules when no model is available or its output is malformed;
+- the routing decision is written into the assistant message's memory metadata.
 
-示例：
+Example:
 
 ```python
 from ai_sql_memory import ConversationMemoryService
@@ -74,7 +77,7 @@ service = DynamicSqlAgentService(Text2SQLPipeline(), memory)
 response = service.run(
     user_id="user-001",
     session_id="session-001",
-    query="查询准时率低于0.9的供应商名称",
+    query="list suppliers whose on-time rate is below 0.9",
 )
 
 print(response.decision.route.value)
@@ -83,11 +86,14 @@ print(response.queried_database)
 print(response.answer)
 ```
 
-单独运行路由测试：
+Routing tests on their own:
 
 ```bash
 python tests/test_routing.py
 ```
 
-## 4. 运行带长短期记忆的端到端流程
+## 5. Run the memory-enabled pipeline via script
+
+```bash
 bash run_memory.sh
+```

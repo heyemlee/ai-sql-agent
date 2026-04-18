@@ -1,85 +1,85 @@
-# schema_retrieval Demo
+# schema_retrieval
 
-字段级 Schema 检索 Demo。
+Column-level schema retrieval, with runnable demos.
 
 ---
 
-## 目录结构
+## Layout
 
 ```text
 schema_retrieval/
   __init__.py
 
-  # 核心数据结构与 Schema 处理
-  objects.py                     # 核心数据结构
-  sqlite_loader.py               # SQLite Schema 解析
-  document_builder.py            # 字段级检索文档构建
-  graph_builder.py               # Schema 子图构建
+  # Core structures and schema handling
+  objects.py                     # Core data structures
+  sqlite_loader.py               # SQLite schema parsing
+  document_builder.py            # Column-level document construction
+  graph_builder.py               # Schema subgraph construction
 
-  # 关键词召回
-  tokenizer.py                   # 中英文混合分词
-  bm25.py                        # BM25 关键词索引
-  retriever.py                   # 关键词召回主流程
+  # Keyword retrieval
+  tokenizer.py                   # Mixed Chinese/English tokenizer
+  bm25.py                        # BM25 keyword index
+  retriever.py                   # Keyword retrieval entry point
 
-  # 向量召回
-  keyword_extractor_client.py    # 大模型关键词抽取
-  embedding_client.py            # 阿里云 Embedding Client
-  vector_index.py                # 内存向量索引
+  # Vector retrieval
+  keyword_extractor_client.py    # Model-driven keyword extraction
+  embedding_client.py            # Embedding client
+  vector_index.py                # In-memory vector index
 
-  # 融合与精排
-  rrf_fusion_client.py           # RRF 融合
-  rerank_client.py               # Rerank 精排
+  # Fusion and reranking
+  rrf_fusion_client.py           # RRF fusion
+  rerank_client.py               # Reranking
 
-  # Demo
-  keyword_recall_demo.py         # 关键词召回 Demo
-  vector_recall_demo.py          # 向量召回 Demo
-  hybrid_recall_demo.py          # 关键词 + 向量 + RRF 融合 Demo
-  hybrid_rerank_schema_demo.py   # 混合召回 + Rerank + SchemaGraph Demo
+  # Demos
+  keyword_recall_demo.py         # Keyword retrieval
+  vector_recall_demo.py          # Vector retrieval
+  hybrid_recall_demo.py          # Keyword + vector + RRF fusion
+  hybrid_rerank_schema_demo.py   # Hybrid retrieval + rerank + SchemaGraph
 
   README.md
 ```
 
 ---
 
-## 环境变量
+## Environment variables
 
-不配置环境变量也可以先跑通本地 Mock 流程。
+The demos run end to end against a local mock with nothing configured.
 
-调用阿里云百炼真实模型时配置：
+To call a real model:
 
 ```bash
-export DASHSCOPE_API_KEY="你的阿里云百炼APIKey"
+export DASHSCOPE_API_KEY="your-api-key"
 ```
 
-调用 Rerank 模型时额外配置：
+Reranking needs one more:
 
 ```bash
-export DASHSCOPE_WORKSPACE_ID="你的WorkspaceId"
+export DASHSCOPE_WORKSPACE_ID="your-workspace-id"
 ```
 
 ---
 
-## 执行命令
+## Commands
 
-### 1. 关键词召回
+### 1. Keyword retrieval
 
 ```bash
 python -m schema_retrieval.keyword_recall_demo
 ```
 
-### 2. 向量召回
+### 2. Vector retrieval
 
 ```bash
 python -m schema_retrieval.vector_recall_demo
 ```
 
-### 3. 混合召回
+### 3. Hybrid retrieval
 
 ```bash
 python -m schema_retrieval.hybrid_recall_demo
 ```
 
-### 4. 混合召回 + Rerank + SchemaGraph
+### 4. Hybrid retrieval + rerank + SchemaGraph
 
 ```bash
 python -m schema_retrieval.hybrid_rerank_schema_demo
@@ -87,7 +87,7 @@ python -m schema_retrieval.hybrid_rerank_schema_demo
 
 ---
 
-## 清理缓存
+## Clearing caches
 
 ```bash
 rm -rf schema_retrieval/__pycache__

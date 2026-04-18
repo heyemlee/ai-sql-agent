@@ -198,5 +198,3 @@ deploy/              Production deployment and operations docs
 - [Schema retrieval](schema_retrieval/README.md): hybrid recall and SchemaGraph
 - [MCP execution](mcp_router/README.md): read-only SQL, dialects and executors
 - [Benchmark](benchmark/README.md): dataset, accuracy and the release gate
-
-These module documents are currently written in Chinese.

@@ -1,35 +1,37 @@
 # sql_repair
 
-Log-driven SQL 修复回路。
+Log-driven SQL repair loop.
 
-## 流程
+## Flow
 
 ```text
-执行失败
+Execution fails
   ↓
-ExecutionLogParser   解析错误日志 → 结构化错误（类型 + 相关对象）
+ExecutionLogParser   parse the error log → structured error (class + objects involved)
   ↓
-SqlClauseLocalizer   按顶层关键字切分SQL → 定位疑似出错子句
+SqlClauseLocalizer   split the SQL on top-level keywords → locate the suspect clause
   ↓
-重生成出错子句
-  - 配置模型凭证：Coder 模型局部重写（只改出错子句）
-  - 离线：启发式近名替换（difflib 就近匹配 Schema 中的表/字段名）
+Regenerate that clause
+  - With model credentials: the coder model rewrites only the offending clause
+  - Offline: heuristic near-name substitution (difflib against schema table/column names)
   ↓
-重新执行，失败则继续，最多 max_attempts 次
+Re-execute; on failure keep going, up to max_attempts times
 ```
 
-## 覆盖的错误类型
+## Error classes covered
 
 `no_such_table` / `no_such_column` / `ambiguous_column` / `syntax_error` /
-`no_such_function` / `timeout` / `misuse_aggregate`（SQLite 错误族，可按方言扩展）。
+`no_such_function` / `timeout` / `misuse_aggregate` — the SQLite error family,
+extensible per dialect.
 
-## 接入方式
+## How it plugs in
 
-Pipeline 默认启用（`PipelineConfig(enable_repair=True, max_repair_attempts=2)`），
-修复过程记录在 `StepExecutionLog.repair_attempts`，
-修复后成功执行的 SQL 记录在 `StepExecutionLog.final_sql`。
+Enabled by default in the pipeline
+(`PipelineConfig(enable_repair=True, max_repair_attempts=2)`). The repair process
+is recorded in `StepExecutionLog.repair_attempts`, and the statement that finally
+executed cleanly is recorded in `StepExecutionLog.final_sql`.
 
-## 测试
+## Tests
 
 ```bash
 python -m unittest tests.test_repair -v
