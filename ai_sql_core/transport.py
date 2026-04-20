@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -523,6 +524,17 @@ def _iter_sse_content(lines: Iterator[str]) -> Iterator[str]:
             yield content
 
 
+def _anthropic_accepts_temperature(model: str) -> bool:
+    """Claude 5 起 `temperature` 被废弃，带上这个字段整个请求会被 400 拒绝。
+
+    老模型（claude-3-*/claude-sonnet-4 等）仍然接受，所以按模型名分流而不是
+    一刀切删掉——本项目全链路用 temperature=0 求确定性，能带就带。
+    认不出的模型名按「接受」处理，保持改动前的行为。
+    """
+    match = re.search(r"claude-(?:opus|sonnet|haiku|fable)-(\d+)", model or "")
+    return not (match and int(match.group(1)) >= 5)
+
+
 def build_chat_payload(
     messages: List[Dict[str, str]],
     *,
@@ -535,7 +547,8 @@ def build_chat_payload(
     """按厂商协议构造请求体。
 
     OpenAI 兼容：`messages` 直接带 system 角色；
-    Anthropic Messages：system 要提到顶层字段，且 `max_tokens` 必填。
+    Anthropic Messages：system 要提到顶层字段，`max_tokens` 必填，
+    且 Claude 5 起不能带 `temperature`。
     """
     if provider == "anthropic":
         system_parts = [
@@ -548,9 +561,10 @@ def build_chat_payload(
             "model": model,
             "messages": turns,
             "max_tokens": max_tokens or get_settings().max_output_tokens,
-            "temperature": temperature,
             "stream": stream,
         }
+        if _anthropic_accepts_temperature(model):
+            payload["temperature"] = temperature
         if system_parts:
             payload["system"] = "\n\n".join(part for part in system_parts if part)
         return payload
