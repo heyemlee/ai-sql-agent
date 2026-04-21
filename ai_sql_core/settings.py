@@ -8,12 +8,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Provider = Literal["openai", "anthropic"]
 
+# 默认取每家最便宜的在产型号：主链路一次查询要打 5 次模型，
+# 默认值贵一档，跑一轮 benchmark 的成本就差出一个量级。
+# 想要更强的 SQL 生成，单独覆盖 AI_SQL_CODER_MODEL 即可（如 gpt-5.6-terra）。
 DEFAULT_CHAT_MODEL = {
-    "openai": "gpt-4o-mini",
+    "openai": "gpt-5.6-luna",
     "anthropic": "claude-sonnet-5",
 }
 DEFAULT_CODER_MODEL = {
-    "openai": "gpt-4o-mini",
+    "openai": "gpt-5.6-luna",
     "anthropic": "claude-sonnet-5",
 }
 
