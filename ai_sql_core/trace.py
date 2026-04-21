@@ -44,6 +44,25 @@ def use_trace_id(trace_id: str = "") -> Iterator[str]:
         _usage.reset(usage_token)
 
 
+@contextmanager
+def usage_scope() -> Iterator[None]:
+    """确保当前上下文里有 Token 用量累加器。
+
+    HTTP 入口靠 `use_trace_id()` 建上下文；Pipeline 被当成库直接调用时
+    （benchmark、脚本、单测）没人建，`record_usage()` 会静默丢弃，汇总恒为 0。
+    这里补一个：已经有累加器就原样复用，不新建也不清空——否则嵌套调用会把
+    上层已经累计的记录冲掉。
+    """
+    if _usage.get() is not None:
+        yield
+        return
+    token = _usage.set(UsageAccumulator())
+    try:
+        yield
+    finally:
+        _usage.reset(token)
+
+
 @dataclass
 class ModelUsage:
     """单次模型调用的用量。"""

@@ -11,6 +11,7 @@ from ai_sql_core import (
     ModelTransport,
     RetryPolicy,
     extract_chat_content,
+    usage_scope,
     usage_summary,
     use_trace_id,
 )
@@ -125,6 +126,44 @@ class UsageAccountingTest(unittest.TestCase):
 
     def test_usage_outside_trace_context_is_ignored(self):
         self.assertEqual(usage_summary()["calls"], 0)
+
+    def test_usage_scope_collects_without_an_http_entrypoint(self):
+        # Pipeline 被当库直接调用（benchmark、脚本）时没有 use_trace_id()，
+        # 用量不该整条丢掉
+        transport = make_transport(self._usage_handler())
+
+        with usage_scope():
+            transport.post_json("https://model/v1", {}, model="qwen-plus")
+            summary = usage_summary()
+
+        self.assertEqual(summary["calls"], 1)
+        self.assertEqual(summary["total_tokens"], 150)
+
+    def test_nested_usage_scope_keeps_the_outer_accumulator(self):
+        # 内层不能新建累加器，否则 HTTP 入口拿到的汇总会漏掉内层的调用
+        transport = make_transport(self._usage_handler())
+
+        with use_trace_id():
+            transport.post_json("https://model/v1", {}, model="qwen-plus")
+            with usage_scope():
+                transport.post_json("https://model/v1", {}, model="qwen-plus")
+            summary = usage_summary()
+
+        self.assertEqual(summary["calls"], 2)
+        self.assertEqual(summary["total_tokens"], 300)
+
+    @staticmethod
+    def _usage_handler():
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "SELECT 1;"}}],
+                    "usage": {"prompt_tokens": 120, "completion_tokens": 30},
+                },
+            )
+
+        return handler
 
 
 class ExtractChatContentTest(unittest.TestCase):

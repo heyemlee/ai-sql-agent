@@ -9,7 +9,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from ai_sql_auth import extract_referenced_tables
 from ai_sql_core.errors import ModelCallError
-from ai_sql_core import get_logger, log_event, stage, usage_summary
+from ai_sql_core import get_logger, log_event, stage, usage_scope, usage_summary
 from ai_sql_core.metrics import (
     ACCESS_DENIED,
     DEGRADED_RESPONSES,
@@ -203,6 +203,28 @@ class Text2SQLPipeline:
 
         history_queries 为同会话的历史问题，供代词消解使用。
         """
+        # HTTP 入口已经用 use_trace_id() 建好了用量上下文，这里不会重复建；
+        # 当库直接调用（benchmark、脚本）时补上，否则 usage 汇总恒为 0。
+        with usage_scope():
+            return self._run(
+                query,
+                keywords=keywords,
+                conversation_context=conversation_context,
+                access=access,
+                user_id=user_id,
+                history_queries=history_queries,
+            )
+
+    def _run(
+        self,
+        query: str,
+        keywords: Optional[List[str]] = None,
+        conversation_context: str = "",
+        access: Optional[SchemaAccessFilter] = None,
+        user_id: str = "",
+        history_queries: Optional[List[str]] = None,
+    ) -> PipelineResult:
+        """`run()` 的实现体，用量上下文由 `run()` 负责。"""
         access = access or ALLOW_ALL
 
         # ① 问题归一化：代词消解 + 相对时间表达式 → 绝对区间
