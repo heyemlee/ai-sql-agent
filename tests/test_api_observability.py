@@ -80,5 +80,13 @@ class FrontendTest(unittest.TestCase):
             self.assertIn(marker, html)
 
     def test_page_escapes_untrusted_values(self):
-        # 结果集内容来自数据库，直接插 innerHTML 会有 XSS 风险
-        self.assertIn("escapeHtml", self.client.get("/").text)
+        # 结果集内容来自数据库，直接插 innerHTML 会有 XSS 风险。
+        # 不锁转义函数叫什么名字（改版换过一次），只锁两件必须成立的事：
+        # 转义覆盖到这几个字符，且单元格与 SQL 确实走了转义再拼进模板。
+        html = self.client.get("/").text
+        for entity in ("&amp;", "&lt;", "&gt;", "&quot;"):
+            self.assertIn(entity, html, entity)
+        # 不锁变量名，只锁「插值前过了一层函数」——裸插 ${cell} / ${row[c]}
+        # 这种写法匹配不上，正是要拦的那种
+        self.assertRegex(html, r"<td[^>]*>\$\{\s*\w+\(")
+        self.assertRegex(html, r"<pre[^>]*>\$\{\s*\w+\(")
