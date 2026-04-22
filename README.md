@@ -193,6 +193,7 @@ deploy/              Production deployment and operations docs
 
 ## Further reading
 
+- [Project walkthrough (Chinese)](WALKTHROUGH.zh-CN.md): a module-by-module deep dive, the five design threads, and a talk track for explaining the system
 - [Deployment and operations](deploy/README.md): Docker Compose, permissions, model integration, monitoring and troubleshooting
 - [End-to-end orchestration](ai_sql_pipeline/README.md): dynamic routing and memory examples
 - [Schema retrieval](schema_retrieval/README.md): hybrid recall and SchemaGraph
