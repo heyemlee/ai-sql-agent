@@ -49,18 +49,13 @@ from query_normalization import FiscalConfig, QueryNormalizer
 from result_validation import ResultValidator, SemanticSelfChecker
 from sql_repair import SqlRepairService
 
+from ai_sql_semantic import SemanticLayer, resolve_semantic_layer
+
 from .demo_data import (
     create_erp_demo_database,
     create_mes_demo_database,
     create_pm_demo_database,
     create_wms_demo_database,
-    get_cross_database_links,
-    get_database_catalog,
-    get_metric_disambiguation,
-    get_erp_business_meta,
-    get_mes_business_meta,
-    get_pm_business_meta,
-    get_wms_business_meta,
 )
 from .local_clients import (
     HybridKeywordExtractor,
@@ -138,6 +133,15 @@ class Text2SQLPipeline:
         由 API 层注入（数据源是审计表），Pipeline 不直接依赖审计模块。
         """
         self.prompt_budget = PromptBudgetManager(self.config.prompt_budget)
+
+        # 业务语义层：库/表/字段的业务含义、跨库关联键、指标口径。
+        # 模型对业务的全部认知都来自这里——没配置时用内置演示元数据，
+        # 接真实库必须配 AI_SQL_SEMANTIC_DIR，否则检索只能按字段名字面匹配。
+        self.semantic: SemanticLayer = (
+            self.config.semantic_layer
+            if self.config.semantic_layer is not None
+            else resolve_semantic_layer()
+        )
 
         self.databases = self._resolve_databases()
         self.business_metas = self._resolve_business_metas()
@@ -1106,27 +1110,51 @@ class Text2SQLPipeline:
 
     def _resolve_databases(self) -> List[DatabaseConfig]:
         """
-        解析数据库配置并创建 Demo 数据。
+        解析数据库连接配置。
+
+        优先级：显式传入的 `config.databases` > 语义层里声明的连接。
+        语义层同时决定「有哪些库」和「怎么连」，接真实业务库时不再需要改代码。
+
+        Demo 数据只在使用内置演示元数据时创建：配了真实语义目录还去建 Demo 库，
+        等于往生产路径里塞演示数据。
         """
         databases = self.config.databases
 
         if databases is None:
             databases = [
                 DatabaseConfig(
-                    name=self.config.database_name,
-                    db_path=self.config.db_path,
-                ),
-                DatabaseConfig(name="pm_db", db_path="runtime_data/pm_demo.db"),
-                DatabaseConfig(name="mes_db", db_path="runtime_data/mes_demo.db"),
-                DatabaseConfig(name="wms_db", db_path="runtime_data/wms_demo.db"),
+                    name=database.name,
+                    db_path=database.db_path,
+                    dialect=database.dialect,
+                    dsn=database.resolved_dsn(),
+                )
+                for database in self.semantic.databases.values()
             ]
+            # 兼容既有用法：config.database_name / db_path 覆盖同名库的路径，
+            # 让「换一个 SQLite 文件跑」这种测试与 Demo 用法不必构造整份配置。
+            if self.config.db_path:
+                databases = [
+                    DatabaseConfig(
+                        name=database.name,
+                        db_path=self.config.db_path,
+                        dialect=database.dialect,
+                        dsn=database.dsn,
+                    )
+                    if database.name == self.config.database_name
+                    else database
+                    for database in databases
+                ]
 
-        creators = {
-            "erp_db": create_erp_demo_database,
-            "pm_db": create_pm_demo_database,
-            "mes_db": create_mes_demo_database,
-            "wms_db": create_wms_demo_database,
-        }
+        creators = (
+            {
+                "erp_db": create_erp_demo_database,
+                "pm_db": create_pm_demo_database,
+                "mes_db": create_mes_demo_database,
+                "wms_db": create_wms_demo_database,
+            }
+            if self.semantic.is_demo
+            else {}
+        )
 
         resolved: List[DatabaseConfig] = []
         for database in databases:
@@ -1152,19 +1180,34 @@ class Text2SQLPipeline:
 
     def _resolve_business_metas(self) -> Dict[str, dict]:
         """
-        解析各库业务元数据。
-        """
-        known_metas = {
-            "erp_db": get_erp_business_meta,
-            "pm_db": get_pm_business_meta,
-            "mes_db": get_mes_business_meta,
-            "wms_db": get_wms_business_meta,
-        }
+        解析各库业务元数据（表/字段的业务含义与别名），全部来自语义层。
 
+        语义层里没有的库拿到空元数据：链路照样能跑，但检索退化成按字段名
+        字面匹配，口语问法基本召不回来。这种情况会在启动日志里显式告警，
+        因为它的现象是「模型答不准」，很容易被误判成模型能力问题。
+        """
         metas: Dict[str, dict] = {}
+        missing: List[str] = []
         for database in self.databases:
-            builder = known_metas.get(database.name)
-            metas[database.name] = builder() if builder else {}
+            semantics = self.semantic.databases.get(database.name)
+            if semantics is None or not semantics.tables:
+                missing.append(database.name)
+                metas[database.name] = {}
+                continue
+            metas[database.name] = semantics.tables
+
+        if missing:
+            log_event(
+                _logger,
+                logging.WARNING,
+                "semantic.missing_metadata",
+                databases=missing,
+                source=self.semantic.source,
+                hint=(
+                    "这些库没有业务元数据，检索只能按字段名字面匹配。"
+                    "用 python -m ai_sql_semantic export/validate 补齐后配置 AI_SQL_SEMANTIC_DIR"
+                ),
+            )
         return metas
 
     def _resolve_schema_store(
@@ -1251,7 +1294,7 @@ class Text2SQLPipeline:
             )
         )
 
-        catalog = {item["name"]: item for item in get_database_catalog()}
+        catalog = {item["name"]: item for item in self.semantic.catalog()}
 
         sources = []
         for database in self.databases:
@@ -1270,8 +1313,8 @@ class Text2SQLPipeline:
             )
 
         return ThreeTierSchemaRetrievalService(
-            cross_database_links=get_cross_database_links(),
-            metric_disambiguation=get_metric_disambiguation(),
+            cross_database_links=self.semantic.cross_database_links,
+            metric_disambiguation=self.semantic.metric_disambiguation,
             sources=sources,
             embedding_client=embedding_client,
             rerank_client=rerank_client,

@@ -69,6 +69,7 @@ def check_dependencies() -> dict:
         # 运行时必需
         "numpy": check_package("numpy", required=True),
         "httpx": check_package("httpx", required=True),
+        "yaml": check_package("yaml", required=False),
         "pydantic": check_package("pydantic", required=True),
         "pydantic-settings": check_package(
             "pydantic-settings", "pydantic_settings", required=True
