@@ -257,7 +257,13 @@ class CrossDatabaseReferenceGuardTest(unittest.TestCase):
             def __init__(self):
                 self.prompts = []
 
-            def generate(self, cot_step, sql_dialect="", previous_results=""):
+            def generate(
+                self,
+                cot_step,
+                sql_dialect="",
+                previous_results="",
+                certified_examples="",
+            ):
                 self.prompts.append(cot_step.operation_instruction)
                 return type("R", (), {"sql": good_sql})()
 
