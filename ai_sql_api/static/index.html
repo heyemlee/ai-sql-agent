@@ -378,6 +378,14 @@ h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
 .ds-table .num-col { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
 
 /* ─── flags ────────────────────────────────────────────────────────── */
+.fb { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+.fb-btn { display: inline-flex; align-items: center; gap: 6px; }
+.fb-btn[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.fb-comment { width: 100%; margin-top: var(--space-4); padding: 10px 12px; font: inherit; font-size: var(--text-sm);
+  color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: var(--space-2); resize: vertical; min-height: 44px; }
+.fb-comment:focus-visible { outline: 2px solid var(--fg); outline-offset: 1px; }
+.fb-done { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.fb-done svg { width: 16px; height: 16px; color: var(--fg); flex: none; }
 .flag { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: var(--space-3); align-items: start; }
 .flag + .flag { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid color-mix(in oklch, var(--warn) 26%, transparent); }
 .flag svg { width: 16px; height: 16px; margin-top: 3px; color: color-mix(in oklch, var(--warn), black 30%); }
@@ -650,6 +658,18 @@ const I18N = {
     'risk.foot': 'The SQL ran and returned rows — the problem is in the result itself. Confirm the points above before trusting it.',
     'risk.jump': 'See step {n} results →',
     'severity.block': 'blocking',
+    'fb.title': 'Was this answer right?',
+    'fb.hint': 'Your call trains the system: wrong answers become test cases, confirmed ones become reference queries for similar questions.',
+    'fb.correct': 'Correct',
+    'fb.wrong': 'Wrong',
+    'fb.unsure': 'Not sure',
+    'fb.comment.ph': 'What was wrong? (optional, but this is the most useful part)',
+    'fb.sent.correct': 'Recorded. This query will be used as a reference for similar questions.',
+    'fb.sent.wrong': 'Recorded. It goes on the to-fix list and into the eval set.',
+    'fb.sent.unsure': 'Recorded — someone will take a look.',
+    'fb.change': 'Change',
+    'fb.failed': 'Could not record feedback',
+    'fb.sending': 'Recording…',
     'anomaly.empty_result': 'Empty result',
     'anomaly.cardinality_deviation': 'Cardinality deviation',
     'anomaly.semantic_mismatch': 'Semantic mismatch',
@@ -803,6 +823,18 @@ const I18N = {
     'risk.foot': 'SQL 执行成功且有结果，问题出在结果本身——直接采信前请先确认上述几点。',
     'risk.jump': '查看步骤 {n} 的结果 →',
     'severity.block': '阻断',
+    'fb.title': '这条回答对吗？',
+    'fb.hint': '你的判断会喂回系统：答错的进评测集，确认对的成为同类问题的参考写法。',
+    'fb.correct': '对',
+    'fb.wrong': '错',
+    'fb.unsure': '说不准',
+    'fb.comment.ph': '哪里不对？（选填，但这是最有价值的一栏）',
+    'fb.sent.correct': '已记录。这条查询会作为参考写法用于后续同类问题。',
+    'fb.sent.wrong': '已记录。这条会进待改进清单和评测集。',
+    'fb.sent.unsure': '已记录，会有人来看一眼。',
+    'fb.change': '改一下',
+    'fb.failed': '反馈没记上',
+    'fb.sending': '记录中…',
     'anomaly.empty_result': '空结果',
     'anomaly.cardinality_deviation': '基数异常',
     'anomaly.semantic_mismatch': '语义不一致',
@@ -965,9 +997,11 @@ const state = {
   base: '', apiKey: '', userId: 'li', sessionId: 's1',
   longTerm: false, live: false, explain: false, lang: 'en',
   history: [], current: null, activeTrace: null,
+  feedback: {},   // trace_id -> 已提交的判定，用于回显
 };
 try { Object.assign(state, JSON.parse(localStorage.getItem(LS) || '{}')); } catch (_) {}
 try { state.apiKey = sessionStorage.getItem(LS + '/key') || ''; } catch (_) {}
+if (!state.feedback || typeof state.feedback !== 'object') state.feedback = {};
 state.current = null;
 
 const $ = (id) => document.getElementById(id);
@@ -1244,6 +1278,8 @@ function renderResult(r, opts = {}) {
       </div>`);
   });
 
+  if (r.trace_id && r.trace_id !== '\u2014') parts.push(feedbackCard(r));
+
   if (opts.fromHistory) {
     parts.push(`
       <div class="card" data-od-id="history-notice">
@@ -1258,6 +1294,60 @@ function renderResult(r, opts = {}) {
   renderSources();
   renderPipeline();
   if (!opts.keepScroll) $('workbench').scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/* 用户判定：答错的进评测集，确认对的成为同类问题的参考写法。
+   这是「工具越用越准」唯一不依赖我们自己出题的数据来源。 */
+function feedbackCard(r) {
+  const sent = state.feedback[r.trace_id];
+  if (sent) {
+    return `
+      <div class="card" data-od-id="feedback">
+        <div class="fb-done">
+          ${ICON.check}
+          <span class="body-sm">${t('fb.sent.' + sent)}</span>
+          <button class="btn btn-ghost btn-sm js-fb-reset">${t('fb.change')}</button>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="card" data-od-id="feedback">
+      <div class="row-between" style="margin-bottom:var(--space-3)">
+        <span class="h3" style="font-size:var(--text-lg)">${t('fb.title')}</span>
+      </div>
+      <p class="caption" style="line-height:1.55;margin-bottom:var(--space-4)">${t('fb.hint')}</p>
+      <div class="fb">
+        <button class="btn btn-secondary btn-sm fb-btn js-fb" data-verdict="correct">${t('fb.correct')}</button>
+        <button class="btn btn-secondary btn-sm fb-btn js-fb" data-verdict="wrong">${t('fb.wrong')}</button>
+        <button class="btn btn-ghost btn-sm fb-btn js-fb" data-verdict="unsure">${t('fb.unsure')}</button>
+      </div>
+      <textarea class="fb-comment js-fb-comment" rows="1" placeholder="${t('fb.comment.ph')}"></textarea>
+      <p class="caption js-fb-status" role="status" style="margin-top:var(--space-3)"></p>
+    </div>`;
+}
+
+async function submitFeedback(traceId, verdict, comment, statusEl) {
+  if (statusEl) statusEl.textContent = t('fb.sending');
+  try {
+    const res = await fetch(api('/feedback'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ trace_id: traceId, verdict, comment: comment || '' }),
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      throw new Error(payload.detail || res.status);
+    }
+    state.feedback[traceId] = verdict;
+    const entry = state.history.find((x) => x.trace_id === traceId);
+    if (entry) entry.verdict = verdict;
+    if (state.current && state.current.trace_id === traceId) {
+      renderResult(state.current, { ...state.currentOpts, keepScroll: true });
+    }
+    renderHistory();
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `${t('fb.failed')}：${err.message}`;
+  }
 }
 
 function bindResult() {
@@ -1292,6 +1382,21 @@ function bindResult() {
       setTimeout(() => card.classList.remove('flash'), 900);
     });
   });
+  $('result').querySelectorAll('.js-fb').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const card = btn.closest('.card');
+      const comment = card.querySelector('.js-fb-comment');
+      const status = card.querySelector('.js-fb-status');
+      card.querySelectorAll('.js-fb').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+      submitFeedback(state.current.trace_id, btn.dataset.verdict, comment ? comment.value.trim() : '', status);
+    });
+  });
+  const fbReset = $('result').querySelector('.js-fb-reset');
+  if (fbReset) fbReset.addEventListener('click', () => {
+    delete state.feedback[state.current.trace_id];
+    renderResult(state.current, { ...state.currentOpts, keepScroll: true });
+  });
+
   const rerun = $('result').querySelector('.js-rerun');
   if (rerun) rerun.addEventListener('click', () => { run(); });
 }
