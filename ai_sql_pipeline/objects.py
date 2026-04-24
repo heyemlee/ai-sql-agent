@@ -27,7 +27,19 @@ class PipelineConfig:
     """端到端流程配置。"""
 
     database_name: str = "erp_db"
-    db_path: str | Path = "runtime_data/erp_demo.db"
+    db_path: str | Path = ""
+    """
+    覆盖 `database_name` 那个库的连接路径，**留空表示不覆盖**。
+
+    留空是有原因的。这两个字段是「换一个 SQLite 文件跑一下」的便利入口，
+    但 db_path 以前默认是 runtime_data/erp_demo.db，于是覆盖分支
+    （_resolve_databases）对任何叫 erp_db 的库**无条件生效**——接真实业务库时，
+    语义层里配好的 erp_db 连接会被静默换成内置的演示文件。SQL 照跑、有结果、
+    结果来自错误的库，是最难发现的一类错。
+
+    演示路径不受影响：演示语义层自己就声明了同一个 erp_demo.db 路径，
+    这个默认值本来就是重复的。
+    """
     sample_size: int = 5
     # 多库配置；None 时按语义层里声明的库连接（默认是四个 Demo 库）
     databases: Optional[List[DatabaseConfig]] = None
