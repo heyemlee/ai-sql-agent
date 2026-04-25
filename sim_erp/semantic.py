@@ -142,7 +142,10 @@ ERP_TABLES: dict[str, tuple[str, list[str], list[Col]]] = {
              "**逾期判据**：due_date < 今天 且 invoice_status 不是 paid。"),
             ("invoice_status", "状态：open 未收 / partial 部分收款 / paid 已收清 / void 作废。",
              ["发票状态", "收款状态", "invoice status"], "filter",
-             "**partial 是最容易漏的一档**：它既不是未付也不是已付，未付余额要用发票金额减去实收合计。"),
+             "**partial 是最容易漏的一档**：它既不是未付也不是已付，未付余额要用发票金额减去实收合计。"
+             "**void 是作废发票，不构成应收**：统计逾期、欠款、应收账款时必须排除它——"
+             "写 `invoice_status != 'paid'` 会把作废的算进去，正确写法是 "
+             "`invoice_status IN ('open','partial')`。未收清 = open 或 partial，不含 void。"),
         ],
     ),
     "payment_received": (
@@ -310,7 +313,12 @@ SVC_TABLES: dict[str, tuple[str, list[str], list[Col]]] = {
             ("resolved_date", "解决日期。未结时为 NULL。", ["解决日期", "resolved date"], "time",
              "**未结为 NULL**：算平均处理时长时不排除它们，结果一定偏小。"),
             ("ticket_status", "状态：open 新建 / in_progress 处理中 / waiting_parts 等件 / resolved 已解决 / closed 已关闭。",
-             ["服务单状态", "ticket status"], "filter", "waiting_parts 表示在等补件到货。"),
+             ["服务单状态", "ticket status"], "filter",
+             "waiting_parts 表示在等补件到货。"
+             "**resolved 和 closed 都是已经处理完的**，区别只是有没有走完关闭流程，"
+             "两者都有 resolved_date。所以「未结 / 还没处理完 / 挂着的」指的是 "
+             "open、in_progress、waiting_parts 这三档，判据用 `resolved_date IS NULL` 最稳——"
+             "写 `ticket_status <> 'closed'` 会把已解决的也算成未结。"),
             ("description", "问题描述。", ["描述", "问题说明", "description"], "text", "客户反映的具体情况。"),
             ("reported_by", "报修人：builder superintendent 工地主管 / installer 安装工 / homeowner 业主。",
              ["报修人", "reported by"], "filter", "谁报的。"),
@@ -369,8 +377,26 @@ def _samples(conn, table: str, column: str, limit: int = 3) -> list[str]:
     return out
 
 
+# 所有 time 角色的字段统一带上这句。
+#
+# 压测里抓到的：问「有多少张发票逾期了」，模型写 `due_date < DATE('now')`，逻辑
+# 完全正确，但 SQLite 的 DATE('now') 返回 **UTC**。加州本地下午五点之后 UTC 已经
+# 是第二天，于是「今天」整体偏一天——每天最后三分之一个工作日，所有「今天到期」
+# 「本周要送」「这个月签了多少」的结果都是错的，而且错得看不出来：SQL 跑通、
+# 有结果、数字只差一点点。
+#
+# 库里存的全是本地业务日期（签单日、到期日、排产日），所以比较基准也必须是本地。
+_LOCALTIME_NOTE = (
+    "【与「今天」比较时】用 DATE('now','localtime')，不要用 DATE('now')——"
+    "后者是 UTC，本地傍晚之后会滚到第二天，「今天到期/本周/本月」会整体偏一天。"
+    "本库存的是本地业务日期。"
+)
+
+
 def _column_entry(table: str, col: Col, samples: list[str]) -> dict:
     name, desc, aliases, role, usage = col
+    if role == "time":
+        usage = f"{usage} {_LOCALTIME_NOTE}"
     alias_line = " ".join(aliases)
     entry = {
         "description": desc,
@@ -463,6 +489,10 @@ def build_semantic(sim_dir: Path, out_dir: Path) -> list[str]:
                        "**客户问「还有多少钱没付」「还欠多少」通常指的是这个**，"
                        "因为它包含了尚未开票的尾款。只报「当前到期应付」会让客户以为快付清了。",
             "在制": "生产工单状态为 in_progress 或 on_hold，即已下达车间但尚未完工。",
+            "未收清发票": "invoice_status 为 open 或 partial 的发票。**不含 void**——"
+                     "作废发票不构成应收，算逾期或欠款时把它算进去会虚高。",
+            "未结服务单": "resolved_date 为空的服务单，即 open / in_progress / waiting_parts 三档。"
+                     "resolved 和 closed 都算已处理完，只是关闭流程走没走完。",
             "逾期送货": "计划送货日已过（scheduled_date < 今天）但实际送达日仍为空的送货单。",
             "准时率": "供应商按承诺日期到货的批次占比，用于评估供应商交付表现。",
             "可用库存": "在库数量减去已被工单占用的数量，即 on_hand_qty − allocated_qty。",
