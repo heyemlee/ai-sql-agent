@@ -34,6 +34,7 @@ from ai_sql_memory import ConversationMemoryService
 from ai_sql_pipeline import Text2SQLPipeline, DynamicSqlAgentService
 
 from .limits import RequestLimiter
+from .result_summary import StepLogResponse, parse_denied_tables, summarize_result, apply_summary_to_audit
 from .schema_watcher import SchemaWatcher
 from .security import AuthGuard, require_admin, require_api_key
 
@@ -52,24 +53,7 @@ class QueryRequest(BaseModel):
     enable_long_term: bool = False
 
 
-class StepLogResponse(BaseModel):
-    database: str
-    sql: str
-    final_sql: str
-    success: bool
-    row_count: int
-    truncated: bool = False
-    rows: List[Dict[str, Any]] = []
-    error: Optional[str] = None
-    repair_attempts: List[Dict[str, Any]] = []
-    risk_findings: List[Dict[str, Any]] = []
-    """
-    软异常校验发现（空结果 / 基数异常 / 语义不一致）。
-
-    必须回传给调用方：这些错误 SQL 跑得通、有结果，不提示的话用户看不出异常，
-    会把错的数字当成事实。指标口径上，「答错且没有任何提示」才算静默错误——
-    如果提示只写进服务端日志，那对用户来说它依然是静默的。
-    """
+# StepLogResponse 挪到了 result_summary：/query、A2A send、A2A stream 三处共用同一份（契约 §4.4）
 
 
 class QueryResponse(BaseModel):
@@ -283,6 +267,13 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+# A2A：Agent Card + JSON-RPC /a2a（message/send、message/stream）。
+# 与 /query 同一套鉴权、限流、审计；流式开关见 settings.a2a_streaming。
+from ai_sql_a2a import router as _a2a_router  # noqa: E402
+
+app.include_router(_a2a_router)
 
 
 @app.middleware("http")
@@ -510,72 +501,15 @@ def query(
         _write_audit(audit, started, principal)
         raise
 
-    step_logs: List[StepLogResponse] = []
-    selected_databases: List[str] = []
-
-    if result.pipeline_result is not None:
-        selected_databases = list(result.pipeline_result.selected_databases)
-        for log in result.pipeline_result.step_logs:
-            execution = log.execution_result
-            step_logs.append(
-                StepLogResponse(
-                    database=log.database,
-                    sql=log.sql,
-                    final_sql=log.final_sql or log.sql,
-                    success=bool(execution.get("success")),
-                    row_count=int(execution.get("row_count") or 0),
-                    truncated=bool(execution.get("truncated")),
-                    rows=list(execution.get("rows") or []),
-                    error=execution.get("error"),
-                    repair_attempts=list(log.repair_attempts),
-                    risk_findings=list((log.validation or {}).get("findings") or []),
-                )
-            )
-
-    failed_steps = sum(1 for log in step_logs if not log.success)
-    repaired_steps = sum(1 for log in step_logs if log.repair_attempts)
-    has_risk = any(log.risk_findings for log in step_logs)
-
-    audit.route = result.decision.route.value
-    audit.databases = selected_databases
-    audit.tables = sorted(
-        {
-            table
-            for tables in (
-                result.pipeline_result.selected_tables.values()
-                if result.pipeline_result is not None
-                else []
-            )
-            for table in tables
-        }
-    )
-    audit.sqls = [
-        {"database": log.database, "sql": log.final_sql}
-        for log in step_logs
-        if log.final_sql
-    ]
-    audit.denied_tables = sorted(
-        {
-            table
-            for log in step_logs
-            if not log.success and log.error and "没有访问权限" in log.error
-            for table in _parse_denied_tables(log.error)
-        }
-    )
-    degraded = bool(
-        result.pipeline_result is not None and result.pipeline_result.degraded
-    )
-    degrade_reason = (
-        result.pipeline_result.degrade_reason
-        if result.pipeline_result is not None
-        else ""
-    )
-
-    audit.success = failed_steps == 0 and not degraded
-    audit.degraded = degraded
-    audit.has_risk = has_risk
-    audit.failed_steps = failed_steps
-    audit.repaired_steps = repaired_steps
+    summary = summarize_result(result)
+    apply_summary_to_audit(summary, audit)
+    step_logs = summary.step_logs
+    selected_databases = summary.selected_databases
+    failed_steps = summary.failed_steps
+    repaired_steps = summary.repaired_steps
+    has_risk = summary.has_risk
+    degraded = summary.degraded
+    degrade_reason = summary.degrade_reason
     _write_audit(audit, started, principal)
 
     log_event(
@@ -612,14 +546,7 @@ def query(
     )
 
 
-def _parse_denied_tables(error: str) -> List[str]:
-    """从越权错误信息里取回被拒的表名，落进审计。"""
-    marker = "没有访问权限："
-    if marker not in error:
-        return []
-    tail = error.split(marker, 1)[1]
-    tail = tail.split("。", 1)[0]
-    return [item.strip() for item in tail.split(",") if item.strip()]
+_parse_denied_tables = parse_denied_tables  # 实现在 result_summary，这里保留名字
 
 
 def _write_audit(audit: AuditRecord, started: float, principal) -> None:

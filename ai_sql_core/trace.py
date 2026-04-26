@@ -6,12 +6,37 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from .logging_setup import get_logger, log_event
 from .metrics import STAGE_DURATION
 
 _trace_id: ContextVar[str] = ContextVar("ai_sql_trace_id", default="")
+
+# 阶段事件汇（A2A 流式进度的唯一来源）。
+#
+# 契约 §8.2 挑中 stage() 当钩子的理由：所有阶段本来就都穿过这一个上下文管理器，
+# 在这里推一条事件，pipeline 侧零改动。事件在 stage **进入时**发出——等 stage
+# 结束再发就又变回事后通知，流式的全部意义就没了（契约 §4.5）。所以附带字段只
+# 可能是进入时已经知道的那些（step / database / dialect），阶段结束才有的
+# （命中的表、route/confidence）不在进度事件里，它们在终态的 artifact 里。
+#
+# 汇是 ContextVar：一次请求一个，不同请求互不串。同步 pipeline 跑在工作线程里
+# 时，asyncio.to_thread 会把当前上下文拷过去，所以在协程里 use_stage_sink()
+# 之后再 to_thread，线程内的 stage() 照样能看到这个汇。
+_stage_sink: ContextVar[Optional[Callable[[str, Dict[str, Any]], None]]] = ContextVar(
+    "ai_sql_stage_sink", default=None
+)
+
+
+@contextmanager
+def use_stage_sink(sink: Callable[[str, Dict[str, Any]], None]) -> Iterator[None]:
+    """在本上下文内，每个 stage() 进入时调用 sink(name, fields)。"""
+    token = _stage_sink.set(sink)
+    try:
+        yield
+    finally:
+        _stage_sink.reset(token)
 _usage: ContextVar[Optional["UsageAccumulator"]] = ContextVar(
     "ai_sql_usage", default=None
 )
@@ -163,6 +188,15 @@ def stage(
     recorder = StageRecorder()
     recorder.fields.update(initial_fields)
     started = time.perf_counter()
+
+    # 进入即推。sink 抛错不能把 pipeline 带崩——进度是附加物，查询才是主体。
+    sink = _stage_sink.get()
+    if sink is not None:
+        try:
+            sink(name, dict(initial_fields))
+        except Exception as exc:  # pragma: no cover - 防御性
+            log_event(active_logger, logging.WARNING, "stage.sink_failed",
+                      stage=name, error=f"{type(exc).__name__}: {exc}")
 
     try:
         yield recorder
