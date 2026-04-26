@@ -10,6 +10,13 @@ from .objects import (
 
 from .sqlite_loader import SQLiteSchemaLoader
 from .document_builder import FieldDocumentBuilder
+from .bm25 import BM25Index
+from .retriever import SchemaRetriever
+
+from .keyword_extractor_client import (
+    AliyunKeywordExtractor,
+    AliyunKeywordExtractorConfig,
+)
 
 __all__ = [
     "IndexTextBundle",
@@ -21,4 +28,8 @@ __all__ = [
     "SchemaGraph",
     "SQLiteSchemaLoader",
     "FieldDocumentBuilder",
+    "BM25Index",
+    "SchemaRetriever",
+    "AliyunKeywordExtractor",
+    "AliyunKeywordExtractorConfig",
 ]
