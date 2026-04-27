@@ -219,7 +219,8 @@ def build_erp(conn: sqlite3.Connection, rng: random.Random) -> list[dict]:
 
         job_rows.append((job_no, cust["id"], subdivision, lot_no, plan_name,
                          f"{rng.randint(100, 9899)} {rng.choice(STREETS)}",
-                         city, state, job_type, contract, _d(sold), target, status))
+                         city, state, state.upper().strip(),
+                         job_type, contract, _d(sold), target, status))
         jobs.append({"job_no": job_no, "status": status, "sold": sold, "type": job_type,
                      "target": target, "city": city, "state": state})
 
@@ -295,7 +296,7 @@ def build_erp(conn: sqlite3.Connection, rng: random.Random) -> list[dict]:
                     pay_rows.append((f"PM{pay_seq:06d}", inv_no, chunk, _d(recv),
                                      rng.choice(["check", "ach", "ach", "credit_card", "wire"])))
 
-    conn.executemany("INSERT INTO job VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", job_rows)
+    conn.executemany("INSERT INTO job VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", job_rows)
     conn.executemany("INSERT INTO job_item VALUES (?,?,?,?,?,?,?,?,?)", item_rows)
     conn.executemany("INSERT INTO change_order VALUES (?,?,?,?,?,?,?)", co_rows)
     conn.executemany("INSERT INTO invoice VALUES (?,?,?,?,?,?,?)", inv_rows)
