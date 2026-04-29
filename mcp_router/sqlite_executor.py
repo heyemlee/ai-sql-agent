@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .authorization import enforce
+from .data_time import QUERY_TIME, now_rfc3339
 from .objects import MCPExecutionRequest, MCPExecutionResult
 from .sql_guard import check_readonly_sql, readonly_sqlite_uri
 
@@ -34,6 +36,7 @@ class SQLiteMCPExecutor:
         readonly: bool = True,
         max_rows: int = 1000,
         max_execution_seconds: float = 10.0,
+        as_of_source: str = QUERY_TIME,
     ):
         self.database = database
         self.db_path = str(db_path)
@@ -41,11 +44,17 @@ class SQLiteMCPExecutor:
         self.readonly = readonly
         self.max_rows = max_rows
         self.max_execution_seconds = max_execution_seconds
+        self.as_of_source = as_of_source
+        """默认 query_time（读主库）。挂只读副本或快照库时改成 snapshot。"""
 
     def execute(self, request: MCPExecutionRequest) -> MCPExecutionResult:
         """
         执行 SQL。
         """
+        denied = enforce(request, self.dialect)
+        if denied is not None:
+            return denied
+
         if request.database != self.database:
             return MCPExecutionResult(
                 database=request.database,
@@ -77,6 +86,8 @@ class SQLiteMCPExecutor:
                 self._PROGRESS_HANDLER_INTERVAL,
             )
 
+            # 时点在真正执行 SQL 之前打：读到的就是这一刻的库状态
+            as_of = now_rfc3339()
             cursor = conn.execute(sql)
             # 多取一行以区分“刚好取满”和“被截断”
             rows = cursor.fetchmany(self.max_rows + 1)
@@ -94,6 +105,9 @@ class SQLiteMCPExecutor:
                 rows=result_rows,
                 row_count=len(result_rows),
                 truncated=truncated,
+                row_limit=self.max_rows,
+                as_of=as_of,
+                as_of_source=self.as_of_source,
             )
 
         except sqlite3.OperationalError as exc:

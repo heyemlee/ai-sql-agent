@@ -38,6 +38,62 @@ class DataPolicy:
             fnmatch.fnmatch(target, rule) for rule in self.deny_columns
         )
 
+    def allows_table_reference(self, database: str, names: Sequence[str]) -> bool:
+        """
+        判定一次**表引用**。`names` 是它可能被叫到的所有名字：
+        `("orders",)`，或者带 schema 时 `("orders", "secret.orders")`。
+
+        规则是「任一名字命中 deny 就拒，任一名字命中 allow 才放」：
+
+        - `erp_db.*` 放行两个 schema 里的 orders —— `*` 本来就是这个意思；
+        - `erp_db.secret.orders` **只**放行 secret 那张，public 那张不沾光；
+        - `erp_db.orders`（不带 schema 的老规则）继续放行 orders，
+          **包括别的 schema 里的同名表**——一条不带 schema 的规则说的就是
+          「叫 orders 的那张表」，这是它一直以来的含义，不在这次改动里悄悄收紧；
+          要区分 schema 就写带 schema 的规则，或者加一条 `deny_tables`。
+
+        写成独立方法而不是 `all(allows_table(...))`：后者会让「只写限定名的策略」
+        永远拒绝一切（裸名对不上限定名的 pattern），2026-09-04 在真实 PostgreSQL
+        上验出来的就是这个。
+        """
+        candidates = [f"{database}.{name}" for name in names]
+        if any(
+            fnmatch.fnmatch(target, rule)
+            for target in candidates
+            for rule in self.deny_tables
+        ):
+            return False
+        return any(
+            fnmatch.fnmatch(target, rule)
+            for target in candidates
+            for rule in self.allow_tables
+        )
+
+    def allows_column_reference(
+        self, database: str, names: Sequence[str], column: str
+    ) -> bool:
+        """列级同理：任一名字命中 deny_columns 就拒。"""
+        if not self.allows_table_reference(database, names):
+            return False
+        return not any(
+            fnmatch.fnmatch(f"{database}.{name}.{column}", rule)
+            for name in names
+            for rule in self.deny_columns
+        )
+
+    def restricts_columns(self, database: str, table: str) -> bool:
+        """
+        这张表上有没有列级限制？
+
+        执行器那一层没有 schema，展不开 `SELECT *`，只能反过来问这个问题——
+        有禁列就不许写通配符。判定规则见 `enforcement.restricts_columns`。
+        """
+        if not self.allows_table(database, table):
+            return True
+        from .enforcement import _rules_restrict_columns
+
+        return _rules_restrict_columns(self.deny_columns, database, table)
+
     def merge(self, other: "DataPolicy") -> "DataPolicy":
         """多角色取并集：allow 合并，deny 也合并（deny 始终优先）。"""
         return DataPolicy(
@@ -49,6 +105,15 @@ class DataPolicy:
     @classmethod
     def full_access(cls) -> "DataPolicy":
         return cls()
+
+    @classmethod
+    def deny_all(cls) -> "DataPolicy":
+        """
+        一张表都不给。`allow_tables` 为空时 `allows_table` 的 `any(...)` 恒为 False。
+
+        这是「没有配置策略的角色」的默认值——见 `_resolve_policy`。
+        """
+        return cls(allow_tables=())
 
     @classmethod
     def from_dict(cls, payload: dict) -> "DataPolicy":
@@ -128,9 +193,12 @@ class ApiKeyRecord:
         self,
         requested_user_id: str,
         policies: Optional[Dict[str, DataPolicy]] = None,
+        unknown_role_policy: Optional[DataPolicy] = None,
     ) -> Principal:
         """把 Key 配置 + 请求里的 user_id 解析成本次请求的身份。"""
-        resolved_policy = _resolve_policy(self.roles, policies or {})
+        resolved_policy = _resolve_policy(
+            self.roles, policies or {}, fallback=unknown_role_policy
+        )
         return Principal(
             caller=self.caller,
             user_id=requested_user_id or self.user_id or self.caller,
@@ -145,14 +213,36 @@ class ApiKeyRecord:
 
 
 def _resolve_policy(
-    roles: Sequence[str], policies: Dict[str, DataPolicy]
+    roles: Sequence[str],
+    policies: Dict[str, DataPolicy],
+    fallback: Optional[DataPolicy] = None,
 ) -> DataPolicy:
-    """把多个角色的策略合并；没有配置策略的角色视为全放开。"""
+    """
+    把多个角色的策略合并。**没有匹配到任何策略时 deny by default。**
+
+    这里原来写的是 `if not matched: return full_access()`，注释是「没有配置
+    策略的角色视为全放开」。2026-09-04 的审查用一个根本不存在的角色拿到了全部
+    权限——配错一个角色名、或者新加一个角色忘了配策略，后果就是全权限，而且
+    没有任何症状。安全默认值必须是拒绝：配漏了要表现为「查不到」，不是「都能查」。
+
+    `fallback` 只给显式开了宽松开关的开发环境用（`AI_SQL_UNKNOWN_ROLE_POLICY`），
+    生产模式下 `ai_sql_api.app` 启动时就会拒绝那个开关。
+    """
+    if not roles:
+        # 一个角色都没声明：这不是「未知角色」，是「这把 Key 不做角色限制」，
+        # 而且只能是人手写出来的——打错角色名产生不了空列表。所以它是显式配置，
+        # 不是默认值兜底。生产模式下仍然会在启动时被拒（见
+        # `ai_sql_api.app.check_production_readiness`），那里要求每把 Key 都有角色。
+        return DataPolicy.full_access()
+
     matched: List[DataPolicy] = [
         policies[role] for role in roles if role in policies
     ]
     if not matched:
-        return DataPolicy.full_access()
+        # 声明了角色，却一条策略都没匹配上——**这才是审查复现的那个洞**。
+        # 「打错角色名」和「新加角色忘了配策略」都长这个样子，而旧代码把它翻译成
+        # 全放开：配置错误静默升级成全部权限，没有任何症状。
+        return fallback if fallback is not None else DataPolicy.deny_all()
 
     merged = matched[0]
     for policy in matched[1:]:
