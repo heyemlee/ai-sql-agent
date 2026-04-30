@@ -280,6 +280,30 @@ class SqlAgentSettings(BaseSettings):
     max_rows: int = 10000
     max_execution_seconds: float = 30.0
 
+    # ---- A2A 流式资源 ----
+    a2a_stream_max_concurrent: int = 8
+    """
+    同时在跑的 message/stream 上限，超出直接拒（-32001），不排队。
+
+    排队只会把压力从「拒绝」变成「全都超时」，而调用方的 90s 硬上限一到
+    照样全丢——不如在流打开之前说清楚。
+    """
+
+    a2a_stream_worker_threads: int = 8
+    """
+    跑同步 pipeline 的**专用**线程池大小。
+
+    以前生产者（`asyncio.to_thread`）和消费者（`run_in_executor(None, …)`）
+    抢同一个默认线程池：把默认池限成 2 线程、开 2 条流，两个消费者就把池占满，
+    pipeline 启动数为 0（审查已复现）。专用池 + 消费者不再占线程，两边就不再争。
+    """
+
+    a2a_stream_queue_size: int = 256
+    """
+    事件队列上限（背压）。以前是无界 `queue.Queue`：客户端读得慢时事件只会
+    在内存里堆着，谁都不知道堆了多少。
+    """
+
     # ---- 日志 ----
     log_level: str = "INFO"
     log_format: Literal["text", "json"] = "text"
