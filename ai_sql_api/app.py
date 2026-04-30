@@ -76,6 +76,27 @@ class QueryResponse(BaseModel):
     has_risk: bool = False
     """任一步骤带有软异常提示。前端据此提醒用户「这条结果需要核对」。"""
 
+    # ---- 契约 §4.6 业务终态语义 ----
+    #
+    # 与 A2A artifact 的 data part 是同一套字段（都由 ResultSummary.data_part()
+    # 产出）。契约 §4.4 要求两条 transport 能做的信任判断一模一样，「走哪条路
+    # 信息更多」本身就是缺陷。
+    execution_status: str = "failed"
+    """§4.6.1：这次查库到底跑成什么样。缺失/算不出来按 failed 处置。"""
+
+    succeeded_steps: int = 0
+    failed_steps: int = 0
+    repaired_steps: int = 0
+    result_truncated: bool = False
+    """§4.6.3：任一步被截断。为真时「共有 N 条 / 全部 / 一共」这类说法都不成立。"""
+
+    as_of: Optional[str] = None
+    """§4.6.4：数据时点。为空时调用方不得表述「截至今天 / 目前 / 最新」。"""
+
+    as_of_source: Optional[str] = None
+    currency: Optional[str] = None
+    """§4.6.5：本轮金额列的币种。多币种时为空，逐列读 step_logs[].column_units。"""
+
 
 class HistoryItem(BaseModel):
     """一条历史查询（不含结果集，结果不落审计）。"""
@@ -529,6 +550,7 @@ def query(
         degraded=degraded,
         degrade_reason=degrade_reason,
         has_risk=has_risk,
+        execution_status=summary.execution_status,
     )
 
     return QueryResponse(
@@ -543,6 +565,14 @@ def query(
         selected_databases=selected_databases,
         step_logs=step_logs,
         has_risk=has_risk,
+        execution_status=summary.execution_status,
+        succeeded_steps=summary.succeeded_steps,
+        failed_steps=failed_steps,
+        repaired_steps=repaired_steps,
+        result_truncated=summary.result_truncated,
+        as_of=summary.as_of,
+        as_of_source=summary.as_of_source,
+        currency=summary.currency,
     )
 
 
