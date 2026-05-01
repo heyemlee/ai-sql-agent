@@ -280,6 +280,15 @@ class SqlAgentSettings(BaseSettings):
     max_rows: int = 10000
     max_execution_seconds: float = 30.0
 
+    db_pool_max_connections: int = 8
+    """
+    单个 PostgreSQL 业务库的连接池上限。0 表示不用池，每次现建连接
+    （2026-09-04 之前的行为）。
+    """
+
+    db_pool_idle_seconds: float = 300.0
+    """池里的空闲连接超过这个时长就丢弃重建，避免拿到被服务端掐掉的死连接。"""
+
     # ---- A2A 流式资源 ----
     a2a_stream_max_concurrent: int = 8
     """
