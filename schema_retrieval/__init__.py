@@ -12,6 +12,7 @@ from .sqlite_loader import SQLiteSchemaLoader
 from .document_builder import FieldDocumentBuilder
 from .bm25 import BM25Index
 from .retriever import SchemaRetriever
+from .graph_builder import build_schema_graph
 
 from .keyword_extractor_client import (
     AliyunKeywordExtractor,
@@ -32,6 +33,13 @@ from .rrf_fusion_client import (
     RRFFusionHit,
 )
 
+from .rerank_client import (
+    AliyunRerankClient,
+    AliyunRerankConfig,
+    RerankDocument,
+    RerankResult,
+)
+
 __all__ = [
     "IndexTextBundle",
     "TableSchema",
@@ -44,6 +52,7 @@ __all__ = [
     "FieldDocumentBuilder",
     "BM25Index",
     "SchemaRetriever",
+    "build_schema_graph",
     "AliyunKeywordExtractor",
     "AliyunKeywordExtractorConfig",
     "AliyunEmbeddingClient",
@@ -53,4 +62,8 @@ __all__ = [
     "RRFFusionConfig",
     "RouteRecallResult",
     "RRFFusionHit",
+    "AliyunRerankClient",
+    "AliyunRerankConfig",
+    "RerankDocument",
+    "RerankResult",
 ]
