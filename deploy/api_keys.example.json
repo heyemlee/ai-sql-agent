@@ -37,8 +37,8 @@
     "analyst": {
       "allow_tables": [
         "erp_db.*",
-        "pm_db.*",
-        "mes_db.*",
+        "prod_db.*",
+        "svc_db.*",
         "wms_db.*"
       ],
       "deny_columns": [
@@ -47,22 +47,22 @@
       ]
     },
     "estimating": {
-      "comment": "估价：看订单、项目、采购，但看不到批次成本单价",
+      "comment": "估价：看工程、明细、变更单、采购，但看不到物料标准成本",
       "allow_tables": [
         "erp_db.*",
-        "pm_db.*",
         "wms_db.material",
-        "wms_db.stock_snapshot"
+        "wms_db.inventory"
       ],
       "deny_columns": [
-        "wms_db.batch.unit_cost"
+        "wms_db.material.unit_cost"
       ]
     },
     "workshop": {
       "comment": "车间：只看生产域，接触不到客户与合同金额",
       "allow_tables": [
-        "mes_db.*"
+        "prod_db.*"
       ]
     }
-  }
+  },
+  "$comment": "示例配置，对齐默认部署的语义层 sim_erp/semantic（erp_db / prod_db / svc_db / wms_db）。契约 v1.6 已把 mes_db 标为 prod_db 的旧名、pm_db 的职责并入 erp_db，两者都已退役——策略里写它们等于写了一个不存在的库，而 deny by default 之下那把 Key 会什么都查不到、且没有任何症状。换语义层时这份文件要跟着改；启动检查会比对（见 ai_sql_api.app.check_production_readiness）。"
 }

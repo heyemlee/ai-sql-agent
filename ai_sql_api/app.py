@@ -284,6 +284,15 @@ def check_production_readiness(app: FastAPI) -> List[str]:
             "没有配置 AI_SQL_SEMANTIC_DIR，用的是内置演示元数据与演示库。"
         )
 
+    unknown_databases = _policy_databases_not_in_semantic_layer(app)
+    if unknown_databases:
+        problems.append(
+            "这些策略引用了语义层里没有的库标识符："
+            + "、".join(unknown_databases)
+            + "。deny by default 之下，这类配错的后果是那把 Key 什么都查不到，"
+            "而且没有任何症状。"
+        )
+
     keys_without_roles = _keys_without_roles(app)
     if keys_without_roles:
         problems.append(
@@ -318,6 +327,42 @@ def check_production_readiness(app: FastAPI) -> List[str]:
 
     log_event(_logger, logging.INFO, "production_readiness.ok")
     return []
+
+
+def _policy_databases_not_in_semantic_layer(app: FastAPI) -> List[str]:
+    """
+    策略里写的库标识符，语义层里有没有。
+
+    这类错误现在是**完全静默**的：`deploy/api_keys.example.json` 一度还写着
+    `pm_db` / `mes_db`（契约 v1.6 已标退役），配上 deny by default 之后
+    那把 Key 什么都查不到——既没有报错，也没有「你没权限」的提示，
+    因为策略语法完全合法，只是指向了一个不存在的库。
+
+    返回 `角色:库名` 的列表。含通配符的库段跳过（`*` 本来就是「所有库」）。
+    """
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    pipeline = getattr(app.state, "pipeline", None)
+    if store is None or pipeline is None:
+        return []
+
+    known = {database.name for database in pipeline.databases}
+    if not known:
+        return []
+
+    found: List[str] = []
+    for role, policy in getattr(store, "policies", {}).items():
+        rules = (
+            list(policy.allow_tables)
+            + list(policy.deny_tables)
+            + list(policy.deny_columns)
+        )
+        for rule in rules:
+            head = rule.split(".", 1)[0]
+            if not head or any(ch in head for ch in "*?["):
+                continue
+            if head not in known:
+                found.append(f"{role}:{head}")
+    return sorted(set(found))
 
 
 def _keys_without_roles(app: FastAPI) -> List[str]:

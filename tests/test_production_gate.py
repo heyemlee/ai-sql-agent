@@ -17,10 +17,14 @@ from ai_sql_core import get_settings, reload_settings
 
 
 class _FakeApp:
-    def __init__(self, readonly_audits=None, records=None):
-        store = SimpleNamespace(records=records or {})
+    def __init__(self, readonly_audits=None, records=None, policies=None, databases=None):
+        store = SimpleNamespace(records=records or {}, policies=policies or {})
+        pipeline = SimpleNamespace(
+            databases=[SimpleNamespace(name=n) for n in (databases or [])]
+        )
         self.state = SimpleNamespace(
             auth=SimpleNamespace(store=store),
+            pipeline=pipeline,
             readonly_audits=readonly_audits or {},
         )
 
@@ -101,6 +105,35 @@ class ProductionModeTest(unittest.TestCase):
                 check_production_readiness(app)
         self.assertIn("no-role-caller", str(caught.exception))
 
+    def test_policy_pointing_at_a_missing_database_blocks_startup(self):
+        """
+        策略引用语义层里没有的库：语法完全合法，deny by default 之下那把 Key
+        什么都查不到，而且**没有任何症状**。deploy/api_keys.example.json 一度
+        就是这个形态（写着契约 v1.6 已退役的 pm_db / mes_db）。
+        """
+        from ai_sql_auth import DataPolicy
+
+        with _EnvPatch(AI_SQL_APP_ENV="production"):
+            app = _FakeApp(
+                policies={"analyst": DataPolicy(allow_tables=("pm_db.*",))},
+                databases=["erp_db", "prod_db"],
+            )
+            with self.assertRaises(ProductionReadinessError) as caught:
+                check_production_readiness(app)
+        self.assertIn("analyst:pm_db", str(caught.exception))
+
+    def test_wildcard_database_segment_is_not_flagged(self):
+        """`*` 本来就是「所有库」，不该被当成一个不存在的库名。"""
+        from ai_sql_auth import DataPolicy
+
+        from ai_sql_api.app import _policy_databases_not_in_semantic_layer
+
+        app = _FakeApp(
+            policies={"r": DataPolicy(allow_tables=("*",), deny_columns=("*.*.id_card_no",))},
+            databases=["erp_db"],
+        )
+        self.assertEqual(_policy_databases_not_in_semantic_layer(app), [])
+
     def test_a_fully_configured_production_setup_passes(self):
         """反向断言：一个「永远拒绝」的闸门是没用的闸门。"""
         from ai_sql_auth import ApiKeyRecord
@@ -113,9 +146,13 @@ class ProductionModeTest(unittest.TestCase):
             AI_SQL_ANTHROPIC_API_KEY="test-key",
             AI_SQL_MODEL_PROVIDER="anthropic",
         ):
+            from ai_sql_auth import DataPolicy
+
             app = _FakeApp(
                 readonly_audits={"ai_sql_ro": "readonly"},
                 records={"k": ApiKeyRecord(key="k", caller="bi", roles=("analyst",))},
+                policies={"analyst": DataPolicy(allow_tables=("erp_db.*",))},
+                databases=["erp_db"],
             )
             self.assertEqual(check_production_readiness(app), [])
 
