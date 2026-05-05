@@ -13,6 +13,14 @@ from .objects import MCPExecutionRequest, MCPExecutionResult
 from .sql_guard import check_readonly_sql
 
 
+def _current_user_id() -> str:
+    """当前授权作用域里的最终用户。没有作用域时返回空串（fail closed）。"""
+    from ai_sql_auth.enforcement import current_scope
+
+    scope = current_scope()
+    return scope.user_id if scope is not None else ""
+
+
 class PostgresMCPExecutor:
     """
     PostgreSQL 执行器。
@@ -112,6 +120,17 @@ class PostgresMCPExecutor:
             conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             if self.readonly:
                 conn.execute("SET TRANSACTION READ ONLY")
+
+            # 把最终用户身份放进事务，让行级安全（RLS）在**经由 agent 发起的
+            # 查询**上真的生效——不然 RLS 只在有人手工连库时管用。
+            #
+            # SET LOCAL 是事务级的，随 rollback 一起还原，所以连接池复用不会串身份。
+            # 没有授权作用域时设成空串：RLS 的
+            # `USING (owner_id = current_setting('app.user_id', true))` 对空串
+            # 不匹配任何行——fail closed，与执行器那道关卡方向一致。
+            conn.execute(
+                "SELECT set_config('app.user_id', %s, true)", (_current_user_id(),)
+            )
 
             started = time.perf_counter()
             # 时点在真正执行 SQL 之前打：读到的就是这一刻的库状态

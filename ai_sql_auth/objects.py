@@ -2,7 +2,40 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+
+ALL_ROWS = "*"
+"""`RowFilter.predicate` 的哨兵值：**显式声明**这张表不做行隔离。"""
+
+
+@dataclass(frozen=True)
+class RowFilter:
+    """
+    一条行范围规则（设计见 deploy/authz-model.md）。
+
+    `table` 是 `库.表` 的 glob；`predicate` 是一段 SQL 布尔表达式，落到
+    PostgreSQL 的 RLS 上，例如 `owner_id = current_setting('app.user_id', true)`。
+    `predicate` 为 `"*"` 表示**显式**放行所有行——注意它和「没配」不是一回事，
+    见 `DataPolicy.row_predicate` 的文档。
+    """
+
+    table: str
+    predicate: str = ALL_ROWS
+
+    @property
+    def unrestricted(self) -> bool:
+        return self.predicate.strip() == ALL_ROWS
+
+    def matches(self, database: str, table: str) -> bool:
+        return fnmatch.fnmatch(f"{database}.{table}", self.table)
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "RowFilter":
+        table = str(payload.get("table") or "").strip()
+        if not table:
+            raise ValueError("row_filters 的每一条都要有 table")
+        return cls(table=table, predicate=str(payload.get("predicate") or ALL_ROWS))
 
 
 @dataclass(frozen=True)
@@ -23,6 +56,13 @@ class DataPolicy:
     allow_tables: Tuple[str, ...] = ("*",)
     deny_tables: Tuple[str, ...] = ()
     deny_columns: Tuple[str, ...] = ()
+
+    row_filters: Tuple[RowFilter, ...] = ()
+    """
+    行范围规则，按声明顺序取**第一条匹配**。空 = 这份策略没有声明行范围。
+
+    「没声明」和「声明了放行所有行」是两件事，见 `row_predicate`。
+    """
 
     def allows_table(self, database: str, table: str) -> bool:
         target = f"{database}.{table}"
@@ -94,12 +134,35 @@ class DataPolicy:
 
         return _rules_restrict_columns(self.deny_columns, database, table)
 
+    def row_predicate(self, database: str, table: str) -> Optional[str]:
+        """
+        这张表的行过滤谓词。
+
+        三种返回值，**必须分清**：
+
+        | 返回 | 含义 |
+        | --- | --- |
+        | `None` | **没有声明过**。运行时按放行处理（不破坏现网），但生产模式启动检查会拒 |
+        | `""` | 显式声明放行所有行（`predicate: "*"`） |
+        | 一段表达式 | 按它过滤 |
+
+        为什么不让「没声明」直接等于「拒绝所有行」：现有部署一条 `row_filters`
+        都没有，那样翻上去服务立刻不可用。也不让它等于「放行所有行」：
+        那就是把 `full_access` 的老毛病换个维度复发——漏配一张表就是全表可见，
+        而且没有症状。所以运行时宽松、**配置校验时严格**，宽松必须是有人写下来的。
+        """
+        for rule in self.row_filters:
+            if rule.matches(database, table):
+                return "" if rule.unrestricted else rule.predicate
+        return None
+
     def merge(self, other: "DataPolicy") -> "DataPolicy":
         """多角色取并集：allow 合并，deny 也合并（deny 始终优先）。"""
         return DataPolicy(
             allow_tables=tuple(dict.fromkeys(self.allow_tables + other.allow_tables)),
             deny_tables=tuple(dict.fromkeys(self.deny_tables + other.deny_tables)),
             deny_columns=tuple(dict.fromkeys(self.deny_columns + other.deny_columns)),
+            row_filters=tuple(dict.fromkeys(self.row_filters + other.row_filters)),
         )
 
     @classmethod
@@ -121,7 +184,92 @@ class DataPolicy:
             allow_tables=tuple(payload.get("allow_tables", ["*"])),
             deny_tables=tuple(payload.get("deny_tables", [])),
             deny_columns=tuple(payload.get("deny_columns", [])),
+            row_filters=tuple(
+                RowFilter.from_dict(item) for item in payload.get("row_filters", [])
+            ),
         )
+
+
+@dataclass(frozen=True)
+class IntersectionPolicy:
+    """
+    两份策略的交集：**服务身份能做的 ∩ 最终用户能做的**（设计见 deploy/authz-model.md）。
+
+    审查 P0-2：impersonation 换了 `user_id` 但保留服务密钥的角色与策略，
+    所以 alice 和 bob 权限完全相同——一把服务 Key 替所有员工发请求，
+    每个员工拿到的都是**服务身份的全部权限**。
+
+    交集不是二选一：服务 Key 的策略是「这个应用最多能碰什么」，最终用户的策略是
+    「这个人最多能碰什么」，两者都是上界，都要守。
+
+    **刻意不做 glob 代数**（把两份 allow_tables 求交算出一份新的 glob 列表）：
+    既复杂又容易错。组合对象把判定推迟到每次询问时做，语义上等价而且不可能算错。
+    它满足 SchemaAccessFilter 协议加上授权关卡用的那几个扩展方法，
+    所以对 `enforcement.py` 完全透明。
+    """
+
+    service: Any
+    user: Any
+
+    def allows_table(self, database: str, table: str) -> bool:
+        return self.service.allows_table(database, table) and self.user.allows_table(
+            database, table
+        )
+
+    def allows_column(self, database: str, table: str, column: str) -> bool:
+        return self.service.allows_column(
+            database, table, column
+        ) and self.user.allows_column(database, table, column)
+
+    def allows_table_reference(self, database: str, names: Sequence[str]) -> bool:
+        return _ask(
+            self.service, "allows_table_reference", database, names
+        ) and _ask(self.user, "allows_table_reference", database, names)
+
+    def allows_column_reference(
+        self, database: str, names: Sequence[str], column: str
+    ) -> bool:
+        return _ask(
+            self.service, "allows_column_reference", database, names, column
+        ) and _ask(self.user, "allows_column_reference", database, names, column)
+
+    def restricts_columns(self, database: str, table: str) -> bool:
+        """任一边有列级限制就算有——取更严的那个。"""
+        return bool(
+            self.service.restricts_columns(database, table)
+            or self.user.restricts_columns(database, table)
+        )
+
+    def row_predicate(self, database: str, table: str) -> Optional[str]:
+        """两边的谓词 AND 起来。任一边没声明就只用另一边的。"""
+        parts = [
+            predicate
+            for predicate in (
+                self.service.row_predicate(database, table),
+                self.user.row_predicate(database, table),
+            )
+            if predicate
+        ]
+        if not parts:
+            # 都没声明或都显式全放：把「有没有声明过」如实传下去
+            declared = [
+                self.service.row_predicate(database, table),
+                self.user.row_predicate(database, table),
+            ]
+            return "" if any(item == "" for item in declared) else None
+        if len(parts) == 1:
+            return parts[0]
+        return " AND ".join(f"({item})" for item in parts)
+
+
+def _ask(policy: Any, method: str, database: str, names, *rest) -> bool:
+    """扩展方法可选：没实现就退回逐个名字问基础方法（方向保守）。"""
+    hook = getattr(policy, method, None)
+    if callable(hook):
+        return bool(hook(database, names, *rest))
+    if rest:
+        return all(policy.allows_column(database, name, rest[0]) for name in names)
+    return all(policy.allows_table(database, name) for name in names)
 
 
 @dataclass(frozen=True)

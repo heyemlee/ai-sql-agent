@@ -293,6 +293,25 @@ def check_production_readiness(app: FastAPI) -> List[str]:
             "而且没有任何症状。"
         )
 
+    impersonators = _impersonating_keys_without_user_policies(app)
+    if impersonators:
+        problems.append(
+            "这些 Key 允许 impersonation，但配置里没有 users 段（最终用户的角色）："
+            + "、".join(impersonators)
+            + "。那样每个最终用户拿到的都是**服务身份的全部权限**，"
+            "换 user_id 不换权限。见 deploy/authz-model.md。"
+        )
+
+    undeclared_rows = _tables_without_row_scope(app)
+    if undeclared_rows:
+        problems.append(
+            "这些策略覆盖到的表没有声明行范围（row_filters）："
+            + "、".join(undeclared_rows)
+            + "。不声明时运行时按放行处理，所以「这张表不做行隔离」必须是有人"
+            "写下来的，而不是默认值兜出来的——写 {\"table\": \"…\", "
+            "\"predicate\": \"*\"} 即可。"
+        )
+
     keys_without_roles = _keys_without_roles(app)
     if keys_without_roles:
         problems.append(
@@ -363,6 +382,49 @@ def _policy_databases_not_in_semantic_layer(app: FastAPI) -> List[str]:
             if head not in known:
                 found.append(f"{role}:{head}")
     return sorted(set(found))
+
+
+def _impersonating_keys_without_user_policies(app: FastAPI) -> List[str]:
+    """
+    允许 impersonation、却没有 `users` 段的 Key（审查 P0-2）。
+
+    没有 `users` 段时 impersonation 只换 `user_id` 不换权限——alice 和 bob 权限
+    完全相同。运行时保持这个旧行为是为了不破坏现有部署；上生产之前必须写下来。
+    """
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    if store is None or getattr(store, "users", None):
+        return []
+    return sorted(
+        record.caller
+        for record in store.records.values()
+        if record.can_impersonate
+    )
+
+
+def _tables_without_row_scope(app: FastAPI) -> List[str]:
+    """
+    策略允许、但一条 `row_filters` 都没匹配上的表（设计见 deploy/authz-model.md）。
+
+    返回 `角色:库.表`，最多列 10 条——一个新部署可能几十张表都没声明，
+    错误信息刷屏帮不上忙。
+    """
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    pipeline = getattr(app.state, "pipeline", None)
+    if store is None or pipeline is None:
+        return []
+
+    metas = getattr(pipeline, "business_metas", {}) or {}
+    found: List[str] = []
+    for role, policy in getattr(store, "policies", {}).items():
+        if not hasattr(policy, "row_predicate"):
+            continue
+        for database, tables in metas.items():
+            for table in tables:
+                if not policy.allows_table(database, table):
+                    continue
+                if policy.row_predicate(database, table) is None:
+                    found.append(f"{role}:{database}.{table}")
+    return sorted(found)[:10]
 
 
 def _keys_without_roles(app: FastAPI) -> List[str]:
