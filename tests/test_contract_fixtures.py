@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from ai_sql_api.trust import assess, execution_status_of
 from ai_sql_core import get_settings
 
-CONTRACT_TAG = "v1.8"
+CONTRACT_TAG = "v1.11"
 """CI 钉在这个 tag 上。契约仓库改了版本，这里也要跟着改——那是一次有意的动作。"""
 
 
