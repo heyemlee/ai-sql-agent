@@ -172,6 +172,13 @@ class SqlAgentSettings(BaseSettings):
 
     # ---- 运行模式 ----
     app_env: Literal["development", "production"] = "development"
+
+    # 部署范围。**空串是"未声明"，不是默认值**——生产模式下未声明即拒绝启动，
+    # 见 ai_sql_api/app.py::check_production_readiness。给默认值会把"漏配了"
+    # 和"想清楚了配成这个"合并成同一个状态，而这两件事的风险完全不同。
+    # 同样的理由这个仓库用过一次：row_filters 的 predicate: "*" 是**显式声明**
+    # "这张表不做行隔离"，与"没配"是两回事。
+    deployment_scope: Literal["", "internal_single_tenant", "multi_tenant"] = ""
     """
     生产模式（`AI_SQL_APP_ENV=production`）会把一批「开发下可以将就」的配置
     改判为启动失败：Mock 模型、示例语义层、鉴权关闭、未知角色放开、业务库账号
