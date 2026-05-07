@@ -1,6 +1,9 @@
 # AI SQL Agent 内网私有化编排：应用 + PostgreSQL(pgvector) + vLLM 自建推理服务
 #
-#   docker compose -f docker-compose.vllm.yml up -d --build
+#   docker compose --project-directory . -f deploy/docker-compose.vllm.yml up -d --build
+#
+# 必须带 --project-directory .（或用 make up）：compose 文件在 deploy/ 里，
+# 但构建上下文、deploy/api_keys.json 挂载和 .env 变量替换都以仓库根为准。
 #
 # 与 docker-compose.prod.yml 的唯一区别：模型不走公网 API，而是跑在内网自建的
 # vLLM 上。应用侧代码完全不用改——vLLM 对外暴露的就是 OpenAI 兼容接口，
@@ -88,7 +91,9 @@ services:
     restart: unless-stopped
 
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
     container_name: ai-sql-app
     depends_on:
       postgres:

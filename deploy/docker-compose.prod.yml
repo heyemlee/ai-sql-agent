@@ -1,6 +1,9 @@
 # AI SQL Agent 内部生产编排：应用 + PostgreSQL(pgvector)
 #
-#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose --project-directory . -f deploy/docker-compose.prod.yml up -d --build
+#
+# 必须带 --project-directory .（或用 make up）：compose 文件在 deploy/ 里，
+# 但构建上下文、deploy/api_keys.json 挂载和 .env 变量替换都以仓库根为准。
 #
 # 首次启动前：
 #   1) cp deploy/api_keys.example.json deploy/api_keys.json 并改掉里面的 key
@@ -24,7 +27,9 @@ services:
     restart: unless-stopped
 
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
     container_name: ai-sql-app
     depends_on:
       postgres:
