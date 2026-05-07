@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from ai_sql_ops import ReadonlyAudit, ReadonlyRoleSpec
+from ai_sql_agent.ops import ReadonlyAudit, ReadonlyRoleSpec
 
 DSN = os.getenv("AI_SQL_PGVECTOR_DSN", "")
 
@@ -64,7 +64,7 @@ class ReadonlyProvisionIntegrationTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from ai_sql_ops import provision_readonly_role
+        from ai_sql_agent.ops import provision_readonly_role
 
         import psycopg
 
@@ -107,14 +107,14 @@ class ReadonlyProvisionIntegrationTest(unittest.TestCase):
             conn.execute(f"DROP ROLE IF EXISTS {cls.ROLE}")
 
     def test_provisioned_role_passes_the_audit(self):
-        from ai_sql_ops import audit_readonly
+        from ai_sql_agent.ops import audit_readonly
 
         audit = audit_readonly(self.readonly_dsn)
         self.assertTrue(audit.is_readonly, audit.problems())
         self.assertTrue(audit.default_transaction_read_only)
 
     def test_admin_account_fails_the_audit(self):
-        from ai_sql_ops import audit_readonly
+        from ai_sql_agent.ops import audit_readonly
 
         audit = audit_readonly(DSN)
         self.assertFalse(audit.is_readonly)

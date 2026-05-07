@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from ai_sql_api.result_summary import (
+from ai_sql_agent.api.result_summary import (
     STATUS_FAILED,
     STATUS_NO_DATA,
     STATUS_NOT_APPLICABLE,
@@ -29,9 +29,9 @@ from ai_sql_api.result_summary import (
     StepLogResponse,
     compute_execution_status,
 )
-from ai_sql_api.trust import execution_status_of, trust_verdict
-from ai_sql_core import get_settings
-from mcp_router.objects import MCPExecutionResult
+from ai_sql_agent.api.trust import execution_status_of, trust_verdict
+from ai_sql_agent.core import get_settings
+from ai_sql_agent.execution.objects import MCPExecutionResult
 
 from test_contract_fixtures import CONTRACT, SKIP_REASON, _is_valid
 
@@ -118,7 +118,7 @@ class AllStepsFailedTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.ctx = TestClient(app)
         cls.client = cls.ctx.__enter__()
@@ -136,7 +136,7 @@ class AllStepsFailedTest(unittest.TestCase):
                                        "metadata": {"user_id": "u_outcome"}}}}
 
     def test_send_reports_completed_transport_but_failed_business_outcome(self):
-        from mcp_router.router import MCPRouter
+        from ai_sql_agent.execution.router import MCPRouter
 
         with patch.object(MCPRouter, "execute", _FailingExecutor()):
             response = self.client.post("/a2a", json=self._rpc("message/send"))
@@ -161,7 +161,7 @@ class AllStepsFailedTest(unittest.TestCase):
         self.assertEqual(trust_verdict(data), "not_usable")
 
     def test_query_endpoint_says_the_same_thing(self):
-        from mcp_router.router import MCPRouter
+        from ai_sql_agent.execution.router import MCPRouter
 
         with patch.object(MCPRouter, "execute", _FailingExecutor()):
             response = self.client.post("/query", json={
@@ -189,7 +189,7 @@ class TransportIsomorphismTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.ctx = TestClient(app)
         cls.client = cls.ctx.__enter__()
@@ -297,7 +297,7 @@ class ProducedPayloadMatchesContractTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.ctx = TestClient(app)
         cls.client = cls.ctx.__enter__()
@@ -391,7 +391,7 @@ class CurrencyAndSourceRecordsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from ai_sql_semantic import DatabaseSemantics, SemanticLayer
+        from ai_sql_agent.semantic import DatabaseSemantics, SemanticLayer
 
         # 用一份就地拼的语义层，不依赖当前部署配了哪套元数据。
         # 依赖 AI_SQL_SEMANTIC_DIR 的话这组用例在 CI（内置演示元数据、没有单位）
@@ -418,7 +418,7 @@ class CurrencyAndSourceRecordsTest(unittest.TestCase):
         )
 
     def _units(self, sql: str, columns):
-        from ai_sql_pipeline.provenance import column_units
+        from ai_sql_agent.pipeline.provenance import column_units
 
         return column_units(
             self.semantic, database="erp_db", sql=sql, dialect="sqlite", columns=columns
@@ -456,7 +456,7 @@ class CurrencyAndSourceRecordsTest(unittest.TestCase):
         )
 
     def test_source_records_carry_the_primary_key(self):
-        from ai_sql_pipeline.provenance import source_records
+        from ai_sql_agent.pipeline.provenance import source_records
 
         records = source_records(
             self.semantic,
@@ -476,7 +476,7 @@ class CurrencyAndSourceRecordsTest(unittest.TestCase):
         追不到记录时就不给，不编一个近似的出来——溯源手段退回
         trace_id + final_sql（契约 §4.6.6 的「实现之前的处置」）。
         """
-        from ai_sql_pipeline.provenance import source_records
+        from ai_sql_agent.pipeline.provenance import source_records
 
         self.assertEqual(
             source_records(
@@ -495,7 +495,7 @@ class CurrencyAndSourceRecordsTest(unittest.TestCase):
         多币种时顶层 `currency` 必须是 None，让调用方逐列读。
         给一个「主要币种」正是那个全局常量犯的错。
         """
-        from ai_sql_pipeline.provenance import dominant_currency
+        from ai_sql_agent.pipeline.provenance import dominant_currency
 
         self.assertEqual(dominant_currency([{"a": "USD"}, {"b": "USD"}]), "USD")
         self.assertIsNone(dominant_currency([{"a": "USD"}, {"b": "CNY"}]))

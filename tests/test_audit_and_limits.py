@@ -3,9 +3,9 @@ import unittest
 
 from fastapi import HTTPException
 
-from ai_sql_api.limits import QuotaGuard, TokenBucketLimiter
-from ai_sql_audit import AuditRecord, SQLiteAuditStore
-from ai_sql_auth import Principal
+from ai_sql_agent.api.limits import QuotaGuard, TokenBucketLimiter
+from ai_sql_agent.audit import AuditRecord, SQLiteAuditStore
+from ai_sql_agent.auth import Principal
 
 
 class TokenBucketTest(unittest.TestCase):
@@ -155,7 +155,7 @@ class QuotaGuardTest(unittest.TestCase):
 
 class MetricsRenderTest(unittest.TestCase):
     def test_histogram_buckets_are_cumulative(self):
-        from ai_sql_core.metrics import Histogram
+        from ai_sql_agent.core.metrics import Histogram
 
         histogram = Histogram("test_seconds", "帮助文本", buckets=(0.1, 1.0))
         histogram.observe(0.05)
@@ -170,14 +170,14 @@ class MetricsRenderTest(unittest.TestCase):
         self.assertIn("test_seconds_sum 5.55", text)
 
     def test_label_values_are_escaped(self):
-        from ai_sql_core.metrics import Counter
+        from ai_sql_agent.core.metrics import Counter
 
         counter = Counter("test_total", "帮助文本", ("path",))
         counter.inc(path='a"b')
         self.assertIn('path="a\\"b"', "\n".join(counter.collect()))
 
     def test_registry_renders_type_and_help(self):
-        from ai_sql_core import render_metrics
+        from ai_sql_agent.core import render_metrics
 
         text = render_metrics()
         self.assertIn("# TYPE ai_sql_requests_total counter", text)
@@ -190,7 +190,7 @@ class ProbeTest(unittest.TestCase):
     def setUpClass(cls):
         from fastapi.testclient import TestClient
 
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.client_ctx = TestClient(app)
         cls.client = cls.client_ctx.__enter__()

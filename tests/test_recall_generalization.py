@@ -12,7 +12,7 @@ import json
 import unittest
 from pathlib import Path
 
-from ai_sql_pipeline import Text2SQLPipeline
+from ai_sql_agent.pipeline import Text2SQLPipeline
 
 HOLDOUT = Path(__file__).resolve().parents[1] / "benchmark" / "holdout.json"
 

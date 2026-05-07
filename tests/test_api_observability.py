@@ -2,7 +2,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from ai_sql_api.app import TRACE_HEADER, app
+from ai_sql_agent.api.app import TRACE_HEADER, app
 
 
 class ApiTraceTest(unittest.TestCase):

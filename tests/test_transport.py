@@ -2,7 +2,7 @@ import unittest
 
 import httpx
 
-from ai_sql_core import (
+from ai_sql_agent.core import (
     ModelAuthError,
     ModelRateLimitError,
     ModelResponseError,

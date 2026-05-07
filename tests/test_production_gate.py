@@ -12,8 +12,8 @@ import os
 import unittest
 from types import SimpleNamespace
 
-from ai_sql_api.app import ProductionReadinessError, check_production_readiness
-from ai_sql_core import get_settings, reload_settings
+from ai_sql_agent.api.app import ProductionReadinessError, check_production_readiness
+from ai_sql_agent.core import get_settings, reload_settings
 
 
 class _FakeApp:
@@ -96,7 +96,7 @@ class ProductionModeTest(unittest.TestCase):
         self.assertIn("不是只读", str(caught.exception))
 
     def test_api_key_without_roles_blocks_startup(self):
-        from ai_sql_auth import ApiKeyRecord
+        from ai_sql_agent.auth import ApiKeyRecord
 
         with _EnvPatch(AI_SQL_APP_ENV="production"):
             app = _FakeApp(records={
@@ -112,7 +112,7 @@ class ProductionModeTest(unittest.TestCase):
         什么都查不到，而且**没有任何症状**。deploy/api_keys.example.json 一度
         就是这个形态（写着契约 v1.6 已退役的 pm_db / mes_db）。
         """
-        from ai_sql_auth import DataPolicy
+        from ai_sql_agent.auth import DataPolicy
 
         with _EnvPatch(AI_SQL_APP_ENV="production"):
             app = _FakeApp(
@@ -125,9 +125,9 @@ class ProductionModeTest(unittest.TestCase):
 
     def test_wildcard_database_segment_is_not_flagged(self):
         """`*` 本来就是「所有库」，不该被当成一个不存在的库名。"""
-        from ai_sql_auth import DataPolicy
+        from ai_sql_agent.auth import DataPolicy
 
-        from ai_sql_api.app import _policy_databases_not_in_semantic_layer
+        from ai_sql_agent.api.app import _policy_databases_not_in_semantic_layer
 
         app = _FakeApp(
             policies={"r": DataPolicy(allow_tables=("*",), deny_columns=("*.*.id_card_no",))},
@@ -155,7 +155,7 @@ class ProductionModeTest(unittest.TestCase):
         打开它说明有人**以为**这里在按最终用户隔离数据——那个误解会让人把
         系统用在范围之外，而系统照常工作。
         """
-        from ai_sql_auth import ApiKeyRecord
+        from ai_sql_agent.auth import ApiKeyRecord
 
         with _EnvPatch(
             AI_SQL_APP_ENV="production",
@@ -171,20 +171,20 @@ class ProductionModeTest(unittest.TestCase):
 
     def test_a_fully_configured_production_setup_passes(self):
         """反向断言：一个「永远拒绝」的闸门是没用的闸门。"""
-        from ai_sql_auth import ApiKeyRecord
+        from ai_sql_agent.auth import ApiKeyRecord
 
         with _EnvPatch(
             AI_SQL_APP_ENV="production",
             AI_SQL_AUTH_MODE="api_key",
             AI_SQL_UNKNOWN_ROLE_POLICY="deny",
-            AI_SQL_SEMANTIC_DIR="sim_erp/semantic",
+            AI_SQL_SEMANTIC_DIR="tools/sim_erp/semantic",
             AI_SQL_ANTHROPIC_API_KEY="test-key",
             AI_SQL_MODEL_PROVIDER="anthropic",
             # 范围是"完整生产配置"的一部分。加这一行的时候本条会先红一次，
             # 那正是断言接上了的证据。
             AI_SQL_DEPLOYMENT_SCOPE="internal_single_tenant",
         ):
-            from ai_sql_auth import DataPolicy
+            from ai_sql_agent.auth import DataPolicy
 
             app = _FakeApp(
                 readonly_audits={"ai_sql_ro": "readonly"},
@@ -201,7 +201,7 @@ if __name__ == "__main__":
 
 class AuthorizationModelGateTest(unittest.TestCase):
     """
-    审查 P0-2 的两半在生产模式下的启动检查。设计见 deploy/authz-model.md。
+    审查 P0-2 的两半在生产模式下的启动检查。设计见 docs/authz-model.md。
 
     两条都是「运行时宽松、配置校验时严格」：不破坏现有部署，
     但**宽松必须是有人写下来的**，不能是默认值兜出来的。
@@ -211,7 +211,7 @@ class AuthorizationModelGateTest(unittest.TestCase):
         return _FakeApp(**kwargs)
 
     def test_impersonating_key_without_users_section_blocks_startup(self):
-        from ai_sql_auth import ApiKeyRecord
+        from ai_sql_agent.auth import ApiKeyRecord
 
         with _EnvPatch(AI_SQL_APP_ENV="production"):
             app = self._app(
@@ -225,8 +225,8 @@ class AuthorizationModelGateTest(unittest.TestCase):
         self.assertIn("impersonation", message)
 
     def test_declaring_users_clears_it(self):
-        from ai_sql_api.app import _impersonating_keys_without_user_policies
-        from ai_sql_auth import ApiKeyRecord
+        from ai_sql_agent.api.app import _impersonating_keys_without_user_policies
+        from ai_sql_agent.auth import ApiKeyRecord
 
         app = self._app(
             records={"k": ApiKeyRecord(key="k", caller="bi", can_impersonate=True)},
@@ -235,8 +235,8 @@ class AuthorizationModelGateTest(unittest.TestCase):
         self.assertEqual(_impersonating_keys_without_user_policies(app), [])
 
     def test_non_impersonating_keys_are_not_flagged(self):
-        from ai_sql_api.app import _impersonating_keys_without_user_policies
-        from ai_sql_auth import ApiKeyRecord
+        from ai_sql_agent.api.app import _impersonating_keys_without_user_policies
+        from ai_sql_agent.auth import ApiKeyRecord
 
         app = self._app(
             records={"k": ApiKeyRecord(key="k", caller="li", can_impersonate=False)},
@@ -244,8 +244,8 @@ class AuthorizationModelGateTest(unittest.TestCase):
         self.assertEqual(_impersonating_keys_without_user_policies(app), [])
 
     def test_table_without_row_scope_is_flagged(self):
-        from ai_sql_api.app import _tables_without_row_scope
-        from ai_sql_auth import DataPolicy
+        from ai_sql_agent.api.app import _tables_without_row_scope
+        from ai_sql_agent.auth import DataPolicy
 
         app = self._app(policies={"analyst": DataPolicy(allow_tables=("erp_db.*",))})
         app.state.pipeline.business_metas = {"erp_db": {"job": {}, "invoice": {}}}
@@ -259,8 +259,8 @@ class AuthorizationModelGateTest(unittest.TestCase):
         `predicate: "*"` 是**显式**声明「这张表不做行隔离」——它和「没配」
         不是一回事，正是这条区分让默认值不再兜出一个静默的全放行。
         """
-        from ai_sql_api.app import _tables_without_row_scope
-        from ai_sql_auth import DataPolicy
+        from ai_sql_agent.api.app import _tables_without_row_scope
+        from ai_sql_agent.auth import DataPolicy
 
         policy = DataPolicy.from_dict({
             "allow_tables": ["erp_db.*"],
@@ -275,8 +275,8 @@ class AuthorizationModelGateTest(unittest.TestCase):
         self.assertEqual(_tables_without_row_scope(app), [])
 
     def test_tables_the_policy_denies_are_not_flagged(self):
-        from ai_sql_api.app import _tables_without_row_scope
-        from ai_sql_auth import DataPolicy
+        from ai_sql_agent.api.app import _tables_without_row_scope
+        from ai_sql_agent.auth import DataPolicy
 
         app = self._app(policies={"r": DataPolicy(allow_tables=("erp_db.job",))})
         app.state.pipeline.business_metas = {"erp_db": {"job": {}, "secret": {}}}

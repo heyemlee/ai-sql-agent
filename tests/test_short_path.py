@@ -2,7 +2,7 @@
 
 import unittest
 
-from ai_sql_pipeline.short_path import decide_short_path
+from ai_sql_agent.pipeline.short_path import decide_short_path
 
 
 class ShortPathTest(unittest.TestCase):

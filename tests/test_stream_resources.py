@@ -17,8 +17,8 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
-from ai_sql_a2a import server as a2a
-from ai_sql_core import get_settings, reload_settings
+from ai_sql_agent.a2a import server as a2a
+from ai_sql_agent.core import get_settings, reload_settings
 
 
 class _Principal:
@@ -102,7 +102,7 @@ class BackpressureTest(unittest.IsolatedAsyncioTestCase):
 
         def slow_run(request, principal, parsed, began):
             # 塞满队列：远超 maxsize 的进度事件
-            from ai_sql_core.trace import stage
+            from ai_sql_agent.core.trace import stage
 
             for index in range(200):
                 with stage("execution", step=index + 1, database="erp_db"):

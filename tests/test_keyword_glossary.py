@@ -10,8 +10,8 @@
 
 import unittest
 
-from ai_sql_pipeline.local_clients import HybridKeywordExtractor, build_schema_glossary
-from schema_retrieval.keyword_extractor_client import AliyunKeywordExtractor
+from ai_sql_agent.pipeline.local_clients import HybridKeywordExtractor, build_schema_glossary
+from ai_sql_agent.retrieval.keyword_extractor_client import AliyunKeywordExtractor
 
 METAS = {
     "wms_db": {

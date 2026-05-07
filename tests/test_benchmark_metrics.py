@@ -153,7 +153,7 @@ class PromptVisibilityTest(unittest.TestCase):
     )
 
     def test_parses_columns_out_of_rendered_context(self):
-        from ai_sql_pipeline.token_budget import columns_in_prompt
+        from ai_sql_agent.pipeline.token_budget import columns_in_prompt
 
         self.assertEqual(
             columns_in_prompt(self.SAMPLE),
@@ -163,7 +163,7 @@ class PromptVisibilityTest(unittest.TestCase):
 
     def test_truncated_tail_line_is_not_counted(self):
         """预算截断会把最后一行切成半截，半个字段名不能算命中。"""
-        from ai_sql_pipeline.token_budget import columns_in_prompt
+        from ai_sql_agent.pipeline.token_budget import columns_in_prompt
 
         truncated = self.SAMPLE[: self.SAMPLE.index("- 字段名：job_no") + 12]
         self.assertNotIn("mes_db.work_order.job_no", columns_in_prompt(truncated))
@@ -192,7 +192,7 @@ class SchemaBudgetAllocationTest(unittest.TestCase):
     """
 
     def setUp(self):
-        from ai_sql_pipeline.token_budget import PromptBudgetConfig, PromptBudgetManager
+        from ai_sql_agent.pipeline.token_budget import PromptBudgetConfig, PromptBudgetManager
 
         self.manager = PromptBudgetManager(PromptBudgetConfig(schema_budget=60))
 
