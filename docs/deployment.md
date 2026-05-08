@@ -1,6 +1,6 @@
 # Deployment and operations
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](../README.md) | [简体中文](../README.zh-CN.md)
 
 Written for an internal single-instance deployment: no multi-tenancy, the service
 verifies caller identity itself.
@@ -24,7 +24,7 @@ POSTGRES_PASSWORD=use-a-strong-password
 ENV
 
 # 3. Start the stack
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose --project-directory . -f deploy/docker-compose.prod.yml up -d --build
 
 # 4. Verify
 curl -s localhost:8000/health
@@ -33,7 +33,7 @@ curl -s localhost:8000/readyz | python -m json.tool
 
 `deploy/api_keys.json` is listed in `.dockerignore`, so it never enters the image;
 it is mounted read-only instead. Rotating a key means editing the file and running
-`docker compose restart app`.
+`docker compose --project-directory . -f deploy/docker-compose.prod.yml restart app`.
 
 ## 2. Configuration
 
@@ -71,7 +71,7 @@ path.
 
 | | Public API | Self-hosted vLLM |
 |---|---|---|
-| Compose file | `docker-compose.prod.yml` | `docker-compose.vllm.yml` |
+| Compose file | `deploy/docker-compose.prod.yml` | `deploy/docker-compose.vllm.yml` |
 | Data leaving the network | Questions and schema are sent to an external service | **Nothing leaves the network** |
 | Hardware cost | None | Needs a GPU (~32GB VRAM for a 14B model in bf16) |
 | Per-request latency | Subject to the public internet and vendor queueing | Depends on the local GPU, usually steadier |
@@ -86,7 +86,7 @@ the network, self-hosting is the only option.
 
 ```bash
 # 1. Start vLLM (an OpenAI-compatible server)
-docker compose -f docker-compose.vllm.yml up -d
+docker compose --project-directory . -f deploy/docker-compose.vllm.yml up -d
 
 # 2. Or, for an existing deployment, change only these variables
 AI_SQL_CHAT_URL=http://vllm-chat:8000/v1/chat/completions
@@ -141,10 +141,10 @@ so `safety_stock` stops resolving for "we're running low on stock". The symptom 
 "the model is not accurate", but the model was never told what the business means.
 
 ```bash
-python -m ai_sql_semantic export semantic/     # export demo metadata as a template
+python -m ai_sql_agent.semantic export semantic/     # export demo metadata as a template
 # edit semantic/*.yaml, one file per database, plus _shared.yaml
-python -m ai_sql_semantic validate semantic/   # compare against the live schema
-python -m ai_sql_semantic show                 # which metadata is currently active
+python -m ai_sql_agent.semantic validate semantic/   # compare against the live schema
+python -m ai_sql_agent.semantic show                 # which metadata is currently active
 ```
 
 Each database file carries the table and column descriptions, aliases, semantic
@@ -186,10 +186,10 @@ only data source that does not depend on us writing the test questions ourselves
   carries forward instead of being re-guessed each time.
 
 ```bash
-python -m ai_sql_feedback stats                    # live accuracy and silent-error rate
-python -m ai_sql_feedback wrong                    # what to fix, with the user's comment
-python -m ai_sql_feedback export-dataset new.json  # turn wrong answers into eval cases
-python -m ai_sql_feedback resolve <trace_id>       # mark one handled
+python -m ai_sql_agent.feedback stats                    # live accuracy and silent-error rate
+python -m ai_sql_agent.feedback wrong                    # what to fix, with the user's comment
+python -m ai_sql_agent.feedback export-dataset new.json  # turn wrong answers into eval cases
+python -m ai_sql_agent.feedback resolve <trace_id>       # mark one handled
 ```
 
 `export-dataset` writes a draft: the question, the SQL the model produced, and the
@@ -312,10 +312,10 @@ header. Logs and audit records are both searchable by it:
 
 ```bash
 # 1. Pull the whole chain out of the logs (use jq with JSON format)
-docker compose -f docker-compose.prod.yml logs app | grep <trace_id>
+docker compose --project-directory . -f deploy/docker-compose.prod.yml logs app | grep <trace_id>
 
 # 2. See what this query actually did, from the audit table
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose --project-directory . -f deploy/docker-compose.prod.yml exec postgres \
   psql -U ai_sql -d ai_sql -c \
   "SELECT created_at, caller, user_id, query, route, databases, sqls, success, error
      FROM ai_sql_audit_log WHERE trace_id = '<trace_id>'"
@@ -399,13 +399,13 @@ the same thing under `business_db_accounts`.
 
 ```bash
 # Create a least-privilege read-only role
-python -m ai_sql_ops provision \
+python -m ai_sql_agent.ops provision \
   --admin-dsn "postgresql://postgres:***@db:5432/yourdb" \
   --database yourdb --host db
 
 # Audit it (reads system catalogs only, writes nothing; a non-zero exit code means
 # it failed, so this can run in CI)
-python -m ai_sql_ops audit --dsn "$AI_SQL_BUSINESS_DSN"
+python -m ai_sql_agent.ops audit --dsn "$AI_SQL_BUSINESS_DSN"
 ```
 
 The role carries `statement_timeout`, `idle_in_transaction_session_timeout` and
@@ -419,6 +419,6 @@ vectors, audit) plus `runtime_data` in the container volume (the SQLite store of
 raw memory content):
 
 ```bash
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose --project-directory . -f deploy/docker-compose.prod.yml exec postgres \
   pg_dump -U ai_sql ai_sql | gzip > ai_sql_$(date +%F).sql.gz
 ```

@@ -9,7 +9,7 @@
 
 ## 0. 为什么要做（一句话）
 
-应用层的授权关卡（`ai_sql_auth.enforcement`）是**第二道**防线。
+应用层的授权关卡（`ai_sql_agent.auth.enforcement`）是**第二道**防线。
 只读账号只挡写、不挡读密列——一个能连库的只读账号照样 `SELECT unit_cost`。
 这一步的目标是：**应用层漏判也越不了权**。
 
@@ -19,7 +19,7 @@
 | --- | --- | --- |
 | 目标库 | 语义层里声明的每一个业务库（`GET /a2a/databases` 可拉取当前清单） | —— |
 | 管理员连接串 | 能 `GRANT` / `CREATE POLICY` 的账号，通常是库 owner | **需要人执行**：DBA 提供，不要写进代码库 |
-| 只读角色 | `python -m ai_sql_ops provision` 建出来的那个 | 已有则复用 |
+| 只读角色 | `python -m ai_sql_agent.ops provision` 建出来的那个 | 已有则复用 |
 | 策略文件 | `deploy/api_keys.json` 的 `policies` 段 | 业务方确认「谁能看什么」 |
 
 > **PostgreSQL only。** SQLite 没有列级 GRANT 也没有 RLS，演示库因此只有应用层
@@ -33,7 +33,7 @@
 ### 2.1 先看要执行什么（不连库改任何东西）
 
 ```bash
-python -m ai_sql_ops least-privilege \
+python -m ai_sql_agent.ops least-privilege \
   --dsn "$ERP_ADMIN_DSN" --keys deploy/api_keys.json \
   --policy estimating --database erp_db --role ai_sql_ro \
   > evidence/least-privilege_erp_db_estimating_$(date +%F).sql
@@ -57,7 +57,7 @@ psql "$ERP_ADMIN_DSN" -Atc "
 ### 2.3 执行
 
 ```bash
-python -m ai_sql_ops least-privilege \
+python -m ai_sql_agent.ops least-privilege \
   --dsn "$ERP_ADMIN_DSN" --keys deploy/api_keys.json \
   --policy estimating --database erp_db --role ai_sql_ro --apply
 ```
@@ -68,7 +68,7 @@ python -m ai_sql_ops least-privilege \
 ### 2.4 验证（**这一步才是结论**）
 
 ```bash
-python -m ai_sql_ops verify-privileges \
+python -m ai_sql_agent.ops verify-privileges \
   --dsn "$ERP_ADMIN_DSN" --readonly-dsn "$ERP_RO_DSN" \
   --keys deploy/api_keys.json --policy estimating --database erp_db \
   --role ai_sql_ro --json \
@@ -116,7 +116,7 @@ python -m ai_sql_ops verify-privileges \
    ```
 
 4. **应用层不受影响**：以上任何一步都不改应用层的授权关卡。
-   即使数据库侧全部回滚，`ai_sql_auth.enforcement` 仍在拦——
+   即使数据库侧全部回滚，`ai_sql_agent.auth.enforcement` 仍在拦——
    回到「只有一道防线」的状态，不是「没有防线」。
 
 ## 5. 行级安全（RLS）
@@ -126,7 +126,7 @@ python -m ai_sql_ops verify-privileges \
 
 1. 策略里写了非空 `predicate`；
 2. 执行器在事务里设了 `app.user_id`——这一条已经在代码里
-   （`mcp_router/postgres_executor.py`），无需运维操作。
+   （`src/ai_sql_agent/execution/postgres_executor.py`），无需运维操作。
 
 验证：用两个不同的最终用户各查一次，行数应当不同。
 `tests/test_authorization_postgres.py::RowLevelSecurityThroughTheAgentTest`

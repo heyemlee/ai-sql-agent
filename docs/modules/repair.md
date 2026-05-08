@@ -1,4 +1,4 @@
-# sql_repair
+# ai_sql_agent.repair
 
 Log-driven SQL repair loop.
 

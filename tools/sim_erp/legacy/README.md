@@ -10,10 +10,10 @@
 ## 怎么构成的
 
 ```bash
-python sim_erp/legacy/build.py       # 把 sim_erp 的 15,514 行搬进 T_ 命名的 schema
-python sim_erp/legacy/semantic.py    # 生成遗留库的语义层
-python -m ai_sql_semantic validate sim_erp/legacy/semantic
-AI_SQL_SEMANTIC_DIR=sim_erp/legacy/semantic python -m uvicorn ai_sql_api.app:app --port 8000
+python tools/sim_erp/legacy/build.py       # 把 sim_erp 的 15,514 行搬进 T_ 命名的 schema
+python tools/sim_erp/legacy/semantic.py    # 生成遗留库的语义层
+python -m ai_sql_agent.semantic validate tools/sim_erp/legacy/semantic
+AI_SQL_SEMANTIC_DIR=tools/sim_erp/legacy/semantic python -m uvicorn ai_sql_agent.api.app:app --port 8000
 ```
 
 数据**不重新生成**，是从 `runtime_data/sim/erp.db` 逐行搬过去的——两边是同一批

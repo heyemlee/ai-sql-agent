@@ -1,4 +1,4 @@
-# schema_retrieval
+# ai_sql_agent.retrieval
 
 Column-level schema retrieval, with runnable demos.
 
@@ -7,7 +7,7 @@ Column-level schema retrieval, with runnable demos.
 ## Layout
 
 ```text
-schema_retrieval/
+src/ai_sql_agent/retrieval/
   __init__.py
 
   # Core structures and schema handling
@@ -29,15 +29,9 @@ schema_retrieval/
   # Fusion and reranking
   rrf_fusion_client.py           # RRF fusion
   rerank_client.py               # Reranking
-
-  # Demos
-  keyword_recall_demo.py         # Keyword retrieval
-  vector_recall_demo.py          # Vector retrieval
-  hybrid_recall_demo.py          # Keyword + vector + RRF fusion
-  hybrid_rerank_schema_demo.py   # Hybrid retrieval + rerank + SchemaGraph
-
-  README.md
 ```
+
+Demos live in `examples/`: `keyword_recall.py`, `vector_recall.py`, `hybrid_recall.py`, `hybrid_rerank_schema.py` and `hybrid_schema_retrieval.py`.
 
 ---
 
@@ -64,25 +58,25 @@ export DASHSCOPE_WORKSPACE_ID="your-workspace-id"
 ### 1. Keyword retrieval
 
 ```bash
-python -m schema_retrieval.keyword_recall_demo
+python examples/keyword_recall.py
 ```
 
 ### 2. Vector retrieval
 
 ```bash
-python -m schema_retrieval.vector_recall_demo
+python examples/vector_recall.py
 ```
 
 ### 3. Hybrid retrieval
 
 ```bash
-python -m schema_retrieval.hybrid_recall_demo
+python examples/hybrid_recall.py
 ```
 
 ### 4. Hybrid retrieval + rerank + SchemaGraph
 
 ```bash
-python -m schema_retrieval.hybrid_rerank_schema_demo
+python examples/hybrid_rerank_schema.py
 ```
 
 ---
@@ -90,5 +84,5 @@ python -m schema_retrieval.hybrid_rerank_schema_demo
 ## Clearing caches
 
 ```bash
-rm -rf schema_retrieval/__pycache__
+rm -rf src/ai_sql_agent/retrieval/__pycache__
 ```

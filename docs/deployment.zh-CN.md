@@ -1,6 +1,6 @@
 # AI SQL Agent 部署与运维
 
-[English](README.md) | **简体中文**
+[English](../README.md) | **简体中文**
 
 面向公司内部自用部署：单实例、无多租户、服务自校验身份。
 
@@ -23,7 +23,7 @@ POSTGRES_PASSWORD=改成强密码
 ENV
 
 # 3. 起服务
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose --project-directory . -f deploy/docker-compose.prod.yml up -d --build
 
 # 4. 验收
 curl -s localhost:8000/health
@@ -31,7 +31,7 @@ curl -s localhost:8000/readyz | python -m json.tool
 ```
 
 `deploy/api_keys.json` 已在 `.dockerignore` 里，不会进镜像，只以只读方式挂载。
-换 Key 只需改文件并 `docker compose restart app`。
+换 Key 只需改文件并 `docker compose --project-directory . -f deploy/docker-compose.prod.yml restart app`。
 
 ## 二、配置项
 
@@ -66,7 +66,7 @@ curl -s localhost:8000/readyz | python -m json.tool
 
 | | 公网 API | 内网自建 vLLM |
 |---|---|---|
-| 编排文件 | `docker-compose.prod.yml` | `docker-compose.vllm.yml` |
+| 编排文件 | `deploy/docker-compose.prod.yml` | `deploy/docker-compose.vllm.yml` |
 | 数据出网 | 问题原文与 Schema 会发给外部服务 | **数据不出内网** |
 | 硬件成本 | 无 | 需要 GPU（14B bf16 约 32GB 显存） |
 | 单次延迟 | 受公网与厂商排队影响 | 取决于本地 GPU，通常更稳定 |
@@ -80,7 +80,7 @@ curl -s localhost:8000/readyz | python -m json.tool
 
 ```bash
 # 1. 起 vLLM（OpenAI 兼容 server）
-docker compose -f docker-compose.vllm.yml up -d
+docker compose --project-directory . -f deploy/docker-compose.vllm.yml up -d
 
 # 2. 或者对已有服务，只改这几个环境变量
 AI_SQL_CHAT_URL=http://vllm-chat:8000/v1/chat/completions
@@ -125,10 +125,10 @@ python -m pytest tests/test_openai_compatible_endpoint.py -v
 实际是没人告诉过它业务是什么。
 
 ```bash
-python -m ai_sql_semantic export semantic/     # 导出演示元数据当模板
+python -m ai_sql_agent.semantic export semantic/     # 导出演示元数据当模板
 # 编辑 semantic/*.yaml：一个库一个文件，外加 _shared.yaml
-python -m ai_sql_semantic validate semantic/   # 与真实库比对结构
-python -m ai_sql_semantic show                 # 当前生效的是哪一份
+python -m ai_sql_agent.semantic validate semantic/   # 与真实库比对结构
+python -m ai_sql_agent.semantic show                 # 当前生效的是哪一份
 ```
 
 每个库的文件里是表和字段的业务描述、别名、语义角色和样例值；`_shared.yaml`
@@ -167,10 +167,10 @@ environment:
   把这家公司的 join 路径和口径固化下来，而不是每次重新猜。
 
 ```bash
-python -m ai_sql_feedback stats                    # 线上准确率与静默错误率
-python -m ai_sql_feedback wrong                    # 待处理清单，带用户说明
-python -m ai_sql_feedback export-dataset new.json  # 把答错的问题导成评测集草稿
-python -m ai_sql_feedback resolve <trace_id>       # 标记某条已处理
+python -m ai_sql_agent.feedback stats                    # 线上准确率与静默错误率
+python -m ai_sql_agent.feedback wrong                    # 待处理清单，带用户说明
+python -m ai_sql_agent.feedback export-dataset new.json  # 把答错的问题导成评测集草稿
+python -m ai_sql_agent.feedback resolve <trace_id>       # 标记某条已处理
 ```
 
 `export-dataset` 导出的是草稿：问题原文、模型答错的 SQL、用户的说明都摆好了，
@@ -285,10 +285,10 @@ sum(increase(ai_sql_model_tokens_total[24h])) by (component)
 
 ```bash
 # 1. 从日志捞全链路（JSON 格式下用 jq）
-docker compose -f docker-compose.prod.yml logs app | grep <trace_id>
+docker compose --project-directory . -f deploy/docker-compose.prod.yml logs app | grep <trace_id>
 
 # 2. 从审计表看这次查询做了什么
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose --project-directory . -f deploy/docker-compose.prod.yml exec postgres \
   psql -U ai_sql -d ai_sql -c \
   "SELECT created_at, caller, user_id, query, route, databases, sqls, success, error
      FROM ai_sql_audit_log WHERE trace_id = '<trace_id>'"
@@ -366,12 +366,12 @@ WHERE degraded ORDER BY id DESC LIMIT 20;
 
 ```bash
 # 建最小权限只读角色
-python -m ai_sql_ops provision \
+python -m ai_sql_agent.ops provision \
   --admin-dsn "postgresql://postgres:***@db:5432/yourdb" \
   --database yourdb --host db
 
 # 体检（只查系统目录，不写数据，退出码非 0 表示不合格，可以进 CI）
-python -m ai_sql_ops audit --dsn "$AI_SQL_BUSINESS_DSN"
+python -m ai_sql_agent.ops audit --dsn "$AI_SQL_BUSINESS_DSN"
 ```
 
 角色自带 `statement_timeout`、`idle_in_transaction_session_timeout`
@@ -383,6 +383,6 @@ python -m ai_sql_ops audit --dsn "$AI_SQL_BUSINESS_DSN"
 加上容器卷里的 `runtime_data`（记忆原文 SQLite）：
 
 ```bash
-docker compose -f docker-compose.prod.yml exec postgres \
+docker compose --project-directory . -f deploy/docker-compose.prod.yml exec postgres \
   pg_dump -U ai_sql ai_sql | gzip > ai_sql_$(date +%F).sql.gz
 ```

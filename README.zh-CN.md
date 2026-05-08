@@ -95,19 +95,19 @@ flowchart TB
 ### 1. 本地体验（无需模型 Key）
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"          # 或 make install
 
 # 运行端到端示例（单库和跨库）
-python -m ai_sql_pipeline.end_to_end_demo
+python examples/end_to_end.py    # 或 make demo
 
 # 运行全部离线测试
-python -m unittest discover -s tests -v
+python -m pytest tests -q        # 或 make test
 ```
 
 ### 2. 启动网页和 API
 
 ```bash
-./run_api.sh
+./scripts/run_api.sh             # 或 make run
 ```
 
 打开 [http://localhost:8000](http://localhost:8000) 即可提问。也可以直接调用接口：
@@ -131,9 +131,9 @@ Demo 自带四个演示库。换成自己的库时，需要写一份**语义元�
 全都读它。
 
 ```bash
-python -m ai_sql_semantic export semantic/     # 导出演示元数据当模板
+python -m ai_sql_agent.semantic export semantic/     # 导出演示元数据当模板
 # 按真实库改写 semantic/*.yaml：表名字段名、业务说法、连接方式
-python -m ai_sql_semantic validate semantic/   # 与真实库比对结构
+python -m ai_sql_agent.semantic validate semantic/   # 与真实库比对结构
 ```
 
 `validate` 会连上真实库双向比对：元数据里有、库里没有的表和字段（模型会照着
@@ -162,7 +162,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 # ANTHROPIC_API_KEY=sk-ant-xxx
 ```
 
-服务也支持内网 vLLM、Ollama 等 OpenAI 兼容接口；完整配置见 [部署说明](deploy/README.md)。
+服务也支持内网 vLLM、Ollama 等 OpenAI 兼容接口；完整配置见 [部署说明](docs/deployment.md)。
 
 ## 关键设计
 
@@ -198,29 +198,41 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 ## 模块地图
 
 ```text
-ai_sql_api/          API 与内置网页
-ai_sql_pipeline/     动态路由和端到端编排
-schema_retrieval/    三层 Schema 检索与 SchemaGraph
-cot_planning/        多步 / 跨库查询规划
-sql_generation/      SQL 生成
-sql_repair/          SQL 失败修复
-result_validation/   结果风险校验
-mcp_router/          SQL 安全校验与多方言执行
-ai_sql_memory/       短期会话与长期记忆
-ai_sql_auth/         API Key、身份与表列权限
-ai_sql_audit/        审计记录
-ai_sql_semantic/     业务语义元数据：表/字段含义、别名、跨库关联键、指标口径
-ai_sql_feedback/     用户判定：答错的进评测集，答对的成为认证范例
-ai_sql_core/         配置、模型传输、日志、指标、熔断
-benchmark/           评测集与发布门禁
-deploy/              生产部署和运维文档
+src/ai_sql_agent/         应用包（pip install -e . 安装）
+  api/                    FastAPI 服务与内置网页
+  a2a/                    Agent 间流式接口（a2a-contract）
+  mcp_server/             对外 MCP 只读查询工具
+  pipeline/               动态路由和端到端编排
+  normalization/          问题归一化：日期与指代
+  retrieval/              三层 Schema 检索与 SchemaGraph
+  indexing/               Schema 索引构建：Embedding 与 pgvector
+  planning/               多步与跨库查询规划
+  generation/             SQL 生成
+  execution/              SQL 安全校验、方言与只读执行器（MCP 路由）
+  repair/                 失败 SQL 修复回路
+  validation/             结果风险校验
+  memory/                 短期会话与长期记忆
+  auth/                   API Key、身份与表列权限
+  audit/                  审计记录
+  semantic/               业务语义元数据：表/字段含义、别名、跨库关联键、指标口径
+  feedback/               用户判定：答错的进评测集，答对的成为认证范例
+  ops/                    业务库只读账号与最小授权
+  core/                   配置、模型传输、日志、指标、熔断
+  resources/demo_sql/     四个演示库的建库与样例数据
+tests/                    离线测试、pgvector 集成测试、跨仓库契约用例
+benchmark/                评测集、阈值、基线与发布门禁
+examples/                 可直接运行的 Demo，每个链路环节一个
+scripts/                  开发辅助：run_api.sh、check_env.py
+tools/sim_erp/            模拟多库 ERP，用于真实规模测试
+deploy/                   Dockerfile、Docker Compose 编排、API Key 模板
+docs/                     项目详解、部署运维、模块文档
 ```
 
 ## 部署与深入阅读
 
-- [项目详解手册](WALKTHROUGH.zh-CN.md)：从 0 通读全项目——逐模块拆解、五条设计主线、讲解脚本与练习
-- [部署与运维](deploy/README.zh-CN.md)：Docker Compose、权限、模型接入、监控和排障
+- [项目详解手册](docs/walkthrough.zh-CN.md)：从 0 通读全项目——逐模块拆解、五条设计主线、讲解脚本与练习
+- [部署与运维](docs/deployment.zh-CN.md)：Docker Compose、权限、模型接入、监控和排障
 - [评测说明](benchmark/README.zh-CN.md)：数据集、准确率与发布门禁
-- [端到端编排](ai_sql_pipeline/README.md)：动态路由与记忆示例（英文）
-- [Schema 检索](schema_retrieval/README.md)：混合召回与 SchemaGraph（英文）
-- [MCP 执行](mcp_router/README.md)：只读 SQL、方言与执行器（英文）
+- [端到端编排](docs/modules/pipeline.md)：动态路由与记忆示例（英文）
+- [Schema 检索](docs/modules/retrieval.md)：混合召回与 SchemaGraph（英文）
+- [MCP 执行](docs/modules/execution.md)：只读 SQL、方言与执行器（英文）

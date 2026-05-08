@@ -34,16 +34,16 @@ subdivision、不含税金额、change order、punch list），用来**压测系
 
 ```bash
 # 1. 生成数据（确定性的，同一个 SEED 出同样的库）
-python sim_erp/build.py --out runtime_data/sim
+python tools/sim_erp/build.py --out runtime_data/sim
 
-# 2. 生成语义层 YAML（描述改在 sim_erp/semantic.py 的规格表里，不要手改 YAML）
-python sim_erp/semantic.py
+# 2. 生成语义层 YAML（描述改在 tools/sim_erp/semantic.py 的规格表里，不要手改 YAML）
+python tools/sim_erp/semantic.py
 
 # 3. 校验：会连上真实库比对结构
-python -m ai_sql_semantic validate sim_erp/semantic
+python -m ai_sql_agent.semantic validate tools/sim_erp/semantic
 
 # 4. 指过去跑
-AI_SQL_SEMANTIC_DIR=sim_erp/semantic python -m uvicorn ai_sql_api.app:app --port 8000
+AI_SQL_SEMANTIC_DIR=tools/sim_erp/semantic python -m uvicorn ai_sql_agent.api.app:app --port 8000
 ```
 
 演示库不受影响：不配 `AI_SQL_SEMANTIC_DIR` 就还是原来的四个演示库。

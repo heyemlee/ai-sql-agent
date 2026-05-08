@@ -1,11 +1,11 @@
-# mcp_router
+# ai_sql_agent.execution
 
 MCP routing and execution.
 
 ## Layout
 
 ```text
-mcp_router/
+src/ai_sql_agent/execution/
 ├── __init__.py
 ├── objects.py                # Execution request and result
 ├── sqlite_executor.py        # In-process SQLite executor (default)
@@ -31,7 +31,7 @@ Default (fast, offline):
 
 MCP protocol (PipelineConfig(use_mcp_protocol=True)):
   Pipeline → MCPRouter → MCPProtocolExecutor
-    → MCP stdio tool call → mcp_server.execute_sql → SQLite
+    → MCP stdio tool call → ai_sql_agent.mcp_server.execute_sql → SQLite
 ```
 
 ## Request format

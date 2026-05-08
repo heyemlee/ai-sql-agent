@@ -3,7 +3,7 @@
 > 对应审查 P0-2 的两半。2026-09-04 第一轮关掉的是**可复现的越权**；
 > 这一份处理的是**策略模型本身表达不出来的东西**。
 >
-> 先出设计再动手，因为它牵动 `ai_sql_auth/objects.py`、`enforcement.py` 与
+> 先出设计再动手，因为它牵动 `src/ai_sql_agent/auth/objects.py`、`enforcement.py` 与
 > key store 的形状，而且**默认值选错就是把 `full_access` 的老毛病换个维度复发**。
 
 ## 0. 今天的模型缺什么
@@ -16,7 +16,7 @@
 | **最终用户身份** | impersonation 换 `user_id`，**权限仍是服务身份的** | alice 和 bob 权限相同 |
 
 第三行的后果：RLS 的过滤条件只能由运维手写，推不出来，所以
-`ai_sql_ops/least_privilege.py` 生成不了它。
+`src/ai_sql_agent/ops/least_privilege.py` 生成不了它。
 第四行的后果：一把 `can_impersonate` 的服务 Key 替所有员工发请求，
 每个员工拿到的都是**服务身份的全部权限**。
 

@@ -2,7 +2,7 @@
 
 > 这份文档的目标只有一个:**让你从 0 把这个项目吃透,并且能对着它给别人讲 30 分钟。**
 >
-> 和 [README.md](README.md) 的区别:README 回答「这是什么、怎么跑」,这份文档回答
+> 和 [README.md](../README.md) 的区别:README 回答「这是什么、怎么跑」,这份文档回答
 > 「**为什么这么设计、每一行代码在防什么坑、讲的时候该怎么串**」。
 
 | 项目速览 | |
@@ -26,21 +26,21 @@
 4. [演示数据模型:四个业务库](#4-演示数据模型四个业务库)
 
 **第二部分 · 逐模块拆解**
-5. [ai_sql_core — 地基](#5-ai_sql_core--地基)
-6. [query_normalization — 问题归一化](#6-query_normalization--问题归一化)
-7. [schema_retrieval — 三层 Schema 检索](#7-schema_retrieval--三层-schema-检索)
+5. [ai_sql_agent.core — 地基](#5-ai_sql_agentcore--地基)
+6. [ai_sql_agent.normalization — 问题归一化](#6-ai_sql_agentnormalization--问题归一化)
+7. [ai_sql_agent.retrieval — 三层 Schema 检索](#7-ai_sql_agentretrieval--三层-schema-检索)
 8. [token_budget / schema_budget — 预算裁剪](#8-token_budget--schema_budget--预算裁剪)
 9. [routing / short_path — 两个路由决策](#9-routing--short_path--两个路由决策)
-10. [cot_planning — 五元组规划](#10-cot_planning--五元组规划)
-11. [sql_generation — SQL 生成](#11-sql_generation--sql-生成)
-12. [mcp_router — 只读执行](#12-mcp_router--只读执行)
-13. [sql_repair — 失败修复回路](#13-sql_repair--失败修复回路)
-14. [result_validation — 软异常校验](#14-result_validation--软异常校验)
-15. [ai_sql_memory — 长短期记忆](#15-ai_sql_memory--长短期记忆)
-16. [ai_sql_auth / audit / limits — 身份、审计、配额](#16-ai_sql_auth--audit--limits--身份审计配额)
-17. [ai_sql_api — 服务入口](#17-ai_sql_api--服务入口)
+10. [ai_sql_agent.planning — 五元组规划](#10-ai_sql_agentplanning--五元组规划)
+11. [ai_sql_agent.generation — SQL 生成](#11-ai_sql_agentgeneration--sql-生成)
+12. [ai_sql_agent.execution — 只读执行](#12-ai_sql_agentexecution--只读执行)
+13. [ai_sql_agent.repair — 失败修复回路](#13-ai_sql_agentrepair--失败修复回路)
+14. [ai_sql_agent.validation — 软异常校验](#14-ai_sql_agentvalidation--软异常校验)
+15. [ai_sql_agent.memory — 长短期记忆](#15-ai_sql_agentmemory--长短期记忆)
+16. [ai_sql_agent.auth / audit / limits — 身份、审计、配额](#16-ai_sql_agentauth--audit--limits--身份审计配额)
+17. [ai_sql_agent.api — 服务入口](#17-ai_sql_agentapi--服务入口)
 18. [benchmark — 评测与发布门禁](#18-benchmark--评测与发布门禁)
-19. [ai_sql_ops / mcp_server — 运维与对外工具](#19-ai_sql_ops--mcp_server--运维与对外工具)
+19. [ai_sql_agent.ops / ai_sql_agent.mcp_server — 运维与对外工具](#19-ai_sql_agentops--ai_sql_agentmcp_server--运维与对外工具)
 
 **第三部分 · 五条主线(讲解用)**
 20. [主线 A:一个字段怎么走进 Prompt](#20-主线-a一个字段怎么走进-prompt)
@@ -82,7 +82,7 @@
 
 **讲解要点**:第 4 堵墙是最值钱的一条。前三堵墙业界都在做,第 4 堵——
 「静默错误」——才是这类工具在企业里被弃用的真正原因:一个错误的数字被
-抄进周报,一次就够了。这个项目专门为它建了 `result_validation` 模块,
+抄进周报,一次就够了。这个项目专门为它建了 `ai_sql_agent.validation` 模块,
 并在评测里把「静默错误率」列为四大指标之一。
 
 ---
@@ -92,17 +92,17 @@
 ### 2.1 环境准备
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
-依赖只有 8 个直接包。注意 `requirements.txt` 里那句注释:原先是 `pip freeze`
+依赖只有 8 个直接包,清单在 `pyproject.toml`。注意依赖段那句注释:原先是 `pip freeze`
 全量导出,混进了一整套用不到的 GPU 训练栈,后来才收敛成「只列真正 import 的包」。
 这本身就是个可以拿来讲的细节。
 
 ### 2.2 第一步:看端到端 Demo(最重要的一步)
 
 ```bash
-python -m ai_sql_pipeline.end_to_end_demo
+python examples/end_to_end.py
 ```
 
 **不用配任何 API Key。** 没有 Key 时模型层自动走 Mock,链路照样完整跑通。
@@ -127,7 +127,7 @@ Demo 2:跨库两步查询(上一步结果回填)
 > 所有抽象概念在这份输出里都有对应的、看得见的实体。
 >
 > ```bash
-> python -m ai_sql_pipeline.end_to_end_demo > /tmp/demo.txt 2>&1
+> python examples/end_to_end.py > /tmp/demo.txt 2>&1
 > ```
 
 ### 2.3 第二步:跑测试,确认环境没问题
@@ -148,7 +148,7 @@ python -m unittest discover -s tests
 ### 2.4 第三步:起服务,用网页问一句
 
 ```bash
-./run_api.sh
+./scripts/run_api.sh
 ```
 
 打开 http://localhost:8000 ,内置一个单页查询控制台(原生 HTML/JS,无构建步骤)。
@@ -166,9 +166,9 @@ curl -X POST http://localhost:8000/query -H 'Content-Type: application/json' -d 
 不要从 `README` 的模块表按字母序读。按**数据流**读:
 
 ```
-1. ai_sql_api/app.py          ── 入口,先看 query() 函数(约 423 行起)
-2. ai_sql_pipeline/dynamic_service.py ── 路由分叉:查库 还是 聊天
-3. ai_sql_pipeline/text2sql_pipeline.py ── 核心!先只读 run() 方法(189–630 行)
+1. src/ai_sql_agent/api/app.py          ── 入口,先看 query() 函数(约 423 行起)
+2. src/ai_sql_agent/pipeline/dynamic_service.py ── 路由分叉:查库 还是 聊天
+3. src/ai_sql_agent/pipeline/text2sql_pipeline.py ── 核心!先只读 run() 方法(189–630 行)
 4. 然后按 run() 里出现的顺序,跳进各个子模块
 ```
 
@@ -225,21 +225,21 @@ flowchart TD
 
 | 阶段 | 代码位置 | 关键函数 |
 | --- | --- | --- |
-| ① 入口 | `ai_sql_api/app.py` | `query()` |
-| ② 防护 | `ai_sql_api/security.py`、`limits.py` | `AuthGuard.authenticate` / `RequestLimiter.check` |
-| ③ 记忆 | `ai_sql_memory/conversation.py` | `begin_user_turn()` |
-| ④ 意图路由 | `ai_sql_pipeline/routing.py` | `DynamicIntentRouter.route` |
-| ⑤ 归一化 | `query_normalization/normalizer.py` | `QueryNormalizer.normalize` |
-| ⑥ 检索 | `schema_retrieval/hierarchical_service.py` | `ThreeTierSchemaRetrievalService.retrieve` |
-| ⑦ 预算 | `ai_sql_pipeline/schema_budget.py` | `fit_graphs_to_budget` |
-| ⑧ 短路径 | `ai_sql_pipeline/short_path.py` | `decide_short_path` |
-| ⑧ 规划 | `cot_planning/cot_planner.py` | `CotPlanner.plan` |
-| ⑨ 生成 | `sql_generation/sql_generator.py` | `SqlGenerator.generate` |
-| ⑩ 权限 | `ai_sql_pipeline/text2sql_pipeline.py` | `_check_table_access` |
-| ⑪ 执行 | `mcp_router/router.py`、`sqlite_executor.py` | `MCPRouter.execute` |
-| ⑫ 修复 | `sql_repair/repairer.py` | `SqlRepairService.repair` |
-| ⑬ 校验 | `result_validation/validator.py` | `ResultValidator.validate` |
-| ⑭ 审计 | `ai_sql_audit/store.py` | `SQLiteAuditStore.record` |
+| ① 入口 | `src/ai_sql_agent/api/app.py` | `query()` |
+| ② 防护 | `src/ai_sql_agent/api/security.py`、`limits.py` | `AuthGuard.authenticate` / `RequestLimiter.check` |
+| ③ 记忆 | `src/ai_sql_agent/memory/conversation.py` | `begin_user_turn()` |
+| ④ 意图路由 | `src/ai_sql_agent/pipeline/routing.py` | `DynamicIntentRouter.route` |
+| ⑤ 归一化 | `src/ai_sql_agent/normalization/normalizer.py` | `QueryNormalizer.normalize` |
+| ⑥ 检索 | `src/ai_sql_agent/retrieval/hierarchical_service.py` | `ThreeTierSchemaRetrievalService.retrieve` |
+| ⑦ 预算 | `src/ai_sql_agent/pipeline/schema_budget.py` | `fit_graphs_to_budget` |
+| ⑧ 短路径 | `src/ai_sql_agent/pipeline/short_path.py` | `decide_short_path` |
+| ⑧ 规划 | `src/ai_sql_agent/planning/cot_planner.py` | `CotPlanner.plan` |
+| ⑨ 生成 | `src/ai_sql_agent/generation/sql_generator.py` | `SqlGenerator.generate` |
+| ⑩ 权限 | `src/ai_sql_agent/pipeline/text2sql_pipeline.py` | `_check_table_access` |
+| ⑪ 执行 | `src/ai_sql_agent/execution/router.py`、`sqlite_executor.py` | `MCPRouter.execute` |
+| ⑫ 修复 | `src/ai_sql_agent/repair/repairer.py` | `SqlRepairService.repair` |
+| ⑬ 校验 | `src/ai_sql_agent/validation/validator.py` | `ResultValidator.validate` |
+| ⑭ 审计 | `src/ai_sql_agent/audit/store.py` | `SQLiteAuditStore.record` |
 
 ### 3.3 一个关键设计:阶段之间用 `stage()` 上下文管理器串起来
 
@@ -251,7 +251,7 @@ with stage("retrieval", _logger, keywords=resolved_keywords) as retrieval_stage:
     retrieval_stage.set(databases=[...], tables={...})
 ```
 
-`stage()` 来自 `ai_sql_core/trace.py`。它做三件事:
+`stage()` 来自 `src/ai_sql_agent/core/trace.py`。它做三件事:
 1. 自动计时,记录到 `STAGE_DURATION` 指标;
 2. 出错时自动打一条 `stage.<name> status=error` 日志;
 3. `set()` 把这一阶段的关键产物挂进日志字段。
@@ -328,11 +328,11 @@ erDiagram
 | `mes_db` | 生产与工时 | `work_order` / `labor_hour` / `capacity_stat` / `quality_check` |
 | `wms_db` | 库存与物料 | `material` / `batch` / `stock_snapshot` |
 
-定义在 `sql/create_*.sql`,由 `ai_sql_pipeline/demo_data.py` 建库并附上业务元数据。
+定义在 `sql/create_*.sql`,由 `src/ai_sql_agent/pipeline/demo_data.py` 建库并附上业务元数据。
 
 ### 4.2 三个刻意埋下的「坑」(这是设计,不是疏忽)
 
-打开 `sql/create_erp_demo.sql` 第一行注释就写着这件事:
+打开 `src/ai_sql_agent/resources/demo_sql/create_erp_demo.sql` 第一行注释就写着这件事:
 
 **坑 1 · 同一实体、不同命名、无外键**
 
@@ -384,7 +384,7 @@ erDiagram
 
 ---
 
-## 5. ai_sql_core — 地基
+## 5. ai_sql_agent.core — 地基
 
 **干什么**:配置、模型传输、熔断、指标、日志、链路追踪、错误分类。所有模块都依赖它。
 
@@ -481,7 +481,7 @@ closed ──连续失败达阈值(默认5)──> open ──冷却结束(默�
 
 ---
 
-## 6. query_normalization — 问题归一化
+## 6. ai_sql_agent.normalization — 问题归一化
 
 **干什么**:链路的第一步。把口语化的问题变成确定的、可复现的问题。
 
@@ -524,7 +524,7 @@ closed ──连续失败达阈值(默认5)──> open ──冷却结束(默�
 
 ---
 
-## 7. schema_retrieval — 三层 Schema 检索
+## 7. ai_sql_agent.retrieval — 三层 Schema 检索
 
 **这是全项目最大的模块(6025 行),也是技术含量最高的部分。**
 
@@ -747,7 +747,7 @@ return RoutingDecision(False, "无法确认为简单查询,保守走完整规划
 
 ---
 
-## 10. cot_planning — 五元组规划
+## 10. ai_sql_agent.planning — 五元组规划
 
 **干什么**:把一个自然语言问题,拆成若干个「一步一个库」的结构化步骤。
 
@@ -826,7 +826,7 @@ if replanned.steps and not self._plan_database_conflicts(replanned):
 
 ---
 
-## 11. sql_generation — SQL 生成
+## 11. ai_sql_agent.generation — SQL 生成
 
 **干什么**:拿单个 CoT 步骤 + 局部 Schema + 方言约束 + 上一步结果,生成一条 SQL。
 
@@ -847,7 +847,7 @@ SQL 生成阶段**不给整个 SchemaGraph**,只给这一步「处理对象」�
 
 ### 11.2 方言约束是显式建模的
 
-`mcp_router/dialects.py` 把 SQLite 和 PostgreSQL 的差异写成数据:
+`src/ai_sql_agent/execution/dialects.py` 把 SQLite 和 PostgreSQL 的差异写成数据:
 
 ```python
 SQLITE = SqlDialect(
@@ -933,7 +933,7 @@ if foreign:
 
 ---
 
-## 12. mcp_router — 只读执行
+## 12. ai_sql_agent.execution — 只读执行
 
 **干什么**:按步骤的目标库路由到对应执行器,并落实执行治理。
 
@@ -995,7 +995,7 @@ SQLiteMCPExecutor(readonly=True, max_rows=1000, max_execution_seconds=10.0)
 
 ---
 
-## 13. sql_repair — 失败修复回路
+## 13. ai_sql_agent.repair — 失败修复回路
 
 **干什么**:SQL 执行失败后,不是直接报错,而是尝试修好再跑。
 
@@ -1064,7 +1064,7 @@ if not repaired_sql or repaired_sql.strip() == current_sql.strip():
 
 ---
 
-## 14. result_validation — 软异常校验
+## 14. ai_sql_agent.validation — 软异常校验
 
 **这个模块是本项目最有辨识度的部分。讲解时应该重点讲。**
 
@@ -1073,7 +1073,7 @@ if not repaired_sql or repaired_sql.strip() == current_sql.strip():
 模块 docstring 开门见山:
 
 > 处理「SQL 跑通了但结果可能是错的」这一类软异常。
-> 硬错误(语法、未知字段)由 sql_repair 的日志解析回路负责,不在这里。
+> 硬错误(语法、未知字段)由 ai_sql_agent.repair 的日志解析回路负责,不在这里。
 >
 > **设计原则:`执行成功` ≠ `答案正确`。** 只校验执行是否成功会漏掉最危险的一类错误
 > ——join 扇出导致聚合重复计数、过滤条件写反导致空结果,这些 SQL 都能正常返回,
@@ -1150,7 +1150,7 @@ Prompt 里明确写着:
 
 ### 14.6 结果必须回传给调用方
 
-`ai_sql_api/app.py` 里 `StepLogResponse.risk_findings` 的注释:
+`src/ai_sql_agent/api/app.py` 里 `StepLogResponse.risk_findings` 的注释:
 
 > 必须回传给调用方:这些错误 SQL 跑得通、有结果,不提示的话用户看不出异常,
 > 会把错的数字当成事实。指标口径上,「答错且没有任何提示」才算静默错误——
@@ -1158,7 +1158,7 @@ Prompt 里明确写着:
 
 ---
 
-## 15. ai_sql_memory — 长短期记忆
+## 15. ai_sql_agent.memory — 长短期记忆
 
 **干什么**:让多轮对话有上下文,并且让用户能把有价值的结果存进个人知识库。
 
@@ -1211,7 +1211,7 @@ vector_backend: str = "auto"
 
 ---
 
-## 16. ai_sql_auth / audit / limits — 身份、审计、配额
+## 16. ai_sql_agent.auth / audit / limits — 身份、审计、配额
 
 ### 16.1 auth:表级 + 列级权限
 
@@ -1286,7 +1286,7 @@ class TokenBucketLimiter:
 
 ---
 
-## 17. ai_sql_api — 服务入口
+## 17. ai_sql_agent.api — 服务入口
 
 ### 17.1 端点一览
 
@@ -1363,7 +1363,7 @@ async def trace_requests(request, call_next):
 ### 17.5 SchemaWatcher:业务库改了结构怎么办
 
 `schema_watcher.py` 按 `AI_SQL_SCHEMA_REFRESH_SECONDS` 轮询,对比 **Schema 指纹**
-(`schema_retrieval/schema_fingerprint.py`)判断有没有变化,变了就重建索引。
+(`src/ai_sql_agent/retrieval/schema_fingerprint.py`)判断有没有变化,变了就重建索引。
 也可以通过 `POST /admin/schema/reload` 手动触发。
 
 ---
@@ -1443,12 +1443,12 @@ python -m benchmark.gate --repeat 3 --smoke  # 门禁(冒烟样本)
 
 ---
 
-## 19. ai_sql_ops / mcp_server — 运维与对外工具
+## 19. ai_sql_agent.ops / ai_sql_agent.mcp_server — 运维与对外工具
 
-### 19.1 ai_sql_ops:一键生成只读账号
+### 19.1 ai_sql_agent.ops:一键生成只读账号
 
 ```bash
-python -m ai_sql_ops provision
+python -m ai_sql_agent.ops provision
 ```
 
 生成一段 PostgreSQL DDL,建一个真正的只读角色。模板里有几处值得看:
@@ -1472,10 +1472,10 @@ ALTER ROLE {role} SET default_transaction_read_only = on;
 
 同模块的 `audit_business_databases()` 就是 API 启动时体检用的那个函数。
 
-### 19.2 mcp_server:把只读查询能力开放给外部 Agent
+### 19.2 ai_sql_agent.mcp_server:把只读查询能力开放给外部 Agent
 
 ```bash
-python -m mcp_server.server   # stdio 协议
+python -m ai_sql_agent.mcp_server.server   # stdio 协议
 ```
 
 暴露两个 MCP 工具:
@@ -1483,8 +1483,8 @@ python -m mcp_server.server   # stdio 协议
 - `list_databases()` — 列出可查询的库
 - `execute_sql(database, sql)` — 执行只读 SQL
 
-**这是反向的:** 主链路里 `mcp_router` 是「我们去执行 SQL」;
-`mcp_server` 是「别的 Agent(比如 Claude Code)来用我们的只读执行能力」。
+**这是反向的:** 主链路里 `ai_sql_agent.execution` 是「我们去执行 SQL」;
+`ai_sql_agent.mcp_server` 是「别的 Agent(比如 Claude Code)来用我们的只读执行能力」。
 治理参数(行数上限、超时、只读)和主链路保持一致。
 
 ---
@@ -1587,7 +1587,7 @@ SELECT SUM(po_amt) FROM purchase_order WHERE job_no IN ('J24001','J24003','J2400
 | --- | --- | --- | --- |
 | 1 | **跨库关联键显式声明** | `demo_data.get_cross_database_links()` → 注入 Prompt | ③④ |
 | 2 | **指标口径消歧** | `get_metric_disambiguation()` → 注入 Prompt | ② |
-| 3 | **跨库 Few-shot** | `cot_planning/few_shots.py`,命中多库时给完整范例 | ①③ |
+| 3 | **跨库 Few-shot** | `src/ai_sql_agent/planning/few_shots.py`,命中多库时给完整范例 | ①③ |
 | 4 | **步骤-库一致性校验 + 重规划** | `_plan_database_conflicts()` | ① |
 | 5 | **SQL 跨库静态校验 + 重生成** | `_enforce_step_database()` | ① |
 | 6 | **字面量回填格式** | `_serialize_step_result()` 生成「可直接抄的一行」 | ①④ |
@@ -1617,7 +1617,7 @@ flowchart TB
     subgraph RO["只读约束 · 三层纵深"]
         R1["第 1 层 · 应用层<br/>sql_guard.check_readonly_sql()<br/>只允许 SELECT/WITH,扫描全语句关键字<br/>拒绝多语句、写操作、文件函数"]
         R2["第 2 层 · 连接层<br/>SQLite: file:...?mode=ro<br/>PostgreSQL: 只读事务"]
-        R3["第 3 层 · 数据库账号<br/>ai_sql_ops provision 建的只读角色<br/>+ statement_timeout + read_only"]
+        R3["第 3 层 · 数据库账号<br/>ai_sql_agent.ops provision 建的只读角色<br/>+ statement_timeout + read_only"]
         R1 --> R2 --> R3
     end
 
@@ -1765,10 +1765,10 @@ degrade_reason: str = ""
 ### 24.1 三类错误,三种处理
 
 ```
-硬错误       SQL 跑不起来      → sql_repair 修复回路
+硬错误       SQL 跑不起来      → ai_sql_agent.repair 修复回路
              (语法、未知字段)      可自动修好
 
-软异常       SQL 跑通了,但      → result_validation 校验
+软异常       SQL 跑通了,但      → ai_sql_agent.validation 校验
              结果可能是错的        提示用户核对,不阻断
 
 静默错误     SQL 跑通了、有结果  → 这是最贵的一类
@@ -1913,7 +1913,7 @@ benchmark README 的原话(翻译):
 
 ### 第一段 · 跑一遍(5 分钟)
 
-**展示**:终端跑 `python -m ai_sql_pipeline.end_to_end_demo`,滚动看输出。
+**展示**:终端跑 `python examples/end_to_end.py`,滚动看输出。
 
 > 「不需要任何 API Key,模型层自动走 Mock。这一点很重要——
 > 整个项目 357 个测试用例都能离线跑,CI 里也不需要配 Key。」
@@ -1984,7 +1984,7 @@ benchmark README 的原话(翻译):
 > **只有跑通了、出了数、没有警告、而且是错的结果,才会被直接抄进周报。**
 > 一次就够让这个工具被关掉。」
 
-**展示**:`result_validation` 的四道检查表。
+**展示**:`ai_sql_agent.validation` 的四道检查表。
 
 > 「所以有四道检查:空结果、基数、形状、语义自检。
 > 前三道是静态的,不调模型,成本接近零,每条查询都跑。
@@ -2140,7 +2140,7 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 
 ### 练习 2 · 故意让 SQL 报错,观察修复回路(⭐)
 
-改 `sql_generation/prompt_builder.py`,在 Prompt 里加一句
+改 `src/ai_sql_agent/generation/prompt_builder.py`,在 Prompt 里加一句
 「表名统一加 `tbl_` 前缀」,然后跑 Demo。
 
 观察日志里的 `repair.attempt` 事件:错误怎么被解析成 `no_such_table`,
@@ -2170,7 +2170,7 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 
 ### 练习 5 · 加一种 SQL 方言(⭐⭐⭐)
 
-在 `mcp_router/dialects.py` 加一个 `MYSQL = SqlDialect(...)`,
+在 `src/ai_sql_agent/execution/dialects.py` 加一个 `MYSQL = SqlDialect(...)`,
 再写一个 `MySQLMCPExecutor`,在 `_build_mcp_router()` 里注册。
 
 **学到什么**:方言抽象的边界在哪——哪些差异是「注入 Prompt 的规则」,
@@ -2181,7 +2181,7 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 比如:检测 `SELECT *`(用户问具体指标,SQL 却拉了全表所有列),
 或者检测 `LIMIT` 缺失导致的潜在大结果集。
 
-在 `result_validation/` 加一个新文件,在 `ResultValidator.validate()` 里接进去,
+在 `src/ai_sql_agent/validation/` 加一个新文件,在 `ResultValidator.validate()` 里接进去,
 在 `objects.AnomalyType` 里加枚举,写测试。
 
 **学到什么**:这个模块的扩展点设计,以及「新增校验必须同时考虑误报」。
@@ -2252,7 +2252,7 @@ unittest.TextTestRunner().run(
 跑 Demo 时会看到:
 
 ```
-schema_retrieval/vector_index.py:50: RuntimeWarning: divide by zero encountered in matmul
+src/ai_sql_agent/retrieval/vector_index.py:50: RuntimeWarning: divide by zero encountered in matmul
 ```
 
 原因是 `LocalHashEmbeddingClient` 对某些文本会产出零向量,归一化时除零。
@@ -2260,9 +2260,9 @@ schema_retrieval/vector_index.py:50: RuntimeWarning: divide by zero encountered 
 
 ### 29.4 两个文件偏大
 
-- `ai_sql_pipeline/text2sql_pipeline.py` — 1335 行
-- `schema_retrieval/hierarchical_service.py` — 593 行
-- `schema_retrieval/hybrid_schema_retrieval_service.py` — 922 行
+- `src/ai_sql_agent/pipeline/text2sql_pipeline.py` — 1335 行
+- `src/ai_sql_agent/retrieval/hierarchical_service.py` — 593 行
+- `src/ai_sql_agent/retrieval/hybrid_schema_retrieval_service.py` — 803 行
 
 `run()` 方法本身 440 行。可读性靠注释撑住了,但阶段拆成独立对象会更好。
 
@@ -2283,13 +2283,13 @@ schema_retrieval/vector_index.py:50: RuntimeWarning: divide by zero encountered 
 ## 附:文件速查表
 
 ```
-ai_sql_api/          1051 行   API 服务与内置控制台
+src/ai_sql_agent/api/          1051 行   API 服务与内置控制台
   app.py                       11 个端点 + lifespan + trace 中间件
   security.py                  API Key 鉴权、Admin 依赖
   limits.py                    令牌桶限流 + 日配额
   schema_watcher.py            Schema 指纹轮询
 
-ai_sql_core/         1870 行   地基
+src/ai_sql_agent/core/         1870 行   地基
   settings.py                  全局配置单例(一个变量切厂商)
   transport.py                 模型传输层(协议/重试/熔断/记账)
   circuit.py                   熔断器
@@ -2298,7 +2298,7 @@ ai_sql_core/         1870 行   地基
   logging_setup.py             结构化日志
   errors.py                    错误分类
 
-ai_sql_pipeline/     4152 行   编排层 ★核心
+src/ai_sql_agent/pipeline/     4152 行   编排层 ★核心
   text2sql_pipeline.py         主干,run() 串起 11 个阶段
   dynamic_service.py           意图路由入口
   routing.py                   意图分类(模型 + 规则)
@@ -2308,9 +2308,9 @@ ai_sql_pipeline/     4152 行   编排层 ★核心
   conversation_service.py      记忆感知的 pipeline 包装
   data_qa.py                   数据问答链路
   demo_data.py                 4 库业务元数据 + 跨库关联 + 口径消歧
-  end_to_end_demo.py           ★ 从这里开始读
+  (examples/end_to_end.py)     ★ 从这里开始读
 
-schema_retrieval/    6025 行   三层检索 ★最大模块
+src/ai_sql_agent/retrieval/    6025 行   三层检索 ★最大模块
   hierarchical_service.py      三层编排(库→表→字段)
   hybrid_schema_retrieval_service.py  字段级混合检索
   bm25.py / vector_index.py / pgvector_index.py   三路召回
@@ -2321,17 +2321,17 @@ schema_retrieval/    6025 行   三层检索 ★最大模块
   access.py                    权限过滤
   schema_fingerprint.py        Schema 指纹
 
-cot_planning/         760 行   五元组规划
-sql_generation/       916 行   SQL 生成 + 局部 Schema
-mcp_router/           698 行   只读执行(guard / dialects / executors)
-sql_repair/           505 行   修复回路(日志解析 / 子句定位 / 重生成)
-result_validation/    540 行   软异常校验 ★灵魂模块
-query_normalization/  344 行   代词消解 + 时间归一化
-ai_sql_memory/       1591 行   长短期记忆
-ai_sql_auth/          408 行   身份与数据权限
-ai_sql_audit/         515 行   审计与用量
-ai_sql_ops/           309 行   只读账号 provisioning + 体检
-mcp_server/            82 行   对外 MCP 只读查询工具
+src/ai_sql_agent/planning/         760 行   五元组规划
+src/ai_sql_agent/generation/       916 行   SQL 生成 + 局部 Schema
+src/ai_sql_agent/execution/           698 行   只读执行(guard / dialects / executors)
+src/ai_sql_agent/repair/           505 行   修复回路(日志解析 / 子句定位 / 重生成)
+src/ai_sql_agent/validation/    540 行   软异常校验 ★灵魂模块
+src/ai_sql_agent/normalization/  344 行   代词消解 + 时间归一化
+src/ai_sql_agent/memory/       1591 行   长短期记忆
+src/ai_sql_agent/auth/          408 行   身份与数据权限
+src/ai_sql_agent/audit/         515 行   审计与用量
+src/ai_sql_agent/ops/           309 行   只读账号 provisioning + 体检
+src/ai_sql_agent/mcp_server/            82 行   对外 MCP 只读查询工具
 benchmark/           1744 行   评测集 + 四指标 + 发布门禁
 tests/               5270 行   357 个用例
 ```
@@ -2340,9 +2340,9 @@ tests/               5270 行   357 个用例
 
 ## 延伸阅读
 
-- [README.md](README.md) / [README.zh-CN.md](README.zh-CN.md) — 项目总览与快速上手
-- [benchmark/README.zh-CN.md](benchmark/README.zh-CN.md) — 四大指标怎么定的、护栏怎么设计的(**强烈建议完整读一遍**)
-- [deploy/README.zh-CN.md](deploy/README.zh-CN.md) — Docker 编排、权限配置、模型接入、监控排障
-- [schema_retrieval/README.md](schema_retrieval/README.md) — 混合召回与 SchemaGraph
-- [mcp_router/README.md](mcp_router/README.md) — 只读 SQL、方言与执行器
-- [ai_sql_pipeline/README.md](ai_sql_pipeline/README.md) — 动态路由与记忆示例
+- [README.md](../README.md) / [README.zh-CN.md](../README.zh-CN.md) — 项目总览与快速上手
+- [benchmark/README.zh-CN.md](../benchmark/README.zh-CN.md) — 四大指标怎么定的、护栏怎么设计的(**强烈建议完整读一遍**)
+- [docs/deployment.zh-CN.md](deployment.zh-CN.md) — Docker 编排、权限配置、模型接入、监控排障
+- [docs/modules/retrieval.md](modules/retrieval.md) — 混合召回与 SchemaGraph
+- [docs/modules/execution.md](modules/execution.md) — 只读 SQL、方言与执行器
+- [docs/modules/pipeline.md](modules/pipeline.md) — 动态路由与记忆示例

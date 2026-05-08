@@ -46,7 +46,7 @@ back to scoring the full set in SQLite.
 ## Basic usage
 
 ```python
-from ai_sql_memory import ConversationMemoryService
+from ai_sql_agent.memory import ConversationMemoryService
 
 memory = ConversationMemoryService()
 
@@ -81,7 +81,7 @@ memory.save_structured_result(
 Wiring it into an existing Text2SQL setup:
 
 ```python
-from ai_sql_pipeline import Text2SQLPipeline, DynamicSqlAgentService
+from ai_sql_agent.pipeline import Text2SQLPipeline, DynamicSqlAgentService
 
 service = DynamicSqlAgentService(Text2SQLPipeline(), memory)
 response = service.run(
@@ -103,13 +103,13 @@ service.save_result_to_personal_knowledge_base(
 As a plain Python file:
 
 ```bash
-python ai_sql_pipeline/memory_end_to_end_demo.py
+python examples/memory_end_to_end.py
 ```
 
 Or as a module:
 
 ```bash
-python -m ai_sql_pipeline.memory_end_to_end_demo
+python examples/memory_end_to_end.py
 ```
 
 The demo walks through a first Text2SQL turn, the short-term window, a
