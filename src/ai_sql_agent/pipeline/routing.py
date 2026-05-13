@@ -120,6 +120,41 @@ class RuleBasedIntentClassifier:
         "最近",
     )
 
+    # 上面几张词表的英文对应。只有中文词表时，英文问句一个词也命不中，全部落到最后的
+    # 「默认对话问答」——模型路由一失灵（超时、返回格式不对、服务挂了），用英文问
+    # 「哪些供应商准时率低于 0.9」得到的就是一句「上下文里信息不够」，而不是一次查询。
+    # 英文按**整词**匹配（`list` 不该命中 price_list，`per` 不该命中 person）。
+    RESULT_REFERENCES_EN = re.compile(
+        r"\b(?:this result|these results|the results? above|above results?|"
+        r"(?:previous|last|earlier) (?:result|results|query|answer)|"
+        r"that (?:result|table|answer)|those (?:rows|results|records)|just now)\b",
+        re.I,
+    )
+    EXPLANATION_TERMS_EN = re.compile(
+        r"\b(?:explain|interpret|analy[sz]e|analysis|summari[sz]e|summary|why|reason|"
+        r"meaning|definition|define[sd]?)\b",
+        re.I,
+    )
+    KNOWLEDGE_PATTERNS_EN = re.compile(
+        r"\bwhat does .+ mean\b|\b(?:definition|meaning) of\b|"
+        r"\bhow (?:is|are) .+ (?:defined|calculated|computed|measured)\b",
+        re.I,
+    )
+    # re-run / re-query 两边都列：「再查一次」本身就是一次查询请求，
+    # 与中文的「重新查询」「重新统计」同时命中两张表是同一个道理。
+    DATABASE_TERMS_EN = re.compile(
+        r"\b(?:which|list|show|find|look up|get|give me|how many|how much|count|totals?|sum|"
+        r"average|avg|top|highest|lowest|most|least|rank(?:ed|ing)?|compare|per|each|every|"
+        r"re-?run|re-?query|"
+        r"what (?:is|are|was|were) the|who (?:is|are|has|have))\b",
+        re.I,
+    )
+    FRESH_DATA_TERMS_EN = re.compile(
+        r"\b(?:latest|current|currently|today|yesterday|right now|up[- ]to[- ]date|recent|recently|"
+        r"(?:this|last|past) (?:week|month|quarter|year)|re-?run|re-?query|refresh(?:ed)?)\b",
+        re.I,
+    )
+
     def classify(
         self, query: str, context: ConversationMemoryContext
     ) -> RouteDecision:
@@ -133,11 +168,21 @@ class RuleBasedIntentClassifier:
             )
 
         has_result = self._has_available_result(context)
-        result_reference = self._matches_any(normalized, self.RESULT_REFERENCES)
-        explanation = self._matches_any(normalized, self.EXPLANATION_TERMS)
-        knowledge = any(re.search(pattern, normalized) for pattern in self.KNOWLEDGE_PATTERNS)
-        database_request = self._matches_any(normalized, self.DATABASE_TERMS)
-        fresh_data = self._matches_any(normalized, self.FRESH_DATA_TERMS)
+        result_reference = self._matches_any(normalized, self.RESULT_REFERENCES) or bool(
+            self.RESULT_REFERENCES_EN.search(normalized)
+        )
+        explanation = self._matches_any(normalized, self.EXPLANATION_TERMS) or bool(
+            self.EXPLANATION_TERMS_EN.search(normalized)
+        )
+        knowledge = any(
+            re.search(pattern, normalized) for pattern in self.KNOWLEDGE_PATTERNS
+        ) or bool(self.KNOWLEDGE_PATTERNS_EN.search(normalized))
+        database_request = self._matches_any(normalized, self.DATABASE_TERMS) or bool(
+            self.DATABASE_TERMS_EN.search(normalized)
+        )
+        fresh_data = self._matches_any(normalized, self.FRESH_DATA_TERMS) or bool(
+            self.FRESH_DATA_TERMS_EN.search(normalized)
+        )
 
         if fresh_data and database_request:
             return RouteDecision(

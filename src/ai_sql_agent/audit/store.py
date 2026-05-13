@@ -83,6 +83,7 @@ class SQLiteAuditStore:
                     completion_tokens INTEGER NOT NULL DEFAULT 0,
                     degraded INTEGER NOT NULL DEFAULT 0,
                     has_risk INTEGER NOT NULL DEFAULT 0,
+                    execution_status TEXT NOT NULL DEFAULT '',
                     error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_user_time
@@ -104,6 +105,7 @@ class SQLiteAuditStore:
         for column, ddl in (
             ("degraded", "INTEGER NOT NULL DEFAULT 0"),
             ("has_risk", "INTEGER NOT NULL DEFAULT 0"),
+            ("execution_status", "TEXT NOT NULL DEFAULT ''"),
         ):
             if column not in existing:
                 conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {column} {ddl}")
@@ -117,8 +119,8 @@ class SQLiteAuditStore:
                     route, databases, tables, sqls, denied_tables,
                     success, status_code, failed_steps, repaired_steps,
                     duration_ms, prompt_tokens, completion_tokens, degraded,
-                    has_risk, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    has_risk, execution_status, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.trace_id,
@@ -141,6 +143,7 @@ class SQLiteAuditStore:
                     record.completion_tokens,
                     int(record.degraded),
                     int(record.has_risk),
+                    record.execution_status,
                     record.error,
                 ),
             )
@@ -238,6 +241,7 @@ class PostgresAuditStore:
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
                 degraded BOOLEAN NOT NULL DEFAULT FALSE,
                 has_risk BOOLEAN NOT NULL DEFAULT FALSE,
+                execution_status TEXT NOT NULL DEFAULT '',
                 error TEXT
             )
             """
@@ -250,6 +254,10 @@ class PostgresAuditStore:
         self.conn.execute(
             f"ALTER TABLE {TABLE_NAME} "
             f"ADD COLUMN IF NOT EXISTS has_risk BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        self.conn.execute(
+            f"ALTER TABLE {TABLE_NAME} "
+            f"ADD COLUMN IF NOT EXISTS execution_status TEXT NOT NULL DEFAULT ''"
         )
         self.conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_audit_user_time "
@@ -272,10 +280,10 @@ class PostgresAuditStore:
                     route, databases, tables, sqls, denied_tables,
                     success, status_code, failed_steps, repaired_steps,
                     duration_ms, prompt_tokens, completion_tokens, degraded,
-                    has_risk, error
+                    has_risk, execution_status, error
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -299,6 +307,7 @@ class PostgresAuditStore:
                     record.completion_tokens,
                     record.degraded,
                     record.has_risk,
+                    record.execution_status,
                     record.error,
                 ),
             )

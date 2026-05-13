@@ -1,8 +1,25 @@
 from __future__ import annotations
 
 import fnmatch
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from .identifiers import bind_dialect, fold, quoted_names_are_case_sensitive
+
+
+def _glob_exact(target: str, rule: str) -> bool:
+    """大小写必须一致。`fnmatchcase` 不随操作系统变（`fnmatch` 在 Windows 上会忽略大小写）。"""
+    return fnmatch.fnmatchcase(target, rule)
+
+
+def _glob_folded(target: str, rule: str) -> bool:
+    """ASCII 字母不区分大小写——SQLite 这类库里，那本来就是同一个名字。"""
+    return fnmatch.fnmatchcase(fold(target), fold(rule))
+
+
+def _glob_wide(target: str, rule: str) -> bool:
+    """任何大小写都算命中。拒绝规则与行范围规则用这个：宁可多拦一张同名的表。"""
+    return fnmatch.fnmatchcase(target.casefold(), rule.casefold())
 
 
 ALL_ROWS = "*"
@@ -28,7 +45,8 @@ class RowFilter:
         return self.predicate.strip() == ALL_ROWS
 
     def matches(self, database: str, table: str) -> bool:
-        return fnmatch.fnmatch(f"{database}.{table}", self.table)
+        # 行范围是一种限制，和拒绝规则同一个方向：不区分大小写，宁可多套一张表
+        return _glob_wide(f"{database}.{table}", self.table)
 
     @classmethod
     def from_dict(cls, payload: dict) -> "RowFilter":
@@ -51,6 +69,12 @@ class DataPolicy:
         deny_columns = ["wms_db.batch.unit_cost", "*.*.id_card_no"]
 
     deny 优先于 allow。
+
+    名字的大小写怎么比，见 `ai_sql_agent.auth.identifiers`，一句话：**拒绝从宽、放行从严**。
+    拒绝规则在任何库上都不区分大小写；放行规则在 SQLite 上不区分大小写，
+    在 PostgreSQL 上必须与存储名大小写一致（那里 `"Orders"` 与 `orders` 是两张表）。
+    哪个库按哪种规则，由调用方用 `for_dialect()` 绑定——目录、检索裁剪、SQL 授权关卡
+    都是这么做的，所以三处给出的是同一个答案。
     """
 
     allow_tables: Tuple[str, ...] = ("*",)
@@ -64,19 +88,34 @@ class DataPolicy:
     「没声明」和「声明了放行所有行」是两件事，见 `row_predicate`。
     """
 
+    case_sensitive_allow: bool = False
+    """
+    放行规则是否要求大小写一致。**不是配置项**，配置文件里不认这个键——
+    它由 `for_dialect()` 按目标库的方言设置（PostgreSQL 为真）。
+    """
+
+    def for_dialect(self, dialect: str) -> "DataPolicy":
+        """这份策略在某个库上的视图：按那个库的大小写规则匹配放行规则。"""
+        exact = quoted_names_are_case_sensitive(dialect)
+        if exact == self.case_sensitive_allow:
+            return self
+        return replace(self, case_sensitive_allow=exact)
+
+    def _allowed_by_rule(self, target: str) -> bool:
+        match = _glob_exact if self.case_sensitive_allow else _glob_folded
+        return any(match(target, rule) for rule in self.allow_tables)
+
     def allows_table(self, database: str, table: str) -> bool:
         target = f"{database}.{table}"
-        if any(fnmatch.fnmatch(target, rule) for rule in self.deny_tables):
+        if any(_glob_wide(target, rule) for rule in self.deny_tables):
             return False
-        return any(fnmatch.fnmatch(target, rule) for rule in self.allow_tables)
+        return self._allowed_by_rule(target)
 
     def allows_column(self, database: str, table: str, column: str) -> bool:
         if not self.allows_table(database, table):
             return False
         target = f"{database}.{table}.{column}"
-        return not any(
-            fnmatch.fnmatch(target, rule) for rule in self.deny_columns
-        )
+        return not any(_glob_wide(target, rule) for rule in self.deny_columns)
 
     def allows_table_reference(self, database: str, names: Sequence[str]) -> bool:
         """
@@ -98,16 +137,12 @@ class DataPolicy:
         """
         candidates = [f"{database}.{name}" for name in names]
         if any(
-            fnmatch.fnmatch(target, rule)
+            _glob_wide(target, rule)
             for target in candidates
             for rule in self.deny_tables
         ):
             return False
-        return any(
-            fnmatch.fnmatch(target, rule)
-            for target in candidates
-            for rule in self.allow_tables
-        )
+        return any(self._allowed_by_rule(target) for target in candidates)
 
     def allows_column_reference(
         self, database: str, names: Sequence[str], column: str
@@ -116,7 +151,7 @@ class DataPolicy:
         if not self.allows_table_reference(database, names):
             return False
         return not any(
-            fnmatch.fnmatch(f"{database}.{name}.{column}", rule)
+            _glob_wide(f"{database}.{name}.{column}", rule)
             for name in names
             for rule in self.deny_columns
         )
@@ -163,6 +198,7 @@ class DataPolicy:
             deny_tables=tuple(dict.fromkeys(self.deny_tables + other.deny_tables)),
             deny_columns=tuple(dict.fromkeys(self.deny_columns + other.deny_columns)),
             row_filters=tuple(dict.fromkeys(self.row_filters + other.row_filters)),
+            case_sensitive_allow=self.case_sensitive_allow or other.case_sensitive_allow,
         )
 
     @classmethod
@@ -210,6 +246,13 @@ class IntersectionPolicy:
 
     service: Any
     user: Any
+
+    def for_dialect(self, dialect: str) -> "IntersectionPolicy":
+        """两边各自绑到这个库的方言上，交集的语义不变。"""
+        return IntersectionPolicy(
+            service=bind_dialect(self.service, dialect),
+            user=bind_dialect(self.user, dialect),
+        )
 
     def allows_table(self, database: str, table: str) -> bool:
         return self.service.allows_table(database, table) and self.user.allows_table(

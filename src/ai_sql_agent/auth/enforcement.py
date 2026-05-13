@@ -27,13 +27,14 @@ import contextvars
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from fnmatch import fnmatch
+from fnmatch import fnmatchcase
 from typing import Any, Iterator, List, Optional, Tuple
 
 from ai_sql_agent.core import log_event
 from ai_sql_agent.core.logging_setup import get_logger
 from ai_sql_agent.core.metrics import ACCESS_DENIED
 
+from .identifiers import bind_dialect
 from .sql_analysis import SqlAnalysis, TableRef, analyze_sql
 
 _logger = get_logger("auth")
@@ -134,7 +135,10 @@ def _rules_restrict_columns(rules: Tuple[str, ...], database: str, table: str) -
             # 认不出形状的规则：当成可能命中，宁可多拒一次。
             return True
         db_pattern, table_pattern, _column = parts
-        if fnmatch(database, db_pattern) and fnmatch(table, table_pattern):
+        # 列限制是拒绝方向的规则：不区分大小写（见 identifiers 模块「拒绝从宽」）
+        if fnmatchcase(database.casefold(), db_pattern.casefold()) and fnmatchcase(
+            table.casefold(), table_pattern.casefold()
+        ):
             return True
     return False
 
@@ -171,7 +175,12 @@ def check_sql_access(
 
     判定顺序是「先表后列」：表都过不了就没必要报列，错误文案里堆一串
     列名反而看不出根因。
+
+    名字的大小写按 `dialect` 的规则处理（见 `identifiers` 模块）：`analyze_sql` 把
+    SQL 里的标识符换成规范名，策略绑到同一个方言上去比。两边用的是同一条规则，
+    所以「SQL 里怎么写」绕不开「策略里怎么写」。
     """
+    access = bind_dialect(access, dialect)
     analysis: SqlAnalysis = analyze_sql(sql, dialect=dialect)
     if not analysis.parsed:
         # 提取不到 ≠ 没有越权。解析不了就拒，这是本次改动的核心一条。

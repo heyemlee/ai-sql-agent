@@ -87,6 +87,13 @@ def main() -> int:
         help="关闭回溯回路。与默认跑一次对比即得「回溯增益」",
     )
     parser.add_argument("--output", help="报告 JSON 输出路径")
+    parser.add_argument(
+        "--dataset",
+        help=(
+            "评测集 JSON 路径，默认 benchmark/dataset.json。"
+            "中英文业务用例在 benchmark/bilingual_cases.json（4 个场景各一中一英）。"
+        ),
+    )
     args = parser.parse_args()
 
     # 用 Settings 判断而不是 os.getenv：凭证可能配在 .env 里，
@@ -98,7 +105,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    runner = BenchmarkRunner(enable_repair=not args.no_repair)
+    runner = BenchmarkRunner(enable_repair=not args.no_repair, dataset_path=args.dataset)
 
     if args.repeat > 1:
         return _run_repeated(runner, args)

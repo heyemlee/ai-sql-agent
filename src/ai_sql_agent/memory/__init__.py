@@ -1,6 +1,10 @@
 """AI SQL Agent 长短期记忆模块。"""
 
-from .conversation import ConversationMemoryService, MemoryServiceConfig
+from .conversation import (
+    ConversationMemoryService,
+    MemoryServiceConfig,
+    create_memory_service,
+)
 from .long_term import LocalMemoryEmbeddingClient, LongTermMemoryConfig, LongTermMemoryService
 from .objects import (
     ConversationMemoryContext,
@@ -32,6 +36,7 @@ __all__ = [
     "MemoryKind",
     "MemoryMessage",
     "MemoryServiceConfig",
+    "create_memory_service",
     "MessageRole",
     "ModelMemorySummarizer",
     "PgVectorLongTermMemoryConfig",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, Optional
 
 from .cardinality import check_cardinality
 from .shape import (
@@ -43,6 +43,7 @@ class ResultValidator:
         is_final_step: bool = True,
         preceding_summary: str = "",
         step_objective: str = "",
+        column_units: Optional[Dict[str, str]] = None,
     ) -> ValidationOutcome:
         findings: list[ValidationFinding] = []
         paraphrase: Optional[str] = None
@@ -87,6 +88,7 @@ class ResultValidator:
                 target,
                 sql,
                 preceding_summary=preceding_summary if is_final_step else "",
+                known_units=column_units or None,
             )
             if finding is not None:
                 findings.append(finding)

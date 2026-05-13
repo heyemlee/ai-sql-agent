@@ -296,6 +296,36 @@ class SqlAgentSettings(BaseSettings):
     db_pool_idle_seconds: float = 300.0
     """池里的空闲连接超过这个时长就丢弃重建，避免拿到被服务端掐掉的死连接。"""
 
+    # ---- 数据浏览（目录 + 只读预览）----
+    catalog_enabled: bool = True
+    """
+    关掉之后 /catalog 一组接口返回 404，页面的「数据浏览」显示未启用。
+
+    预览走的是和问答同一个执行器、同一份表列权限，不是另一条数据通路；
+    这个开关只是给「只想开放问答、不想让人翻表」的部署留一个位置。
+    """
+
+    catalog_preview_max_page_size: int = 100
+    """预览一页最多多少行。请求里要得更多时按这个数截。"""
+
+    catalog_preview_max_offset: int = 10000
+    """
+    预览最多能翻到第几行。目录是给人认识数据用的，不是导出通道：
+    翻到这么深还没找到，该做的是加筛选条件或者直接提问。
+    """
+
+    catalog_preview_timeout_seconds: float = 5.0
+    """单次预览查询的时长上限，比 `max_execution_seconds` 紧——超了就让人加条件。"""
+
+    catalog_rate_limit_per_minute: int = 120
+    """
+    目录与预览的限流，按调用方单独计数，**不占问答的额度**。
+    翻页是连续点击，和提问共用一个桶的话，翻几页表就会把自己提问的额度翻没。
+    """
+
+    catalog_structure_ttl_seconds: float = 30.0
+    """表结构的缓存时长。每次打开目录都去读一遍系统表没有必要。"""
+
     # ---- A2A 流式资源 ----
     a2a_stream_max_concurrent: int = 8
     """

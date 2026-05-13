@@ -52,9 +52,15 @@ class RuleBasedDataQAClient:
         if result is not None:
             return self._answer_from_result(query, result)
 
+        # 固定答复跟着问题的语言走：用英文提问的人读不了一句中文的「信息不够」
+        english = not any("\u4e00" <= char <= "\u9fff" for char in query)
+
         if context.long_term_hits:
             summaries = [hit.memory.summary for hit in context.long_term_hits[:3]]
-            return "根据个人知识库中的历史内容：\n" + "\n".join(
+            lead = (
+                "From your saved results:" if english else "根据个人知识库中的历史内容："
+            )
+            return lead + "\n" + "\n".join(
                 f"{index}. {summary}" for index, summary in enumerate(summaries, start=1)
             )
 
@@ -62,6 +68,12 @@ class RuleBasedDataQAClient:
             if name in query:
                 return definition
 
+        if english:
+            return (
+                "There is not enough in this conversation to answer that, and it was not "
+                "treated as a request for new data. If you need figures from the database, "
+                "ask for them directly — for example “list …” or “how many …”."
+            )
         return "当前上下文中没有足够的信息回答该问题，但该请求不需要重新查询数据库。"
 
     @staticmethod
@@ -134,9 +146,13 @@ class ModelDataQAClient:
             if glossary
             else ""
         )
+        # 作答语言跟着问题走。这段话是这条链路上唯一直接给人读的模型原文——
+        # 查库路径的答案由页面按结构化结果自己拼，不经过模型；这里不说清楚的话，
+        # 上下文与口径都是中文，英文提问得到的也会是一段中文。
         prompt = f"""你是 AI SQL Agent 数据问答助手。请只依据给定上下文回答当前问题。
 你负责结果解释、指标说明、数据分析、历史结果追问和业务知识问答。
 不得声称执行了新的数据库查询；上下文不足时明确说明缺少什么信息。
+用与「当前问题」相同的语言作答（问题是英文就用英文作答）；转述业务指标口径时只换语言，不改含义。
 {glossary_section}
 上下文：
 {context_text or '无'}

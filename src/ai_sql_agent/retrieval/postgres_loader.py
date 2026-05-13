@@ -111,6 +111,53 @@ class PostgresSchemaLoader:
         finally:
             conn.close()
 
+    def load_structure(self, connect_timeout: int = 5) -> Dict[str, List[ColumnSchema]]:
+        """
+        只读表结构：表 → 字段（类型、可空、主外键）。不带业务元数据，不抽样例。
+
+        给数据目录用（见 `SQLiteSchemaLoader.load_structure`）。字段用一条
+        information_schema 查询取完，不按表各查一次——目录每次打开都要读。
+        """
+        import psycopg
+
+        conn = psycopg.connect(self.dsn, autocommit=True, connect_timeout=connect_timeout)
+        try:
+            table_names = self._get_table_names(conn)
+            primary_keys = self._get_primary_keys(conn)
+            foreign_keys = self._get_foreign_keys(conn)
+            rows = conn.execute(
+                """
+                SELECT table_name, column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                ORDER BY table_name, ordinal_position
+                """,
+                (self.schema,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        structure: Dict[str, List[ColumnSchema]] = {name: [] for name in table_names}
+        for table_name, column_name, data_type, is_nullable in rows:
+            if table_name not in structure:
+                continue  # 视图、被排除的基础设施表
+            fk_map = {
+                source: f"{target_table}.{target_column}"
+                for source, target_table, target_column in foreign_keys.get(table_name, [])
+            }
+            structure[table_name].append(
+                ColumnSchema(
+                    database=self.database_name,
+                    table_name=table_name,
+                    column_name=column_name,
+                    data_type=data_type or "UNKNOWN",
+                    nullable=is_nullable == "YES",
+                    is_primary_key=column_name in primary_keys.get(table_name, []),
+                    foreign_key_ref=fk_map.get(column_name),
+                )
+            )
+        return structure
+
     def _get_table_names(self, conn) -> List[str]:
         rows = conn.execute(
             """

@@ -44,6 +44,16 @@ class AllowAll:
 ALLOW_ALL = AllowAll()
 
 
+def bind_dialect(access, dialect: str):
+    """
+    把权限过滤器绑到某个库的方言上（名字的大小写规则跟着数据库走，见
+    `ai_sql_agent.auth.identifiers`）。检索层不依赖鉴权模块，所以这里按鸭子类型问：
+    实现了 `for_dialect` 的就绑，没实现的原样用。
+    """
+    hook = getattr(access, "for_dialect", None)
+    return hook(dialect) if callable(hook) else access
+
+
 def filter_schema_graph(graph, access: SchemaAccessFilter):
     """
     按权限裁剪 SchemaGraph：无权表整张移除，无权字段逐个移除。

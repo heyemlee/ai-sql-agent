@@ -38,6 +38,9 @@ class PostgresMCPExecutor:
 
     dialect = POSTGRES.name
 
+    supports_params = True
+    """支持 `MCPExecutionRequest.params`（占位符 `%s`）。"""
+
     def __init__(
         self,
         database: str,
@@ -111,12 +114,16 @@ class PostgresMCPExecutor:
                     error=guard.reason,
                 )
 
+        # 请求可以把行数与时长上限调小（预览一页只要几十行），调不大
+        max_rows = request.row_cap(self.max_rows)
+        max_seconds = request.time_cap(self.max_execution_seconds)
+
         conn = None
         pooled = False
         reusable = True
         try:
             conn, pooled = self._pool.acquire()
-            timeout_ms = int(self.max_execution_seconds * 1000)
+            timeout_ms = int(max_seconds * 1000)
             conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             if self.readonly:
                 conn.execute("SET TRANSACTION READ ONLY")
@@ -136,14 +143,19 @@ class PostgresMCPExecutor:
             # 时点在真正执行 SQL 之前打：读到的就是这一刻的库状态
             as_of = now_rfc3339()
             with conn.cursor(name=f"ai_sql_{int(started * 1000)}") as cursor:
-                cursor.itersize = min(self.max_rows, 1000)
-                cursor.execute(sql)
+                cursor.itersize = min(max_rows, 1000)
+                # 不带参数时不传第二个实参：psycopg 只在给了参数时才解释 `%`，
+                # 模型生成的 SQL 里的 `LIKE '%x%'` 才不会被当成占位符。
+                if request.params:
+                    cursor.execute(sql, tuple(request.params))
+                else:
+                    cursor.execute(sql)
                 # 多取一行以区分「刚好取满」和「被截断」
-                raw_rows = cursor.fetchmany(self.max_rows + 1)
+                raw_rows = cursor.fetchmany(max_rows + 1)
                 columns = [desc.name for desc in (cursor.description or [])]
 
-            truncated = len(raw_rows) > self.max_rows
-            raw_rows = raw_rows[: self.max_rows]
+            truncated = len(raw_rows) > max_rows
+            raw_rows = raw_rows[:max_rows]
             rows: List[Dict[str, Any]] = [
                 dict(zip(columns, row)) for row in raw_rows
             ]
@@ -156,7 +168,7 @@ class PostgresMCPExecutor:
                 rows=rows,
                 row_count=len(rows),
                 truncated=truncated,
-                row_limit=self.max_rows,
+                row_limit=max_rows,
                 as_of=as_of,
                 as_of_source=self.as_of_source,
             )
@@ -169,7 +181,7 @@ class PostgresMCPExecutor:
                 database=request.database,
                 sql=sql,
                 success=False,
-                error=self._describe_error(exc),
+                error=self._describe_error(exc, max_seconds),
             )
 
         finally:
@@ -182,10 +194,11 @@ class PostgresMCPExecutor:
                     reusable = False
                 self._pool.release(conn, pooled, reusable=reusable)
 
-    def _describe_error(self, exc: Exception) -> str:
+    def _describe_error(self, exc: Exception, max_seconds: Optional[float] = None) -> str:
         message = str(exc).strip()
         if "statement timeout" in message.lower() or "canceling statement" in message.lower():
-            return f"查询执行超时（超过 {self.max_execution_seconds} 秒），已中止。"
+            limit = self.max_execution_seconds if max_seconds is None else max_seconds
+            return f"查询执行超时（超过 {limit} 秒），已中止。"
         if "read-only" in message.lower():
             return "只读事务中不允许写操作。"
         return message

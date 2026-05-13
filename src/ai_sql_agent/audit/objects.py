@@ -45,6 +45,16 @@ class AuditRecord:
     而它恰恰是评测集之外唯一能测到它的地方。
     """
 
+    execution_status: str = ""
+    """
+    业务终态（契约 §4.6.1）：success / no_data / partial_success / failed /
+    not_applicable。空串表示这条记录写入时还没有这一列（老记录）或请求没跑到出结果。
+
+    `success` 那一列回答不了「查到了，答案是没有」和「查到了数据」的区别——
+    两者都是 success=1。历史页要把这两种分开显示，而结果集不落审计，
+    事后算不回来，所以在写入时就记下。
+    """
+
     status_code: int = 200
     failed_steps: int = 0
     repaired_steps: int = 0
@@ -76,6 +86,7 @@ class AuditRecord:
             "success": self.success,
             "degraded": self.degraded,
             "has_risk": self.has_risk,
+            "execution_status": self.execution_status,
             "status_code": self.status_code,
             "failed_steps": self.failed_steps,
             "repaired_steps": self.repaired_steps,

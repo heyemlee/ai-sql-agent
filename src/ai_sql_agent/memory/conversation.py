@@ -34,10 +34,12 @@ from .vector_store import PgVectorLongTermMemoryConfig, PgVectorLongTermVectorIn
 
 _logger = get_logger("memory")
 
+DEFAULT_MEMORY_DB_PATH = "runtime_data/memory.db"
+
 
 @dataclass
 class MemoryServiceConfig:
-    db_path: str | Path = "runtime_data/memory.db"
+    db_path: str | Path = DEFAULT_MEMORY_DB_PATH
     embedding_dimensions: int = 1024
     use_model_summarizer_when_available: bool = True
     use_reranker_when_available: bool = True
@@ -323,3 +325,24 @@ class ConversationMemoryService:
             table=self.config.vector_table_name,
         )
         return index
+
+
+def create_memory_service() -> ConversationMemoryService:
+    """
+    按配置创建对话记忆服务。库文件的位置取 `Settings.memory_db_path`
+    （环境变量 `AI_SQL_MEMORY_DB_PATH`），相对路径按进程的工作目录解析。
+
+    这个配置项早就在 Settings 里，但一直没有人读它：服务启动时直接
+    `ConversationMemoryService()`，记忆库于是永远落在 `./runtime_data/memory.db`。
+    同一个工作目录下起两个实例（比如一台机器上的正式服务和练习服务），
+    两边的对话历史就写进了同一个文件——上一个实例里问过的问题，会被下一个实例
+    当成「刚才的查询结果」拿来回答。
+
+    默认值与原来写死的路径相同，所以没有设置这个变量的部署读到的还是原来那份库，
+    里面的记忆原样保留；这里不迁移、不清理任何已有的文件。留空同样落回默认路径——
+    SQLite 把空路径当成「用完即弃的临时库」，那样对话记忆会悄悄丢掉。
+    """
+    configured = str(get_settings().memory_db_path or "").strip()
+    path = configured or DEFAULT_MEMORY_DB_PATH
+    log_event(_logger, logging.INFO, "memory.store", backend="sqlite", path=path)
+    return ConversationMemoryService(MemoryServiceConfig(db_path=path))

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Optional, Protocol
+from typing import Dict, Optional, Protocol
 
 from .objects import AnomalyType, ValidationFinding
 
@@ -32,7 +32,7 @@ _COMPARE_PROMPT = """你是一个语义一致性审阅助手。
 
 用户问题：{query}
 SQL 的实际行为：{paraphrase}
-
+{facts}
 输出格式（严格遵守，只输出两行）：
 结论：一致 或 不一致
 理由：<一句话>
@@ -54,10 +54,22 @@ _MULTI_STEP_COMPARE_PROMPT = """你是一个语义一致性审阅助手。
 用户问题：{query}
 前置步骤已完成：{preceding}
 最后一步 SQL 的实际行为：{paraphrase}
-
+{facts}
 输出格式（严格遵守，只输出两行）：
 结论：一致 或 不一致
 理由：<一句话>
+"""
+
+_UNIT_FACTS = """已知事实（来自数据字典，不在 SQL 里）：结果列的单位是 {units}。
+这些列存的本来就是这个单位，SQL 不需要再按单位或币种筛选、换算；
+问题里要的是同一个单位时不算不一致，要的是**别的**单位而 SQL 没有换算才算。
+"""
+"""
+审阅者只看得到 SQL 的复述，看不到数据字典。问题里写了「以美元计」，而 SQL 里
+自然没有任何币种字样——金额列存的本来就是美元——它就会判成「漏掉了币种条件」。
+这不是它判断力的问题，是它缺一条事实；把这条事实给它，而不是让它猜。
+
+没有声明单位的列不出现在这里，那时提示词与原来逐字相同。
 """
 
 
@@ -85,6 +97,7 @@ class SemanticSelfChecker:
         query: str,
         sql: str,
         preceding_summary: str = "",
+        known_units: Optional[Dict[str, str]] = None,
     ) -> tuple[Optional[ValidationFinding], Optional[str]]:
         """
         返回 (发现, 复述文本)。模型不可用时返回 (None, None)，不阻断主链路。
@@ -97,6 +110,12 @@ class SemanticSelfChecker:
         if not self.client or not sql.strip():
             return None, None
 
+        facts = ""
+        if known_units:
+            facts = _UNIT_FACTS.format(
+                units="、".join(f"{column}={unit}" for column, unit in known_units.items())
+            )
+
         try:
             raw = self.client.generate(_PARAPHRASE_PROMPT.format(sql=sql.strip()))
             paraphrase = self._extract(raw, "复述") or raw.strip()
@@ -106,10 +125,11 @@ class SemanticSelfChecker:
                     query=query,
                     preceding=preceding_summary.strip(),
                     paraphrase=paraphrase,
+                    facts=facts,
                 )
             else:
                 compare_prompt = _COMPARE_PROMPT.format(
-                    query=query, paraphrase=paraphrase
+                    query=query, paraphrase=paraphrase, facts=facts
                 )
             verdict_raw = self.client.generate(compare_prompt)
         except Exception:

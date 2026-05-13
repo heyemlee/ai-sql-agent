@@ -197,7 +197,13 @@ def summarize_result(result) -> ResultSummary:
     failed = sum(1 for s in step_logs if not s.success)
     succeeded = len(step_logs) - failed
     repaired = sum(1 for s in step_logs if s.repair_attempts)
-    degraded = bool(result.pipeline_result is not None and result.pipeline_result.degraded)
+    # 两条路各有各的降级：查库那条记在 pipeline_result 上，对话问答那条记在 result 上
+    if result.pipeline_result is not None:
+        degraded = bool(result.pipeline_result.degraded)
+        degrade_reason = result.pipeline_result.degrade_reason
+    else:
+        degraded = bool(getattr(result, "degraded", False))
+        degrade_reason = str(getattr(result, "degrade_reason", "") or "") if degraded else ""
     route = result.decision.route.value
 
     as_of, as_of_source = _resolve_as_of(step_logs)
@@ -214,7 +220,7 @@ def summarize_result(result) -> ResultSummary:
         failed_steps=failed, repaired_steps=repaired,
         has_risk=any(s.risk_findings for s in step_logs),
         degraded=degraded,
-        degrade_reason=(result.pipeline_result.degrade_reason if result.pipeline_result is not None else ""),
+        degrade_reason=degrade_reason,
         execution_status=compute_execution_status(route, step_logs),
         succeeded_steps=succeeded,
         result_truncated=any(s.truncated for s in step_logs),
@@ -252,6 +258,7 @@ def apply_summary_to_audit(summary: ResultSummary, audit: AuditRecord) -> None:
     audit.success = summary.failed_steps == 0 and not summary.degraded
     audit.degraded = summary.degraded
     audit.has_risk = summary.has_risk
+    audit.execution_status = summary.execution_status
     audit.failed_steps = summary.failed_steps
     audit.repaired_steps = summary.repaired_steps
 

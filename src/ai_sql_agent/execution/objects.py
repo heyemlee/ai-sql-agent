@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 
 @dataclass
@@ -15,6 +15,32 @@ class MCPExecutionRequest:
 
     database: str
     sql: str
+
+    params: Sequence[Any] = ()
+    """
+    绑定参数，按位置对应 SQL 里的占位符（SQLite 是 `?`，PostgreSQL 是 `%s`）。
+
+    模型生成的 SQL 不带参数，这个字段一直是空的；数据浏览的预览查询用它：
+    表名列名来自服务端核对过的清单，用户输入的搜索词与筛选值只走这里，
+    永远不拼进 SQL 文本。
+    """
+
+    max_rows: Optional[int] = None
+    timeout_seconds: Optional[float] = None
+    """
+    这次执行的行数与时长上限。**只能收紧，不能放宽**——执行器自己的上限是硬顶，
+    这里给的值比它大时按执行器的算（见 `row_cap` / `time_cap`）。
+    """
+
+    def row_cap(self, executor_cap: int) -> int:
+        if self.max_rows is None:
+            return executor_cap
+        return max(1, min(int(executor_cap), int(self.max_rows)))
+
+    def time_cap(self, executor_cap: float) -> float:
+        if self.timeout_seconds is None or self.timeout_seconds <= 0:
+            return executor_cap
+        return min(float(executor_cap), float(self.timeout_seconds))
 
 
 @dataclass

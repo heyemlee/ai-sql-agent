@@ -9,6 +9,34 @@ SHARED_FILE_STEM = "_shared"
 
 CONNECTION_KEYS = ("dialect", "db_path", "dsn", "dsn_env")
 
+DISPLAY_KEYS = (
+    "label", "label_en", "label_zh",
+    "description_en", "description_zh",
+    "business_usage_en", "business_usage_zh",
+)
+"""
+给人看的名字与说明，库、表、字段三层都认这几个键，全部可选：
+
+- `label`：业务名称，不分语言；`label_en` / `label_zh` 是分语言的写法；
+- `description_en` / `description_zh`：`description` 的对应语言版本；
+- `business_usage_en` / `business_usage_zh`：字段的 `business_usage` 的对应语言版本。
+
+**它们不进检索与生成 Prompt**——模型读的仍然是 `description` 与 `aliases`。
+这几个键只给数据目录（`ai_sql_agent.catalog`）用：模型需要的是能召回字段的
+口语别名，人需要的是一个不带下划线的名字，两者不是同一份文案。
+"""
+
+
+def display_fields(meta: Any) -> Dict[str, str]:
+    """从一段元数据里取出展示用的键；没写的不出现。"""
+    if not isinstance(meta, dict):
+        return {}
+    return {
+        key: str(meta[key]).strip()
+        for key in DISPLAY_KEYS
+        if isinstance(meta.get(key), (str, int, float)) and str(meta[key]).strip()
+    }
+
 
 @dataclass
 class DatabaseSemantics:
@@ -37,6 +65,9 @@ class DatabaseSemantics:
     """存放连接串的环境变量名，例如 ERP_DSN。连接串含密码，文件要进 git，密码不能。"""
 
     tables: Dict[str, dict] = field(default_factory=dict)
+
+    display: Dict[str, str] = field(default_factory=dict)
+    """库这一层的展示用键（见 `DISPLAY_KEYS`），例如 `label_en: Orders & Purchasing`。"""
 
     def resolved_dsn(self) -> str:
         if self.dsn:
@@ -69,6 +100,7 @@ class DatabaseSemantics:
             connection["dsn_env"] = self.dsn_env
         return {
             "name": self.name,
+            **self.display,
             "description": self.description,
             "aliases": list(self.aliases),
             "connection": connection,
@@ -102,6 +134,7 @@ class DatabaseSemantics:
             dsn=str(connection.get("dsn") or ""),
             dsn_env=str(connection.get("dsn_env") or ""),
             tables=tables,
+            display=display_fields(payload),
         )
 
 
@@ -121,6 +154,14 @@ class SemanticLayer:
     metric_definitions: Dict[str, str] = field(default_factory=dict)
     """业务指标定义：「超预算」「良率」这类词到底怎么算，对话问答链路直接引用。"""
 
+    metric_definitions_en: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    """
+    指标定义的英文版，只给数据目录展示用：`{指标名: {"term": 英文名, "definition": 英文定义}}`。
+
+    键是 `metric_definitions` 里的那个指标名。**模型读的仍然是 `metric_definitions`**——
+    口径只有一份；这里是同一份口径给另一种语言的读者看的写法，不参与问答。
+    """
+
     source: str = "demo"
     """来源：demo 表示内置演示元数据，否则是加载的目录路径。"""
 
@@ -138,11 +179,17 @@ class SemanticLayer:
         return [database.catalog_entry() for database in self.databases.values()]
 
     def shared_to_dict(self) -> dict:
-        return {
+        payload = {
             "cross_database_links": list(self.cross_database_links),
             "metric_disambiguation": list(self.metric_disambiguation),
             "metric_definitions": dict(self.metric_definitions),
         }
+        if self.metric_definitions_en:
+            # 没写英文版时不输出这个键：内置演示元数据导出来的文件保持原样
+            payload["metric_definitions_en"] = {
+                term: dict(entry) for term, entry in self.metric_definitions_en.items()
+            }
+        return payload
 
     # ------------------------------------------------------------------
     # 契约 §4.6.5 / §4.6.6：单位与来源记录
@@ -207,3 +254,19 @@ class SemanticLayer:
         self.metric_definitions.update(
             {str(key): str(value) for key, value in definitions.items()}
         )
+
+        english = payload.get("metric_definitions_en") or {}
+        if not isinstance(english, dict):
+            raise ValueError("metric_definitions_en 必须是「指标名 → {term, definition}」的键值对")
+        for term, entry in english.items():
+            if isinstance(entry, str):
+                entry = {"definition": entry}
+            if not isinstance(entry, dict):
+                raise ValueError(f"metric_definitions_en.{term} 必须是 {{term, definition}}")
+            cleaned = {
+                key: str(entry[key]).strip()
+                for key in ("term", "definition")
+                if str(entry.get(key) or "").strip()
+            }
+            if cleaned:
+                self.metric_definitions_en[str(term)] = cleaned

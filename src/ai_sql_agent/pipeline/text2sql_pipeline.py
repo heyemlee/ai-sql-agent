@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from ai_sql_agent.auth import authorization_scope, check_sql_access, extract_referenced_tables
+from ai_sql_agent.auth.identifiers import bind_dialect
 from ai_sql_agent.core.errors import ModelCallError
 from ai_sql_agent.core import get_logger, get_trace_id, log_event, stage, usage_scope, usage_summary
 from ai_sql_agent.core.metrics import (
@@ -624,6 +625,13 @@ class Text2SQLPipeline:
                     execution_result = outcome.final_result
                     final_sql = outcome.final_sql
 
+            # 单位先算出来：语义自检要拿它当已知事实（见 self_check._UNIT_FACTS）
+            units, records = self._provenance(
+                database=sql_cot_step.database,
+                sql=final_sql,
+                execution_result=execution_result,
+            )
+
             # 软异常校验：SQL 跑通了，但结果未必对
             validation_payload: dict = {}
             if execution_result.success and self.config.enable_validation and not denied:
@@ -650,6 +658,7 @@ class Text2SQLPipeline:
                             if self.config.enable_intermediate_self_check
                             else ""
                         ),
+                        column_units=units,
                     )
                     validation_payload = outcome.to_dict()
                     for finding in outcome.findings:
@@ -662,11 +671,6 @@ class Text2SQLPipeline:
                         findings=[f.anomaly.value for f in outcome.findings],
                     )
 
-            units, records = self._provenance(
-                database=sql_cot_step.database,
-                sql=final_sql,
-                execution_result=execution_result,
-            )
             step_logs.append(
                 StepExecutionLog(
                     database=sql_cot_step.database,
@@ -807,7 +811,8 @@ class Text2SQLPipeline:
                 query=query,
                 database=database,
                 user_id=user_id,
-                access=access,
+                # 绑到这个库的方言上：范例里的表名和关卡按同一条大小写规则判
+                access=bind_dialect(access, self._dialect_name(database)),
             )
         except Exception as exc:
             log_event(

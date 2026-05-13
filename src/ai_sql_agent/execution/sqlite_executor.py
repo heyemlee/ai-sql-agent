@@ -25,6 +25,9 @@ class SQLiteMCPExecutor:
 
     dialect = "sqlite"
 
+    supports_params = True
+    """支持 `MCPExecutionRequest.params`（占位符 `?`）。"""
+
     # progress handler 回调间隔（虚拟机指令数），值越小超时检查越频繁
     _PROGRESS_HANDLER_INTERVAL = 10_000
 
@@ -75,7 +78,10 @@ class SQLiteMCPExecutor:
                     error=guard.reason,
                 )
 
-        deadline = time.monotonic() + self.max_execution_seconds
+        # 请求可以把行数与时长上限调小（预览一页只要几十行），调不大
+        max_rows = request.row_cap(self.max_rows)
+        max_seconds = request.time_cap(self.max_execution_seconds)
+        deadline = time.monotonic() + max_seconds
 
         conn = None
         try:
@@ -88,11 +94,14 @@ class SQLiteMCPExecutor:
 
             # 时点在真正执行 SQL 之前打：读到的就是这一刻的库状态
             as_of = now_rfc3339()
-            cursor = conn.execute(sql)
+            if request.params:
+                cursor = conn.execute(sql, tuple(request.params))
+            else:
+                cursor = conn.execute(sql)
             # 多取一行以区分“刚好取满”和“被截断”
-            rows = cursor.fetchmany(self.max_rows + 1)
-            truncated = len(rows) > self.max_rows
-            rows = rows[: self.max_rows]
+            rows = cursor.fetchmany(max_rows + 1)
+            truncated = len(rows) > max_rows
+            rows = rows[:max_rows]
 
             columns = list(rows[0].keys()) if rows else []
             result_rows: List[Dict[str, Any]] = [dict(row) for row in rows]
@@ -105,7 +114,7 @@ class SQLiteMCPExecutor:
                 rows=result_rows,
                 row_count=len(result_rows),
                 truncated=truncated,
-                row_limit=self.max_rows,
+                row_limit=max_rows,
                 as_of=as_of,
                 as_of_source=self.as_of_source,
             )
@@ -113,9 +122,7 @@ class SQLiteMCPExecutor:
         except sqlite3.OperationalError as exc:
             message = str(exc)
             if "interrupt" in message.lower():
-                message = (
-                    f"查询执行超时（超过 {self.max_execution_seconds} 秒），已中止。"
-                )
+                message = f"查询执行超时（超过 {max_seconds} 秒），已中止。"
             return MCPExecutionResult(
                 database=request.database,
                 sql=sql,

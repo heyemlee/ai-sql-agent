@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
-from ai_sql_agent.retrieval.access import ALLOW_ALL, SchemaAccessFilter, filter_schema_graph
+from ai_sql_agent.retrieval.access import (
+    ALLOW_ALL,
+    SchemaAccessFilter,
+    bind_dialect,
+    filter_schema_graph,
+)
 from ai_sql_agent.retrieval.bm25 import BM25Index
 from ai_sql_agent.retrieval.hybrid_schema_retrieval_service import (
     HybridSchemaRetrievalConfig,
@@ -381,7 +386,7 @@ class ThreeTierSchemaRetrievalService:
         table_hits = [
             hit
             for hit in table_hits
-            if access.allows_table(*hit.name.split(".", 1))
+            if self._allows_table(access, *hit.name.split(".", 1))
         ]
         selected_tables: Dict[str, List[str]] = {}
         for hit in table_hits[: self.config.max_tables]:
@@ -394,7 +399,7 @@ class ThreeTierSchemaRetrievalService:
                 visible = [
                     table_name
                     for table_name in self.column_services[database].tables
-                    if access.allows_table(database, table_name)
+                    if self._allows_table(access, database, table_name)
                 ]
                 if visible:
                     selected_tables[database] = visible
@@ -416,7 +421,7 @@ class ThreeTierSchemaRetrievalService:
                 result = service.retrieve(query=query, keywords=resolved_keywords)
 
             # 兜底：无论走哪条分支，进 Prompt 前都按权限再裁一次
-            filter_schema_graph(result.schema_graph, access)
+            filter_schema_graph(result.schema_graph, self._access_for(access, database))
 
             column_results[database] = result
             schema_graphs[database] = result.schema_graph
@@ -443,13 +448,21 @@ class ThreeTierSchemaRetrievalService:
     # 内部工具
     # ------------------------------------------------------------------
 
+    def _access_for(self, access: SchemaAccessFilter, database: str):
+        """这份权限在这个库上的视图：名字的大小写按这个库的方言比。"""
+        source = self.sources.get(database)
+        return bind_dialect(access, getattr(source, "dialect", "") or "")
+
+    def _allows_table(self, access: SchemaAccessFilter, database: str, table: str) -> bool:
+        return self._access_for(access, database).allows_table(database, table)
+
     def _database_visible(self, database: str, access: SchemaAccessFilter) -> bool:
         """库内一张有权限的表都没有时，这个库对当前用户不存在。"""
         service = self.column_services.get(database)
         if service is None:
             return False
         return any(
-            access.allows_table(database, table_name)
+            self._allows_table(access, database, table_name)
             for table_name in service.tables
         )
 

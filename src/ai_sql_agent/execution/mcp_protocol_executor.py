@@ -42,6 +42,13 @@ class MCPProtocolExecutor:
     dialect = "sqlite"
     """远端 ai_sql_agent.mcp_server 目前挂的是 SQLite 演示库；解析 SQL 时按它的方言。"""
 
+    supports_params = False
+    """
+    `execute_sql` 这个 MCP 工具只收 `database` 与 `sql` 两个参数，传不了绑定参数。
+    带参数的请求在这里**明确拒绝**，不把参数丢掉再执行——丢掉之后 SQL 里的
+    占位符没有值，报出来的会是一条与原因无关的语法错误。
+    """
+
     _spawn_guard = threading.BoundedSemaphore(8)
     """
     同时能拉起几个 stdio 子进程（审查 P1-5「连接与执行开销」）。
@@ -64,6 +71,14 @@ class MCPProtocolExecutor:
         denied = enforce(request, self.dialect)
         if denied is not None:
             return denied
+
+        if request.params:
+            return MCPExecutionResult(
+                database=request.database,
+                sql=request.sql,
+                success=False,
+                error="MCP 协议执行器不支持带绑定参数的查询。",
+            )
 
         import anyio
 

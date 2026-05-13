@@ -8,11 +8,13 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ai_sql_agent import __version__
 from ai_sql_agent.audit import AuditRecord, create_audit_store
 from ai_sql_agent.auth import ApiKeyRecord
+from ai_sql_agent.catalog import DataCatalog
 from ai_sql_agent.feedback import (
     CertifiedSqlLibrary,
     FeedbackRecord,
@@ -31,7 +33,7 @@ from ai_sql_agent.core import (
     usage_summary,
     use_trace_id,
 )
-from ai_sql_agent.memory import ConversationMemoryService
+from ai_sql_agent.memory import create_memory_service
 from ai_sql_agent.pipeline import Text2SQLPipeline, DynamicSqlAgentService
 
 from .limits import RequestLimiter
@@ -124,12 +126,26 @@ class HistoryItem(BaseModel):
     trace_id: str
     created_at: str
     query: str
+    session_id: str = ""
     route: str = ""
     databases: List[str] = []
     tables: List[str] = []
     sqls: List[Dict[str, str]] = []
     success: bool = True
     degraded: bool = False
+
+    has_risk: bool = False
+    """当时返回给用户时带了软异常提示。历史页据此标「需要核实」。"""
+
+    execution_status: str = ""
+    """
+    业务终态（契约 §4.6.1）。空串 = 这条记录早于该字段，或请求没跑到出结果；
+    调用方此时只能退回看 `success` / `error`，**不得**把空串当成 success。
+    """
+
+    failed_steps: int = 0
+    repaired_steps: int = 0
+    status_code: int = 200
     duration_ms: float = 0.0
     total_tokens: int = 0
     error: Optional[str] = None
@@ -202,7 +218,8 @@ async def lifespan(app: FastAPI):
         max_execution_seconds=settings.max_execution_seconds,
     )
 
-    memory = ConversationMemoryService()
+    # 记忆库的位置取配置（AI_SQL_MEMORY_DB_PATH）：两个实例各用各的库，对话历史才不会串
+    memory = create_memory_service()
     audit_store = app.state.audit
     app.state.feedback = create_feedback_store()
 
@@ -228,6 +245,10 @@ async def lifespan(app: FastAPI):
     app.state.memory = memory
     app.state.pipeline = pipeline
     app.state.service = DynamicSqlAgentService(pipeline, memory)
+
+    # 数据目录与只读预览。与问答共用 Pipeline 的语义层、库连接和执行路由，
+    # 所以「目录里看得到的表」与「提问查得到的表」是同一份事实。
+    app.state.catalog = DataCatalog.from_pipeline(pipeline)
 
     app.state.schema_watcher = SchemaWatcher(
         pipeline, settings.schema_refresh_seconds
@@ -468,16 +489,24 @@ def _tables_without_row_scope(app: FastAPI) -> List[str]:
     if store is None or pipeline is None:
         return []
 
+    from ai_sql_agent.auth.identifiers import bind_dialect
+
     metas = getattr(pipeline, "business_metas", {}) or {}
+    dialects = {
+        database.name: getattr(database, "dialect", "") or ""
+        for database in getattr(pipeline, "databases", []) or []
+    }
     found: List[str] = []
     for role, policy in getattr(store, "policies", {}).items():
         if not hasattr(policy, "row_predicate"):
             continue
         for database, tables in metas.items():
+            # 表名的大小写按这个库的方言比，与关卡同一条规则
+            bound = bind_dialect(policy, dialects.get(database, ""))
             for table in tables:
-                if not policy.allows_table(database, table):
+                if not bound.allows_table(database, table):
                     continue
-                if policy.row_predicate(database, table) is None:
+                if bound.row_predicate(database, table) is None:
                     found.append(f"{role}:{database}.{table}")
     return sorted(found)[:10]
 
@@ -569,6 +598,28 @@ from ai_sql_agent.a2a import router as _a2a_router  # noqa: E402
 
 app.include_router(_a2a_router)
 
+# 数据浏览：目录 + 只读预览（/catalog …）。与 /query 同一套身份与表列权限。
+from .catalog import router as _catalog_router  # noqa: E402
+
+app.include_router(_catalog_router)
+
+
+class _ConsoleStaticFiles(StaticFiles):
+    """
+    页面的 CSS / JS。每次都让浏览器回来确认一下（ETag 命中就是 304）。
+
+    没有构建步骤也就没有带哈希的文件名；不加这一条，浏览器会按启发式缓存
+    旧脚本，升级之后出现「页面是新的、脚本是旧的」，而且只在部分人那里出现。
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", _ConsoleStaticFiles(directory=STATIC_DIR), name="static")
+
 
 @app.middleware("http")
 async def trace_requests(request: Request, call_next):
@@ -591,10 +642,13 @@ async def trace_requests(request: Request, call_next):
         finally:
             elapsed = time.perf_counter() - started
             path = request.url.path
+            metric_path = _metric_path(request, status_code)
             REQUESTS.inc(
-                method=request.method, path=path, status=str(status_code)
+                method=request.method, path=metric_path, status=str(status_code)
             )
-            REQUEST_DURATION.observe(elapsed, method=request.method, path=path)
+            REQUEST_DURATION.observe(
+                elapsed, method=request.method, path=metric_path
+            )
             log_event(
                 _logger,
                 logging.INFO,
@@ -607,15 +661,39 @@ async def trace_requests(request: Request, call_next):
             )
 
 
+def _metric_path(request: Request, status_code: int) -> str:
+    """
+    指标里的 path 标签。标签的取值必须是有限的一组：
+
+    - 命中的接口用路由模板（`/catalog/{database}/{table}`），不用原始路径——
+      否则标签数跟着表的数量涨；
+    - 静态文件统一记成 `/static`：这个挂载点不走鉴权，谁都能拿任意文件名来请求；
+    - 没命中任何路由的 404 统一记成 `unmatched`：扫描器发来的每一个随机路径
+      都各占一个标签的话，指标迟早被撑爆。
+    """
+    path = request.url.path
+    template = getattr(request.scope.get("route"), "path", None)
+    if template:
+        return template
+    if path == "/static" or path.startswith("/static/"):
+        return "/static"
+    if status_code == 404:
+        return "unmatched"
+    return path
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     """
-    查询界面。
+    查询界面：业务查数、数据浏览、历史查询三个入口。
 
-    单页原生 HTML/JS，无构建步骤：接口怎么变，页面跟着改一个文件就行。
-    页面自己不做鉴权，API Key 存在浏览器本地，请求时放在 X-API-Key 头里。
+    原生 HTML / CSS / ES Module，无构建步骤：`static/index.html` 是外壳，
+    样式与脚本在 `/static` 下按职责分文件。页面自己不做鉴权，API Key 只存在
+    当前标签页，请求时放在 X-API-Key 头里；业务数据一律经接口取，页面不直连库。
     """
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+    )
 
 
 @app.get("/health")
@@ -906,6 +984,7 @@ def history(
             trace_id=row.get("trace_id", ""),
             created_at=str(row.get("created_at", "")),
             query=row.get("query", ""),
+            session_id=str(row.get("session_id") or ""),
             route=row.get("route", ""),
             databases=list(row.get("databases") or []),
             tables=list(row.get("tables") or []),
@@ -916,6 +995,11 @@ def history(
             ],
             success=bool(row.get("success")),
             degraded=bool(row.get("degraded")),
+            has_risk=bool(row.get("has_risk")),
+            execution_status=str(row.get("execution_status") or ""),
+            failed_steps=int(row.get("failed_steps") or 0),
+            repaired_steps=int(row.get("repaired_steps") or 0),
+            status_code=int(row.get("status_code") or 200),
             duration_ms=float(row.get("duration_ms") or 0),
             total_tokens=int(row.get("prompt_tokens") or 0)
             + int(row.get("completion_tokens") or 0),

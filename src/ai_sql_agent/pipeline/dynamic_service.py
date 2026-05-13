@@ -31,6 +31,15 @@ class RoutedSqlAgentResult:
     memory_context: ConversationMemoryContext
     pipeline_result: Optional[PipelineResult] = None
 
+    degraded: bool = False
+    """
+    对话问答这条路上模型不可用、答复改由规则版给出。查库那条路的降级记在
+    `pipeline_result.degraded` 上；这条路没有 pipeline_result，所以单独记。
+    不记的话，调用方拿到的是一句固定话术加 `degraded=false`——看起来就像模型认真答过。
+    """
+
+    degrade_reason: str = ""
+
     @property
     def queried_database(self) -> bool:
         return self.pipeline_result is not None
@@ -121,11 +130,13 @@ class DynamicSqlAgentService:
                 pipeline_result=response.pipeline_result,
             )
 
+        degraded = False
         with stage("data_qa", _logger) as qa_stage:
             try:
                 answer = self.data_qa_client.answer(query, context)
                 qa_stage.set(answer_chars=len(answer), degraded=False)
             except ModelCallError as exc:
+                degraded = True
                 # 模型挂了不该整个请求失败：退回规则版，答复基于记忆里的历史结果
                 DEGRADED_RESPONSES.inc(reason="model_unavailable", failed_stage="data_qa")
                 log_event(
@@ -149,6 +160,8 @@ class DynamicSqlAgentService:
             decision=decision,
             answer=answer,
             memory_context=context,
+            degraded=degraded,
+            degrade_reason="model_unavailable" if degraded else "",
         )
 
     def save_result_to_personal_knowledge_base(

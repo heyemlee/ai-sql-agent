@@ -273,7 +273,14 @@ def _load_actual_schema(database: DatabaseSemantics) -> Dict[str, Set[str]]:
             sample_size=0,
         )
     else:
+        from pathlib import Path
+
         from ai_sql_agent.retrieval.sqlite_loader import SQLiteSchemaLoader
+
+        if not Path(str(database.db_path)).exists():
+            # 文件不在就是「连不上」，交给调用方按环境问题处理。不能当成一个空库去比对：
+            # 那样元数据里的每一张表都会被报成「真实库里没有」。
+            raise FileNotFoundError(f"数据库文件不存在：{database.db_path}")
 
         loader = SQLiteSchemaLoader(
             db_path=database.db_path,

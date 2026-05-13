@@ -29,6 +29,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
+from .identifiers import referenced_name
+
 # sqlglot 方言名；执行器的 `dialect` 属性直接对得上，认不出来就用通用解析。
 _KNOWN_DIALECTS = {"sqlite", "postgres", "postgresql", "mysql", "duckdb", "snowflake"}
 
@@ -97,15 +99,39 @@ def _sqlglot_dialect(dialect: str) -> Optional[str]:
 
 
 def _table_ref(node) -> Optional[TableRef]:
-    """把 sqlglot 的 Table 节点转成 TableRef；表函数之类没有名字的返回 None。"""
+    """
+    把 sqlglot 的 Table 节点转成 TableRef；表函数之类没有名字的返回 None。
+
+    名字已经是规范名（`_canonicalize_identifiers` 在建作用域之前换过了），这里不再动大小写。
+    """
     name = (node.name or "").strip()
     if not name:
         return None
     return TableRef(
-        name=name.lower(),
-        schema=(node.db or "").strip().lower(),
-        catalog=(node.catalog or "").strip().lower(),
+        name=name,
+        schema=(node.db or "").strip(),
+        catalog=(node.catalog or "").strip(),
     )
+
+
+def _canonicalize_identifiers(tree, exp, dialect: str) -> None:
+    """
+    把语法树里的每个标识符换成它指向的规范名（规则见 `identifiers` 模块）。
+
+    在建作用域**之前**做，表名、schema、列名、别名、列前缀就都按同一条规则落定：
+    PostgreSQL 里 `Orders` 变成 `orders`、`"Orders"` 保持原样；其余方言一律小写。
+    原来的做法是解析完再对每个名字 `.lower()`——那在 PostgreSQL 上把 `"Orders"`
+    和 `orders` 两张表判成了同一张，别名 `"X"` 与 `x` 也会互相顶替。
+    """
+    for identifier in tree.find_all(exp.Identifier):
+        name = identifier.this
+        if isinstance(name, str):
+            identifier.set(
+                "this",
+                referenced_name(
+                    name, quoted=bool(identifier.args.get("quoted")), dialect=dialect
+                ),
+            )
 
 
 def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
@@ -137,6 +163,7 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
         return SqlAnalysis(parsed=False, error="一次只允许执行一条 SQL 语句。")
 
     tree = statements[0]
+    _canonicalize_identifiers(tree, exp, read or "")
     try:
         root = build_scope(tree)
     except Exception as exc:
@@ -160,14 +187,14 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
             ref = _table_ref(source)
             if ref is None:
                 continue
-            local[(alias or ref.name).lower()] = ref
+            local[alias or ref.name] = ref
             local.setdefault(ref.name, ref)
             tables.append(ref)
 
         scope_tables = tuple(dict.fromkeys(local.values()))
 
         for column in scope.columns:
-            qualifier = (column.table or "").lower()
+            qualifier = column.table or ""
             if qualifier:
                 target = local.get(qualifier)
                 if target is None:
@@ -180,7 +207,7 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
                 candidates = scope_tables
             if not candidates:
                 continue
-            columns.append(ColumnRef(name=column.name.lower(), candidates=candidates))
+            columns.append(ColumnRef(name=column.name, candidates=candidates))
 
         stars.extend(_scope_stars(scope, local, scope_tables, exp))
 
@@ -218,7 +245,7 @@ def _scope_stars(scope, local, scope_tables, exp) -> List[StarRef]:
             continue
         if not isinstance(node.this, exp.Star):
             continue
-        qualifier = (node.table or "").lower()
+        qualifier = node.table or ""
         target = local.get(qualifier) if qualifier else None
         if target is not None:
             found.append(StarRef(tables=(target,)))
@@ -242,4 +269,6 @@ def extract_referenced_tables(sql: str, dialect: str = "") -> Set[str]:
     analysis = analyze_sql(sql, dialect=dialect)
     if not analysis.parsed:
         return set()
-    return {table.name for table in analysis.tables}
+    # 这里的调用方拿它和元数据里的表名（小写）比，所以统一给小写；
+    # 区分大小写的判定只发生在授权那条路上。
+    return {table.name.lower() for table in analysis.tables}

@@ -103,6 +103,11 @@ class LeastPrivilegePlan:
         return "\n".join(self.statements()) + "\n"
 
 
+def _bind_postgres(policy):
+    hook = getattr(policy, "for_dialect", None)
+    return hook("postgres") if callable(hook) else policy
+
+
 def build_plan(
     policy,
     inventory: TableInventory,
@@ -117,6 +122,8 @@ def build_plan(
     `database` 是策略里那个逻辑库名（`erp_db`），`schema` 是 PostgreSQL 的
     schema。两者不是一回事：策略按业务库写，授权落在物理 schema 上。
     """
+    # 这份计划落在 PostgreSQL 上：inventory 里是存储名，按 PostgreSQL 的大小写规则比
+    policy = _bind_postgres(policy)
     granted: List[str] = []
     denied: List[str] = []
     column_grants: Dict[str, List[str]] = {}
@@ -160,6 +167,7 @@ def row_policies_from_policy(
     没声明（`row_predicate` 返回 None）则什么都不生成——运行时按放行处理，
     生产模式的启动检查会把「没声明」拦下来。这两件事分工不同，别在这里替它判。
     """
+    policy = _bind_postgres(policy)
     statements: List[str] = []
     for table in inventory.tables():
         if not policy.allows_table(database, table):
