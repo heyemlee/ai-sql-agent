@@ -99,6 +99,17 @@ def _as_sql_literals(values) -> List[str]:
             break
     return literals
 
+
+def build_rerank_client() -> AliyunRerankClient:
+    """
+    字段层重排用的托管 Rerank 客户端。
+
+    模型名、API Key、workspace 全部取 Settings：模型名来自 AI_SQL_RERANK_MODEL，
+    默认 qwen3-rerank。这里原来写死 model="qwen-rerank"，和 Settings 的默认值、
+    客户端自己的注释都对不上，改环境变量也不生效。没配 key 时客户端退回本地打分。
+    """
+    return AliyunRerankClient(AliyunRerankConfig(api_key="", workspace_id=""))
+
 # CoT 规划在 Schema 不足以回答时输出的占位数据库名
 _MISSING_DATABASE = "缺失"
 
@@ -1443,13 +1454,7 @@ class Text2SQLPipeline:
         """
         embedding_client = LocalHashEmbeddingClient(dimensions=1024)
 
-        rerank_client = AliyunRerankClient(
-            AliyunRerankConfig(
-                api_key="",
-                workspace_id="",
-                model="qwen-rerank",
-            )
-        )
+        rerank_client = build_rerank_client()
 
         catalog = {item["name"]: item for item in self.semantic.catalog()}
 
