@@ -156,6 +156,30 @@ class DialectInPromptTest(unittest.TestCase):
         self.assertIn("方言约束", prompt)
         self.assertNotIn("JULIANDAY", prompt)
 
+    def test_generation_prompt_asks_for_readable_column_names(self):
+        """
+        结果的列名直接成了页面上的表头。规划是中文写的，模型顺手就给计算列起中文别名，
+        用英文提问的人看到的是一排读不懂的表头——所以别名的写法得明说。
+        """
+        from ai_sql_agent.generation.objects import CotStep, LocalSchema, SqlGenerationRequest
+        from ai_sql_agent.generation.prompt_builder import SqlPromptBuilder
+
+        prompt = SqlPromptBuilder().build(
+            SqlGenerationRequest(
+                cot_step=CotStep(
+                    database="erp_db",
+                    processing_objects="payment.paid_amt",
+                    operation_instruction="按采购单汇总已付金额",
+                    output_target="已付金额合计",
+                ),
+                local_schema=LocalSchema(),
+            )
+        )
+
+        self.assertIn("英文小写加下划线", prompt)
+        self.assertIn("不要用中文别名", prompt)
+        self.assertIn("直接输出的字段保持原名", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

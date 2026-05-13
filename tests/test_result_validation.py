@@ -118,6 +118,63 @@ class SemanticSelfCheckTest(unittest.TestCase):
     def test_unavailable_client_is_noop(self):
         self.assertFalse(SemanticSelfChecker(None).available)
 
+    def test_declared_units_are_given_to_the_reviewer_as_facts(self):
+        """
+        审阅者只看得到 SQL 的复述，看不到数据字典。问「PO-24-0103 以美元计的采购额」时，
+        SQL 里没有任何币种字样（金额列存的本来就是美元），它就判成「漏了币种条件」——
+        实测同一个问题三次里有一次因此被标成需要核实，而答案是对的。
+        """
+        client = _StubClient("输出了采购金额与已付金额之和", "结论：一致\n理由：ok")
+        SemanticSelfChecker(client).check(
+            "What are the purchase total and payments in USD for PO-24-0103?",
+            "SELECT po_amt, SUM(paid_amt) AS total_paid_amt FROM purchase_order",
+            known_units={"po_amt": "USD", "total_paid_amt": "USD"},
+        )
+        compare_prompt = client.prompts[1]
+        self.assertIn("po_amt=USD、total_paid_amt=USD", compare_prompt)
+        self.assertIn("不需要再按单位或币种筛选、换算", compare_prompt)
+        # 要的是别的单位而 SQL 没换算，仍然要报：这条事实不是「币种问题一律放过」
+        self.assertIn("别的**单位而 SQL 没有换算才算", compare_prompt)
+        # 复述那一步仍然只看 SQL
+        self.assertNotIn("USD", client.prompts[0])
+
+    def test_prompts_are_unchanged_when_no_unit_is_declared(self):
+        """没有单位可说时提示词逐字不变：这条改动不该碰到别的问题的判定。"""
+        from ai_sql_agent.validation.self_check import _COMPARE_PROMPT, _MULTI_STEP_COMPARE_PROMPT
+
+        plain = _StubClient("汇总了金额", "结论：一致\n理由：ok")
+        SemanticSelfChecker(plain).check("订单总金额是多少", "SELECT SUM(order_amt) FROM t")
+        self.assertNotIn("已知事实", plain.prompts[1])
+        self.assertIn("SQL 的实际行为：汇总了金额\n\n输出格式", plain.prompts[1])
+        self.assertEqual(
+            plain.prompts[1],
+            _COMPARE_PROMPT.format(query="订单总金额是多少", paraphrase="汇总了金额", facts=""),
+        )
+
+        multi = _StubClient("按工程汇总了采购额", "结论：一致\n理由：ok")
+        SemanticSelfChecker(multi).check(
+            "超预算项目的采购额", "SELECT job_no, SUM(po_amt) FROM purchase_order GROUP BY job_no",
+            preceding_summary="第 1 步筛出了超预算项目", known_units={},
+        )
+        self.assertNotIn("已知事实", multi.prompts[1])
+        self.assertIn("最后一步 SQL 的实际行为：按工程汇总了采购额\n\n输出格式", multi.prompts[1])
+        self.assertEqual(
+            multi.prompts[1],
+            _MULTI_STEP_COMPARE_PROMPT.format(
+                query="超预算项目的采购额", preceding="第 1 步筛出了超预算项目",
+                paraphrase="按工程汇总了采购额", facts="",
+            ),
+        )
+
+    def test_validator_passes_units_through_to_the_self_check(self):
+        client = _StubClient("输出了金额", "结论：一致\n理由：ok")
+        validator = ResultValidator(self_checker=SemanticSelfChecker(client))
+        validator.validate(
+            query="amount in USD", sql="SELECT po_amt FROM purchase_order", row_count=1,
+            column_units={"po_amt": "USD"},
+        )
+        self.assertIn("po_amt=USD", client.prompts[1])
+
 
 class ResultValidatorTest(unittest.TestCase):
     def test_empty_result_warns_but_does_not_block(self):
@@ -196,11 +253,17 @@ class RiskFindingsReachTheUserTest(unittest.TestCase):
         self.assertEqual(payload["step_logs"][0]["risk_findings"][0]["anomaly"], "empty_result")
 
     def test_frontend_renders_the_findings(self):
-        """界面不渲染等于没提示，这里直接检查页面里引用了这个字段。"""
+        """界面不渲染等于没提示，这里直接检查页面读了这两个字段、并且有对应的提示文案。"""
         from pathlib import Path
 
-        page = Path(__file__).resolve().parents[1] / "src" / "ai_sql_agent" / "api" / "static" / "index.html"
-        html = page.read_text(encoding="utf-8")
-        self.assertIn("risk_findings", html)
-        self.assertIn("has_risk", html)
-        self.assertIn("结果需要核对", html)
+        static = Path(__file__).resolve().parents[1] / "src" / "ai_sql_agent" / "api" / "static" / "js"
+        model = (static / "model.js").read_text(encoding="utf-8")
+        self.assertIn("risk_findings", model)
+        self.assertIn("has_risk", model)
+
+        # 提示默认可见：它在结果卡片里，不在折叠起来的「查询过程」里
+        result = (static / "result.js").read_text(encoding="utf-8")
+        self.assertIn("notice.review.title", result)
+        for language in ("en", "zh"):
+            dictionary = (static / "i18n" / f"{language}.js").read_text(encoding="utf-8")
+            self.assertIn("'notice.review.title'", dictionary)

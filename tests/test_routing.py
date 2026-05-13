@@ -156,6 +156,156 @@ class RoutingTestCase(unittest.TestCase):
         self.assertIn("4.95", answer)
         self.assertIn("平均值", answer)
 
+    def test_model_data_qa_is_told_to_answer_in_the_questions_language(self) -> None:
+        """对话问答是唯一直接给人读的模型原文：英文提问不该得到一段中文。"""
+        from ai_sql_agent.pipeline.data_qa import ModelDataQAClient
+
+        class RecordingClient:
+            prompt = ""
+
+            def generate(self, prompt: str) -> str:
+                self.prompt = prompt
+                return " ok "
+
+        client = RecordingClient()
+        answer = ModelDataQAClient(
+            client, definitions={"安全库存": "按最新快照的可用量比较"}
+        ).answer("What does safety stock mean here?", build_context())
+
+        self.assertEqual(answer, "ok")
+        self.assertIn("相同的语言", client.prompt)
+        # 口径仍然照原文注入：换语言作答，不换定义
+        self.assertIn("按最新快照的可用量比较", client.prompt)
+        self.assertIn("What does safety stock mean here?", client.prompt)
+
+    def test_english_data_requests_route_to_the_database_by_rules(self) -> None:
+        """
+        模型路由失灵时由规则兜底。规则里只有中文词表的话，英文问句一个词也命不中，
+        全都落进「默认对话问答」——实测模型服务返回 530 的那一刻，用英文问 PO-24-0103
+        的采购额得到的是一句「上下文里信息不够」，而不是一次查询。
+        """
+        classifier = RuleBasedIntentClassifier()
+        for query in (
+            "Which suppliers have an on-time delivery rate below 0.9?",
+            "What are the purchase total, supplier payments and unpaid balance in USD for PO-24-0103?",
+            "List the work orders for sales order SO-24-0003",
+            "How many projects are over budget?",
+            "Show me the top 5 suppliers by purchase amount",
+            "For projects whose actual cost exceeds budget, summarize total purchase amounts by project code.",
+        ):
+            decision = classifier.classify(query, build_context())
+            self.assertEqual(decision.route, RouteType.DATABASE_QUERY, query)
+
+        fresh = classifier.classify(
+            "Using the latest snapshot for each material, which materials are below safety stock?",
+            build_context(sql_result_message()),
+        )
+        self.assertEqual(fresh.route, RouteType.DATABASE_QUERY)
+        self.assertIn("fresh_data", fresh.signals)
+
+        # 「再查一次」本身就是查询请求，手里有上一次的结果也一样
+        for query in (
+            "Re-run that with the latest data",
+            "Please rerun the query",
+            "Re-query the stock levels",
+        ):
+            again = classifier.classify(query, build_context(sql_result_message()))
+            self.assertEqual(again.route, RouteType.DATABASE_QUERY, query)
+
+    def test_english_explanations_and_follow_ups_stay_in_conversation(self) -> None:
+        classifier = RuleBasedIntentClassifier()
+        for query, signal in (
+            ("What does safety stock mean here?", "knowledge_question"),
+            ("How is the on-time rate calculated?", "knowledge_question"),
+            ("Why would a purchase order be partly paid?", "explanation_request"),
+            ("Thanks, that helps", "safe_default"),
+        ):
+            decision = classifier.classify(query, build_context())
+            self.assertEqual(decision.route, RouteType.DATA_QA, query)
+            self.assertIn(signal, decision.signals, query)
+
+        follow_up = classifier.classify(
+            "Can you explain the results above?", build_context(sql_result_message())
+        )
+        self.assertEqual(follow_up.route, RouteType.DATA_QA)
+        self.assertIn("result_reference", follow_up.signals)
+
+    def test_english_cues_match_whole_words(self) -> None:
+        classifier = RuleBasedIntentClassifier()
+        # price_list / person / stopwatch 里藏着 list / per / top
+        for query in ("the price_list and each_person stopwatch", "personal toppings"):
+            decision = classifier.classify(query, build_context())
+            self.assertEqual(decision.route, RouteType.DATA_QA, query)
+        # 中文问句里夹着英文词照常认
+        self.assertEqual(
+            classifier.classify("采购额 top 5 的供应商", build_context()).route,
+            RouteType.DATABASE_QUERY,
+        )
+
+    def test_a_failing_routing_model_falls_back_to_english_rules_too(self) -> None:
+        class DownClient:
+            def generate(self, prompt: str) -> str:
+                raise RuntimeError("530 from the relay")
+
+        router = DynamicIntentRouter(model_classifier=ModelIntentClassifier(DownClient()))
+        decision = router.route("Which suppliers are late most often?", build_context())
+        self.assertEqual(decision.route, RouteType.DATABASE_QUERY)
+        self.assertNotIn("model_classifier", decision.signals)
+
+    def test_rule_based_reply_follows_the_questions_language(self) -> None:
+        client = RuleBasedDataQAClient()
+        english = client.answer("Thanks, that helps", build_context())
+        self.assertIn("not enough in this conversation", english)
+        self.assertFalse(any("一" <= char <= "鿿" for char in english))
+        chinese = client.answer("谢谢", build_context())
+        self.assertIn("没有足够的信息", chinese)
+
+    def test_conversational_fallback_is_reported_as_degraded(self) -> None:
+        """
+        对话问答这条路上模型挂了，答复改由规则版给出。这必须让调用方知道：
+        否则它拿到的是一句固定话术加 degraded=false，看起来就像模型认真答过。
+        """
+        from ai_sql_agent.api.result_summary import summarize_result
+        from ai_sql_agent.core.errors import ModelCallError
+
+        class DownQA:
+            def answer(self, query, context):
+                raise ModelCallError("模型服务错误", component="thinking", status_code=530)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory = ConversationMemoryService(
+                MemoryServiceConfig(
+                    db_path=Path(temp_dir) / "memory.db",
+                    embedding_dimensions=128,
+                    use_model_summarizer_when_available=False,
+                    use_reranker_when_available=False,
+                )
+            )
+            try:
+                def run(data_qa_client):
+                    service = DynamicSqlAgentService(
+                        pipeline=FakePipeline(),
+                        memory=memory,
+                        router=DynamicIntentRouter(),
+                        data_qa_client=data_qa_client,
+                        use_model_when_available=False,
+                    )
+                    return service.run(user_id="u1", session_id="s9", query="Thanks, that helps")
+
+                down = run(DownQA())
+                self.assertEqual(down.decision.route, RouteType.DATA_QA)
+                self.assertTrue(down.degraded)
+                summary = summarize_result(down)
+                self.assertTrue(summary.degraded)
+                self.assertEqual(summary.degrade_reason, "model_unavailable")
+                self.assertEqual(summary.execution_status, "not_applicable")
+
+                healthy = summarize_result(run(RuleBasedDataQAClient()))
+                self.assertFalse(healthy.degraded)
+                self.assertEqual(healthy.degrade_reason, "")
+            finally:
+                memory.close()
+
     def test_dynamic_service_only_calls_pipeline_for_database_route(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             memory = ConversationMemoryService(

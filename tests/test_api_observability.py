@@ -58,7 +58,7 @@ if __name__ == "__main__":
 
 
 class FrontendTest(unittest.TestCase):
-    """页面由 FastAPI 直接托管，没有构建步骤。"""
+    """页面由 FastAPI 直接托管，没有构建步骤。细节检查见 tests/test_console_frontend.py。"""
 
     @classmethod
     def setUpClass(cls):
@@ -75,18 +75,13 @@ class FrontendTest(unittest.TestCase):
         self.assertIn("text/html", response.headers["content-type"])
 
     def test_page_wires_the_query_api(self):
+        # 外壳只有结构；接口调用在它加载的脚本里
         html = self.client.get("/").text
-        for marker in ["/query", "X-API-Key", "trace_id", "degraded", "step_logs"]:
-            self.assertIn(marker, html)
-
-    def test_page_escapes_untrusted_values(self):
-        # 结果集内容来自数据库，直接插 innerHTML 会有 XSS 风险。
-        # 不锁转义函数叫什么名字（改版换过一次），只锁两件必须成立的事：
-        # 转义覆盖到这几个字符，且单元格与 SQL 确实走了转义再拼进模板。
-        html = self.client.get("/").text
-        for entity in ("&amp;", "&lt;", "&gt;", "&quot;"):
-            self.assertIn(entity, html, entity)
-        # 不锁变量名，只锁「插值前过了一层函数」——裸插 ${cell} / ${row[c]}
-        # 这种写法匹配不上，正是要拦的那种
-        self.assertRegex(html, r"<td[^>]*>\$\{\s*\w+\(")
-        self.assertRegex(html, r"<pre[^>]*>\$\{\s*\w+\(")
+        self.assertIn("static/js/main.js", html)
+        api = self.client.get("/static/js/api.js")
+        self.assertEqual(api.status_code, 200)
+        for marker in ["/query", "X-API-Key"]:
+            self.assertIn(marker, api.text)
+        model = self.client.get("/static/js/model.js").text
+        for marker in ["trace_id", "degraded", "step_logs"]:
+            self.assertIn(marker, model)
