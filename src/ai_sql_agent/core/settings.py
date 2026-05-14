@@ -306,7 +306,10 @@ class SqlAgentSettings(BaseSettings):
     """
 
     catalog_preview_max_page_size: int = 100
-    """预览一页最多多少行。请求里要得更多时按这个数截。"""
+    """
+    预览一页最多多少行。请求里要得更多时按这个数截；执行器的行数上限（`max_rows`）
+    比它还小时按更小的那个算。响应里的 `page_size` 是实际用的页大小。
+    """
 
     catalog_preview_max_offset: int = 10000
     """

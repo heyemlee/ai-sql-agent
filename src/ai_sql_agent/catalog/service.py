@@ -677,6 +677,12 @@ class DataCatalog:
         ]
 
         page_size = max(1, min(int(query.page_size), settings.catalog_preview_max_page_size))
+        # 执行器自己的行数上限是硬顶，请求只能把它调小（`MCPExecutionRequest.row_cap`）。
+        # 上限比页大小还低时，一页只给得出「上限」那么多行，而下一页的偏移照旧按页大小算——
+        # 中间那一段哪一页都翻不到。所以页大小先压到上限以内，偏移和「还有下一页」都按它算。
+        executor_cap = getattr(executor, "max_rows", None)
+        if executor_cap is not None:
+            page_size = max(1, min(page_size, int(executor_cap)))
         page = max(1, int(query.page))
         offset = (page - 1) * page_size
         if offset > 0 and offset + page_size > settings.catalog_preview_max_offset:
