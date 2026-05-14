@@ -7,7 +7,13 @@ from .shape import (
     check_shape_against_plan,
     check_unrequested_aggregation,
 )
-from .objects import AnomalyType, ValidationFinding, ValidationOutcome
+from .objects import (
+    SELF_CHECK_NOT_APPLICABLE,
+    SELF_CHECK_NOT_RUN,
+    AnomalyType,
+    ValidationFinding,
+    ValidationOutcome,
+)
 from .self_check import SemanticSelfChecker
 
 
@@ -78,23 +84,46 @@ class ResultValidator:
         #    第一步只做前半段，拿整个问题去比必然判成「漏掉了后半段」，
         #    那正是之前跨库误报 100% 的成因。
         target = query if is_final_step else step_objective
+        self_check = SELF_CHECK_NOT_APPLICABLE
+        self_check_error = ""
         if (
             self.enable_self_check
             and self.self_checker.available
             and row_count > 0
             and target.strip()
         ):
-            finding, paraphrase = self.self_checker.check(
+            result = self.self_checker.run(
                 target,
                 sql,
                 preceding_summary=preceding_summary if is_final_step else "",
                 known_units=column_units or None,
             )
-            if finding is not None:
-                findings.append(finding)
+            self_check, self_check_error = result.status, result.error
+            paraphrase = result.paraphrase
+            if result.finding is not None:
+                findings.append(result.finding)
+            if self_check == SELF_CHECK_NOT_RUN:
+                # 该做的核对没做成：留一条发现，让它和「核对过、没问题」在响应里长得不一样。
+                # warn 而不是 block——结果未必是错的，没有理由为此回溯重跑。
+                findings.append(
+                    ValidationFinding(
+                        anomaly=AnomalyType.SELF_CHECK_NOT_RUN,
+                        detail=(
+                            "语义自检未执行：模型调用失败"
+                            f"（{self_check_error or '未知错误'}）。"
+                            "本步结果没有经过「SQL 实际行为是否回答了问题」这道核对。"
+                        ),
+                        severity="warn",
+                    )
+                )
 
         return ValidationOutcome(
-            passed=not any(f.severity == "block" for f in findings),
+            passed=(
+                not any(f.severity == "block" for f in findings)
+                and self_check != SELF_CHECK_NOT_RUN
+            ),
             findings=findings,
             self_check_paraphrase=paraphrase,
+            self_check=self_check,
+            self_check_error=self_check_error,
         )

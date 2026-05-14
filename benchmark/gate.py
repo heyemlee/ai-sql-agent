@@ -8,7 +8,13 @@ from statistics import mean
 
 from ai_sql_agent.core import get_settings
 from benchmark.run_benchmark import SMOKE_IDS
-from benchmark.runner import BenchmarkRunner, run_holdout_recall
+from benchmark.runner import (
+    EXIT_INCOMPLETE,
+    BenchmarkIncomplete,
+    BenchmarkRunner,
+    run_holdout_recall,
+    save_incomplete,
+)
 
 """
 发布门禁：每次发布前跑评测，任一指标未达「企业落地合理线」即退出非 0，阻断发布。
@@ -43,6 +49,42 @@ def _format_rule(rule: dict) -> str:
     return f"<= {rule['max']:.2%}"
 
 
+def _abort_incomplete(*, output, rounds, samples, report=None, holdout=None) -> int:
+    """
+    门禁中途停下（模型凭证不可用）。**不判定**：既不是通过，也不是未达标。
+
+    已完成的轮次与这一轮跑完的部分存下来备查；退出码与「未达标」（1）、
+    「没法跑」（2）都不同，CI 不会把它读成任何一种结论。
+    """
+    blocks = (holdout.blocks if holdout is not None else None) or (
+        report.abort_detail if report is not None else []
+    )
+    payload = {
+        "abort_reason": "model_access_unavailable",
+        "abort_detail": blocks,
+        "rounds_planned": rounds,
+        "rounds_completed": min((len(v) for v in samples.values()), default=0),
+        "completed_round_values": samples,
+        "partial_round": report.to_dict() if report is not None else None,
+        "partial_holdout": holdout.to_dict() if holdout is not None else None,
+    }
+    target = save_incomplete(payload, output, "gate")
+    where = (
+        f"留出集 {holdout.completed}/{holdout.planned} 条"
+        if holdout is not None
+        else f"评测集 {report.total}/{report.planned_total} 条"
+    )
+    print(f"[gate] 未完成：模型凭证不可用，门禁在{where}处停止。", file=sys.stderr)
+    for block in blocks:
+        print(
+            f"[gate] 已知故障：{block.get('reason')}（范围 {block.get('scope')}，自 {block.get('since')}）",
+            file=sys.stderr,
+        )
+    print(f"[gate] 已完成的部分已写入 {target}（标注 incomplete）。", file=sys.stderr)
+    print("[gate] 本次不判定：没有通过，也不构成未达标。不会自动补跑。", file=sys.stderr)
+    return EXIT_INCOMPLETE
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI SQL Agent 发布评测门禁")
     parser.add_argument("--smoke", action="store_true", help="离线冒烟模式")
@@ -68,6 +110,13 @@ def main() -> int:
     parser.add_argument(
         "--thresholds",
         default=str(Path(__file__).parent / "thresholds.json"),
+    )
+    parser.add_argument(
+        "--partial-output",
+        help=(
+            "门禁中途停下（模型凭证不可用）时，把已完成的部分写到哪里。"
+            "不指定则写到 runtime_data/gate_incomplete_<时间>.json。"
+        ),
     )
     args = parser.parse_args()
 
@@ -100,6 +149,10 @@ def main() -> int:
 
     for trial in range(rounds):
         report = runner.run(ids=SMOKE_IDS if smoke else None)
+        if report.incomplete:
+            return _abort_incomplete(
+                output=args.partial_output, rounds=rounds, samples=samples, report=report
+            )
         values = dict(report.grouped_accuracy())
         values["column_recall"] = report.column_recall
         values["avg_column_ratio"] = report.avg_column_ratio
@@ -108,7 +161,18 @@ def main() -> int:
         values["recall_gap"] = report.recall_gap
         # 留出集只测检索，单独跑（40 条口语问法，不参与任何调参）
         if "holdout_recall" in thresholds:
-            values["holdout_recall"] = run_holdout_recall(runner.pipeline)
+            try:
+                values["holdout_recall"] = run_holdout_recall(
+                    runner.pipeline, access_check=runner.access_check
+                )
+            except BenchmarkIncomplete as exc:
+                return _abort_incomplete(
+                    output=args.partial_output,
+                    rounds=rounds,
+                    samples=samples,
+                    report=report,
+                    holdout=exc,
+                )
         for key, value in values.items():
             samples.setdefault(key, []).append(value)
         if rounds > 1:

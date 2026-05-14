@@ -14,12 +14,15 @@ from .errors import (
     ModelCallError,
     ModelCircuitOpenError,
     ModelConnectionError,
+    ModelCredentialUnavailableError,
+    ModelQuotaExhaustedError,
     ModelRateLimitError,
     ModelResponseError,
     ModelServerError,
     ModelTimeoutError,
 )
 from .logging_setup import configure_logging, get_logger, log_event
+from .model_access import MODEL_ACCESS, ModelAccessRegistry
 from .metrics import REGISTRY, render_metrics
 from .settings import SqlAgentSettings, get_settings, reload_settings
 from .trace import (
@@ -43,12 +46,16 @@ __all__ = [
     "SqlAgentError",
     "CIRCUIT_REGISTRY",
     "CircuitState",
+    "MODEL_ACCESS",
+    "ModelAccessRegistry",
     "SqlAgentSettings",
     "ModelAuthError",
     "ModelBadRequestError",
     "ModelCallError",
     "ModelCircuitOpenError",
     "ModelConnectionError",
+    "ModelCredentialUnavailableError",
+    "ModelQuotaExhaustedError",
     "ModelRateLimitError",
     "ModelResponseError",
     "ModelServerError",

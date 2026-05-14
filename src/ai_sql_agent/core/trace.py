@@ -212,7 +212,9 @@ def stage(
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
             error_type=type(exc).__name__,
             error=str(exc),
-            **recorder.fields,
+            **_without_reserved(
+                recorder.fields, ("status", "duration_ms", "error_type", "error")
+            ),
         )
         raise
     else:
@@ -225,5 +227,22 @@ def stage(
             f"stage.{name}",
             status="ok",
             duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            **recorder.fields,
+            **_without_reserved(recorder.fields, ("status", "duration_ms")),
         )
+
+
+def _without_reserved(fields: Dict[str, Any], reserved: tuple) -> Dict[str, Any]:
+    """
+    阶段自己带的字段里，与这条日志固定字段同名的改名为 `stage_<名字>`。
+
+    修复阶段进来时就带着一个 `error`（要修的那条执行错误）。阶段里再抛异常时，
+    「这个阶段是怎么失败的」也叫 `error`——两个同名关键字参数会让这里自己抛 TypeError，
+    把原来的异常盖掉：上层等着接 ModelCallError 走降级，接到的却是一个 TypeError，
+    一路冒成 500。两个都留着，只是不能叫同一个名字。
+    """
+    if not any(key in fields for key in reserved):
+        return fields
+    return {
+        (f"stage_{key}" if key in reserved else key): value
+        for key, value in fields.items()
+    }

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from ai_sql_agent.core import get_settings
-from benchmark.runner import BenchmarkRunner
+from benchmark.runner import EXIT_INCOMPLETE, BenchmarkRunner, save_incomplete
 
 # 离线冒烟子集：Mock 模型可以正确处理的样例（单库 + 跨库各一条）。
 # 完整 150 条评测需要配置模型凭证（OPENAI_API_KEY / ANTHROPIC_API_KEY）走真实模型。
@@ -14,16 +14,68 @@ SMOKE_IDS = ["q003", "q010", "q046", "q101"]
 """离线冒烟子集：Mock 模型能正确处理的样例，覆盖单表 / 多表 join / 跨库三类。"""
 
 
+def _report_incomplete(report, *, output, completed_rounds=None, rounds_planned=1) -> int:
+    """
+    评测中途停下（模型凭证不可用）：把已完成的部分存下来，说明没有结论，返回非零。
+
+    不打印准确率汇总——只跑了一部分的数字摆在那里，早晚会被人当成结果引用。
+    """
+    payload = {
+        "abort_reason": report.abort_reason,
+        "abort_detail": report.abort_detail,
+        "rounds_planned": rounds_planned,
+        "rounds_completed": len(completed_rounds or []),
+        "completed_rounds": completed_rounds or [],
+        "partial_round": report.to_dict(),
+    }
+    target = save_incomplete(payload, output, "benchmark")
+    print("=" * 60, file=sys.stderr)
+    print(
+        f"[未完成] 模型凭证不可用，评测已停止：这一轮跑完 {report.total}/{report.planned_total} 条"
+        + (f"，此前完整跑完 {len(completed_rounds)}/{rounds_planned} 轮" if rounds_planned > 1 else "")
+        + "。",
+        file=sys.stderr,
+    )
+    for block in report.abort_detail:
+        print(
+            f"[未完成] 已知故障：{block.get('reason')}（范围 {block.get('scope')}"
+            + (f"，模型 {block.get('model')}" if block.get("model") else "")
+            + f"，自 {block.get('since')}）",
+            file=sys.stderr,
+        )
+    print(f"[未完成] 已完成的部分已写入 {target}（标注 incomplete，不能当作评测结果引用）。", file=sys.stderr)
+    print("[未完成] 没有补跑，也不会自动重试。修复凭证后请重新安排完整的一轮。", file=sys.stderr)
+    return EXIT_INCOMPLETE
+
+
 def _run_repeated(runner, args) -> int:
     """跑 N 轮，报告均值与区间，让波动显式可见。"""
     from statistics import mean
 
     accuracies, recalls, silent, false_alarm, grouped = [], [], [], [], {}
+    completed_rounds = []
     for trial in range(1, args.repeat + 1):
         report = runner.run(
             categories=args.category,
             ids=SMOKE_IDS if args.smoke else None,
             limit=args.limit,
+        )
+        if report.incomplete:
+            return _report_incomplete(
+                report,
+                output=args.output,
+                completed_rounds=completed_rounds,
+                rounds_planned=args.repeat,
+            )
+        completed_rounds.append(
+            {
+                "round": trial,
+                "accuracy": report.accuracy,
+                "column_recall": report.column_recall,
+                "silent_error_rate": report.silent_error_rate,
+                "false_alarm_rate": report.false_alarm_rate,
+                "grouped_accuracy": report.grouped_accuracy(),
+            }
         )
         accuracies.append(report.accuracy)
         recalls.append(report.column_recall)
@@ -115,6 +167,8 @@ def main() -> int:
         ids=SMOKE_IDS if args.smoke else None,
         limit=args.limit,
     )
+    if report.incomplete:
+        return _report_incomplete(report, output=args.output)
 
     print("=" * 60)
     print(f"模式：{'关闭回溯' if args.no_repair else '开启回溯'}")

@@ -24,6 +24,7 @@ from ai_sql_agent.feedback import (
 from ai_sql_agent.core.metrics import FEEDBACK_SUBMITTED, REQUEST_DURATION, REQUESTS
 from ai_sql_agent.core import (
     CIRCUIT_REGISTRY,
+    MODEL_ACCESS,
     configure_logging,
     get_logger,
     get_settings,
@@ -745,7 +746,19 @@ def readyz() -> Dict[str, Any]:
     else:
         checks["pgvector"] = "not_configured (内存向量索引)"
 
-    if settings.has_model_credentials:
+    # 已知的模型访问故障：只读本进程记下的状态，**不为此去探测模型**。
+    # 这把 Key 被服务端拒过之后，「配置了 Key」不再等于「能调模型」——以前这里照样写 ok。
+    access_faults = MODEL_ACCESS.snapshot()
+    if access_faults:
+        checks["model_access"] = access_faults
+    rejected = [fault for fault in access_faults if fault["permanent"]]
+
+    if settings.has_model_credentials and rejected:
+        checks["model_credentials"] = (
+            "configured, but rejected by the model service (见 model_access)；"
+            "修复后重启，或由管理员调用 POST /admin/circuit/reset"
+        )
+    elif settings.has_model_credentials:
         checks["model_credentials"] = "ok"
     else:
         # 生产模式下这不是「降级」，是不就绪。Mock 会编出语法正确、内容错误的
@@ -758,6 +771,7 @@ def readyz() -> Dict[str, Any]:
 
     # 熔断状态只做展示：模型挂了会走降级链路，服务本身仍然可用，
     # 因此不把它算进 ready 判定，否则会被摘掉流量反而没法降级服务。
+    # 上面的 model_access 同理：凭证被拒时服务仍然能重放历史 SQL、能浏览数据。
     circuits = {
         name: snapshot["state"]
         for name, snapshot in CIRCUIT_REGISTRY.snapshot().items()
@@ -803,20 +817,37 @@ def reload_schema(principal=Depends(require_admin)) -> Dict[str, Any]:
 @app.post("/admin/circuit/reset")
 def reset_circuits(principal=Depends(require_admin)) -> Dict[str, Any]:
     """
-    手动复位模型熔断器。
+    手动复位模型熔断器，并清掉已记下的模型访问故障（凭证被拒 / 额度耗尽 / 模型无权限）。
 
-    模型侧确认恢复后不想等冷却时用。
+    模型侧确认恢复后不想等冷却、或者凭证 / 额度在服务端修好了又不想重启时用。
+    这里**不验证**凭证是不是真的好了：清掉之后，下一个真实请求会再去试一次，
+    还是被拒就重新记下。需要管理员身份；没有、也不打算有匿名的复位入口。
     """
     before = CIRCUIT_REGISTRY.snapshot()
+    access_before = MODEL_ACCESS.snapshot()
     CIRCUIT_REGISTRY.reset_all()
+    MODEL_ACCESS.reset_all()
+    # 抽词器在模型调用失败一次之后会一直用规则抽词，直到进程重启；
+    # 既然管理员说模型侧恢复了，把它也放回来，否则检索质量会停在降级状态。
+    extractor = getattr(getattr(app.state, "pipeline", None), "keyword_extractor", None)
+    reenable = getattr(extractor, "reset_model", None)
+    if callable(reenable):
+        reenable()
     log_event(
         _logger,
         logging.INFO,
         "circuit.manual_reset",
         caller=principal.caller,
         before={name: item["state"] for name, item in before.items()},
+        model_access_cleared=len(access_before),
     )
-    return {"reset": True, "before": before, "after": CIRCUIT_REGISTRY.snapshot()}
+    return {
+        "reset": True,
+        "before": before,
+        "after": CIRCUIT_REGISTRY.snapshot(),
+        "model_access_before": access_before,
+        "model_access_after": MODEL_ACCESS.snapshot(),
+    }
 
 
 @app.get("/admin/schema/status")

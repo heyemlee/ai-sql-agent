@@ -286,6 +286,16 @@ class HybridKeywordExtractor:
                 self._model_failed = True
         return self._model_extractor
 
+    def reset_model(self) -> None:
+        """
+        重新允许模型抽词。
+
+        模型调用失败一次之后，这里会一直用规则抽词直到进程重启（见 extract）。
+        管理员确认模型侧恢复、复位熔断器时调它，免得检索停在降级状态。
+        只清「失败过」这个标记：没有凭证时下一次照样不会去建模型抽词器。
+        """
+        self._model_failed = False
+
     def extract(self, query: str) -> List[str]:
         extractor = self.model_extractor
         if extractor is not None:

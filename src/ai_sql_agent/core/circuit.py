@@ -47,6 +47,10 @@ class CircuitBreaker:
 
     只有基础设施类失败（超时、连接失败、5xx、限流）计数；鉴权失败、
     参数错误这类确定性错误不跳闸——它们本来就是立即返回的。
+
+    「凭证被拒之后别再发」不归熔断器管：那是 `ai_sql_agent.core.model_access` 的事
+    （按服务地址 + 凭证记，不会过 30 秒自己放一个试探出去）。鉴权失败在这里只记
+    `record_inconclusive`，不算成功也不算失败。
     """
 
     def __init__(
@@ -109,6 +113,25 @@ class CircuitBreaker:
             log_event(
                 _logger, logging.INFO, "circuit.closed", component=self.component
             )
+
+    def record_inconclusive(self) -> None:
+        """
+        服务有应答，但这次调用不算成功（凭证被拒、额度耗尽）。
+
+        既不算失败——链路是通的，不该跳闸；也**不算成功**——以前鉴权失败会走
+        `record_success`，把失败计数清零、把半开的熔断器直接合上，一把被停用的 Key
+        于是能把熔断器「治好」。这里什么都不结论：失败计数不动；如果这次调用占着
+        半开时的那个试探位，就把试探位让出来，留给下一个调用去试。
+        """
+        if not self.config.enabled:
+            return
+
+        with self._lock:
+            if self._state is not CircuitState.HALF_OPEN:
+                return
+            # 回到 OPEN 但不重置冷却起点：冷却早已结束，下一次 allow() 会再放一个试探
+            self._state = CircuitState.OPEN
+            self._publish_state_locked()
 
     def record_failure(self) -> None:
         if not self.config.enabled:

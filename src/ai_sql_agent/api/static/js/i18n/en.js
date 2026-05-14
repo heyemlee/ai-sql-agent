@@ -129,6 +129,8 @@ export default {
   'anomaly.aggregation_unrequested.help': 'detail rows were rolled up into totals the question did not ask for',
   'anomaly.shape_contradicts_plan': 'Result shape doesn’t fit the plan',
   'anomaly.shape_contradicts_plan.help': 'the query can only return a different number of rows than the plan called for',
+  'anomaly.self_check_not_run': 'Answer check did not run',
+  'anomaly.self_check_not_run.help': 'the automatic check that the query answers your question could not run (the AI model was unavailable), so this result has not been through it',
 
   'error.network': 'The service can’t be reached. Check that it is running and that you are on the company network.',
   'error.401': 'Your API key is missing or not valid. Add it in Settings → Advanced settings.',

@@ -18,6 +18,8 @@ from .errors import (
     ModelCallError,
     ModelCircuitOpenError,
     ModelConnectionError,
+    ModelCredentialUnavailableError,
+    ModelQuotaExhaustedError,
     ModelRateLimitError,
     ModelResponseError,
     ModelServerError,
@@ -25,6 +27,22 @@ from .errors import (
 )
 from .logging_setup import get_logger, log_event
 from .metrics import MODEL_CALLS, MODEL_TOKENS
+from .model_access import (
+    AMBIGUOUS_FORBIDDEN_HOLD_SECONDS,
+    MODEL_ACCESS,
+    REASON_CREDENTIAL_REJECTED,
+    REASON_FORBIDDEN,
+    REASON_PERMISSION_DENIED,
+    REASON_QUOTA_EXHAUSTED,
+    REASON_RATE_LIMITED,
+    SCOPE_CREDENTIAL,
+    SCOPE_MODEL,
+    AccessBlock,
+    AccessKey,
+    ModelAccessRegistry,
+    credential_fingerprint,
+    endpoint_of,
+)
 from .settings import get_settings
 from .trace import record_usage
 
@@ -90,13 +108,109 @@ class RetryPolicy:
 
 
 def _parse_retry_after(response: httpx.Response) -> Optional[float]:
-    raw = response.headers.get("Retry-After", "")
+    """`Retry-After` 可以是秒数，也可以是一个 HTTP 日期；两种都换算成「还要等多少秒」。"""
+    raw = response.headers.get("Retry-After", "").strip()
     if not raw:
         return None
     try:
-        return float(raw)
+        return max(0.0, float(raw))
     except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        moment = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
         return None
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        return None
+    return max(0.0, moment.timestamp() - time.time())
+
+
+# 响应体里出现这些字样，才算「明确」说了是哪一种拒绝。刻意只收指向明确的说法：
+# 认不出来的一律按较轻的那种处理（普通限流 / 语义不明的 403），宁可多发一次，
+# 也不把一次临时故障当成永久的。
+_QUOTA_MARKERS = (
+    "insufficient_quota",
+    "insufficient_user_quota",
+    "insufficient_balance",
+    "insufficient balance",
+    "insufficient credit",
+    "billing_hard_limit_reached",
+    "billing_not_active",
+    "quota_exhausted",
+    "credit balance is too low",
+    "exceeded your current quota",
+    "out of credits",
+    "余额不足",
+    "额度不足",
+    "额度已用尽",
+    "额度已耗尽",
+    "配额已用尽",
+    "配额已耗尽",
+)
+_CREDENTIAL_MARKERS = (
+    "invalid api key",
+    "invalid_api_key",
+    "incorrect api key",
+    "invalid x-api-key",
+    "api key is disabled",
+    "api key has been disabled",
+    "api key disabled",
+    "key is disabled",
+    "api key not found",
+    "invalid authentication",
+    "authentication_error",
+    "token is invalid",
+    "invalid token",
+    "token expired",
+    "token has expired",
+    "token revoked",
+    "account_deactivated",
+    "account deactivated",
+    "account disabled",
+    "account suspended",
+    "令牌无效",
+    "无效的令牌",
+    "令牌已禁用",
+    "令牌已过期",
+    "密钥无效",
+    "密钥已禁用",
+)
+_PERMISSION_MARKERS = (
+    "permission_error",
+    "permission denied",
+    "model_not_allowed",
+    "model not allowed",
+    "not allowed to use model",
+    "not allowed to access model",
+    "does not have access to model",
+    "no access to model",
+    "not authorized to access this model",
+    "无权使用",
+    "无权访问",
+    "没有权限",
+)
+
+_KEY_SHAPED = re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}|(?i:bearer)\s+[A-Za-z0-9._\-]{8,}")
+
+
+def scrub_secrets(text: str, api_key: str = "") -> str:
+    """
+    把凭证从一段要进日志 / 进异常信息的文字里拿掉。
+
+    服务端的报错有时会把 Key 原样带回来（「Incorrect API key provided: sk-…」）。
+    先按配置里的那把 Key 精确替换，再把长得像 Key 的片段盖掉。
+    """
+    if api_key and len(api_key) >= 4:
+        text = text.replace(api_key, "<redacted>")
+    return _KEY_SHAPED.sub("<redacted>", text)
+
+
+def _mentions(text: str, markers) -> bool:
+    return any(marker in text for marker in markers)
 
 
 def _classify_status(
@@ -104,13 +218,72 @@ def _classify_status(
     *,
     component: str,
     model: str,
+    api_key: str = "",
 ) -> ModelCallError:
+    """
+    HTTP 状态码 + 响应语义 → 有类型的错误，并标出它说明「哪个范围不能再用」。
+
+    | 响应 | 错误 | 范围 | 永久 |
+    | --- | --- | --- | --- |
+    | 402，或写明额度 / 余额用尽 | `ModelQuotaExhaustedError` | 凭证 | 是 |
+    | 401 | `ModelAuthError` | 凭证 | 是 |
+    | 403，写明凭证无效 / 停用 | `ModelAuthError` | 凭证 | 是 |
+    | 403，写明无权使用该模型 | `ModelAuthError` | 模型 | 是 |
+    | 403，没说清楚 | `ModelAuthError` | 模型 | 否 |
+    | 429（没写额度用尽） | `ModelRateLimitError` | — | 否，可退避重试 |
+    """
     status = response.status_code
-    body = response.text[:500]
+    text = scrub_secrets(response.text, api_key)
+    body = text[:500]
+    lowered = text[:4000].lower()
     kwargs = {"component": component, "model": model, "status_code": status}
 
-    if status in (401, 403):
-        return ModelAuthError(f"模型服务鉴权失败：{body}", **kwargs)
+    if status == 402 or (
+        status in (400, 401, 403, 429) and _mentions(lowered, _QUOTA_MARKERS)
+    ):
+        return ModelQuotaExhaustedError(
+            f"模型服务额度已用尽：{body}",
+            block_scope=SCOPE_CREDENTIAL,
+            block_reason=REASON_QUOTA_EXHAUSTED,
+            block_permanent=True,
+            **kwargs,
+        )
+    if status == 401:
+        return ModelAuthError(
+            f"模型服务鉴权失败：{body}",
+            block_scope=SCOPE_CREDENTIAL,
+            block_reason=REASON_CREDENTIAL_REJECTED,
+            block_permanent=True,
+            **kwargs,
+        )
+    if status == 403:
+        about_credential = _mentions(lowered, _CREDENTIAL_MARKERS)
+        about_permission = _mentions(lowered, _PERMISSION_MARKERS)
+        if about_credential and not about_permission:
+            return ModelAuthError(
+                f"模型服务鉴权失败：{body}",
+                block_scope=SCOPE_CREDENTIAL,
+                block_reason=REASON_CREDENTIAL_REJECTED,
+                block_permanent=True,
+                **kwargs,
+            )
+        if about_permission:
+            # 只说明这把凭证用不了**这个模型**；别的模型、别的配置不受影响
+            return ModelAuthError(
+                f"模型服务拒绝访问该模型：{body}",
+                block_scope=SCOPE_MODEL,
+                block_reason=REASON_PERMISSION_DENIED,
+                block_permanent=True,
+                **kwargs,
+            )
+        # 网关拦截页、地区限制、没说原因的拒绝：不知道是不是永久的，不当成永久
+        return ModelAuthError(
+            f"模型服务拒绝请求（403）：{body}",
+            block_scope=SCOPE_MODEL,
+            block_reason=REASON_FORBIDDEN,
+            block_permanent=False,
+            **kwargs,
+        )
     if status == 429:
         return ModelRateLimitError(
             f"模型服务限流：{body}",
@@ -134,7 +307,10 @@ class ModelTransport:
     - 统一超时与连接池复用；
     - 429/5xx/超时/连接失败按指数退避重试（尊重 Retry-After）；
     - 错误按类别抛出（见 errors.py），上层可区分限流与参数错误；
-    - 记录每次调用的结构化日志与 Token 用量。
+    - 记录每次调用的结构化日志与 Token 用量；
+    - 凭证被明确拒绝（或额度明确用尽）之后，同一组「服务地址 + 凭证」的调用
+      在这里直接短路，不再发出去（见 model_access.py）。路由、抽词、规划、生成、
+      自检、修复、摘要都走这一个入口，所以谁也没法绕过去把一次拒绝放大成几十次。
     """
 
     def __init__(
@@ -147,6 +323,7 @@ class ModelTransport:
         retry_policy: Optional[RetryPolicy] = None,
         client: Optional[httpx.Client] = None,
         sleeper: Callable[[float], None] = time.sleep,
+        access_registry: Optional[ModelAccessRegistry] = None,
     ):
         settings = get_settings()
         self.component = component
@@ -161,6 +338,9 @@ class ModelTransport:
         self._client = client
         self._sleep = sleeper
         self.circuit = CIRCUIT_REGISTRY.get(component)
+        self.access = access_registry if access_registry is not None else MODEL_ACCESS
+        """模型访问状态表。默认是进程内共用的那一张；测试可以换一张带假时钟的。"""
+        self._credential = credential_fingerprint(api_key)
 
     @property
     def client(self) -> httpx.Client:
@@ -232,10 +412,16 @@ class ModelTransport:
         extra_headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """POST 一个 JSON 请求并返回解析后的响应体，失败按类别抛 ModelCallError。"""
+        access_key = self._access_key(url)
+        self._guard_access(access_key, model)
         self._guard_circuit(model)
         attempt = 0
 
         while True:
+            if attempt:
+                # 退避的这段时间里，别的调用可能已经确认这把凭证不能用了：
+                # 重试之前再问一次，不要把一个已知的拒绝再发一遍。
+                self._guard_access(access_key, model)
             started = time.perf_counter()
             try:
                 response = self.client.post(
@@ -246,13 +432,16 @@ class ModelTransport:
                 )
                 if response.status_code >= 400:
                     raise _classify_status(
-                        response, component=self.component, model=model
+                        response,
+                        component=self.component,
+                        model=model,
+                        api_key=self.api_key,
                     )
                 try:
                     result = response.json()
                 except ValueError as exc:
                     raise ModelResponseError(
-                        f"模型返回不是合法 JSON：{response.text[:500]}",
+                        f"模型返回不是合法 JSON：{scrub_secrets(response.text, self.api_key)[:500]}",
                         component=self.component,
                         model=model,
                         status_code=response.status_code,
@@ -276,6 +465,7 @@ class ModelTransport:
                 duration_ms = round((time.perf_counter() - started) * 1000, 2)
                 usage = self._record_usage(result, model)
                 self.circuit.record_success()
+                self.access.record_success(access_key, model)
                 MODEL_CALLS.inc(
                     component=self.component, status="ok", error_category=""
                 )
@@ -293,7 +483,12 @@ class ModelTransport:
                 return result
 
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
-            can_retry = error.retryable and attempt < self.retry_policy.max_retries
+            can_retry = (
+                error.retryable
+                and attempt < self.retry_policy.max_retries
+                and self._can_wait_for(error)
+            )
+            self._record_access_outcome(access_key, model, error)
             MODEL_CALLS.inc(
                 component=self.component,
                 status="error",
@@ -334,12 +529,16 @@ class ModelTransport:
 
         流式响应一旦开始下发就不能安全重放，因此只对「建连阶段」的失败重试。
         """
+        access_key = self._access_key(url)
+        self._guard_access(access_key, model)
         self._guard_circuit(model)
         headers = self._headers(extra_headers)
         headers["Accept"] = "text/event-stream"
         attempt = 0
 
         while True:
+            if attempt:
+                self._guard_access(access_key, model)
             started = time.perf_counter()
             emitted = 0
             try:
@@ -353,7 +552,10 @@ class ModelTransport:
                     if response.status_code >= 400:
                         response.read()
                         raise _classify_status(
-                            response, component=self.component, model=model
+                            response,
+                            component=self.component,
+                            model=model,
+                            api_key=self.api_key,
                         )
                     for chunk in _iter_sse_content(response.iter_lines()):
                         emitted += 1
@@ -375,6 +577,7 @@ class ModelTransport:
                 error = exc
             else:
                 self.circuit.record_success()
+                self.access.record_success(access_key, model)
                 log_event(
                     _logger,
                     logging.INFO,
@@ -392,7 +595,9 @@ class ModelTransport:
                 error.retryable
                 and attempt < self.retry_policy.max_retries
                 and emitted == 0
+                and self._can_wait_for(error)
             )
+            self._record_access_outcome(access_key, model, error)
             log_event(
                 _logger,
                 logging.WARNING if can_retry else logging.ERROR,
@@ -413,6 +618,142 @@ class ModelTransport:
 
             self._sleep(self.retry_policy.delay_for(attempt, error.retry_after))
             attempt += 1
+
+    # ------------------------------------------------------------------
+    # 凭证 / 额度 / 权限：已知不可用就不发
+    # ------------------------------------------------------------------
+
+    def _access_key(self, url: str) -> AccessKey:
+        return AccessKey(
+            endpoint=endpoint_of(url),
+            provider=self.provider.lower(),
+            credential=self._credential,
+        )
+
+    def _guard_access(self, key: AccessKey, model: str) -> None:
+        """这组凭证（或这个模型）已知不可用时直接抛错，不发请求。"""
+        entry = self.access.check(key, model)
+        if entry is None:
+            return
+
+        error = self._short_circuit_error(entry, model)
+        MODEL_CALLS.inc(
+            component=self.component,
+            status="error",
+            error_category=error.category,
+        )
+        log_event(
+            _logger,
+            logging.WARNING,
+            "model.short_circuited",
+            component=self.component,
+            model=model,
+            cause=entry.reason,
+            scope=entry.scope,
+            permanent=entry.permanent,
+            endpoint=key.endpoint_id,
+            credential=key.credential,
+        )
+        raise error
+
+    def _short_circuit_error(self, entry: AccessBlock, model: str) -> ModelCallError:
+        kwargs = {
+            "component": self.component,
+            "model": model,
+            "status_code": entry.status_code,
+            "block_scope": entry.scope,
+            "block_reason": entry.reason,
+            "block_permanent": entry.permanent,
+        }
+        if entry.permanent:
+            what = {
+                REASON_QUOTA_EXHAUSTED: "模型服务额度已用尽",
+                REASON_PERMISSION_DENIED: "这把凭证无权使用该模型",
+            }.get(entry.reason, "模型凭证已被服务端拒绝")
+            return ModelCredentialUnavailableError(
+                f"{what}，本次调用未发出。修复凭证或额度后重启服务，"
+                "或由管理员调用 POST /admin/circuit/reset 解除。",
+                **kwargs,
+            )
+
+        remaining = round(entry.remaining(self.access.now()), 1)
+        if entry.reason == REASON_RATE_LIMITED:
+            # 仍然是限流：上层照「模型暂时不可用」降级，到点之后下一个请求自己会再试
+            return ModelRateLimitError(
+                f"模型服务限流，按 Retry-After 暂缓中（约 {remaining}s 后再试），本次调用未发出。",
+                retry_after=remaining,
+                **kwargs,
+            )
+        return ModelCredentialUnavailableError(
+            f"模型服务刚刚拒绝了这个模型的请求（403），暂缓中（约 {remaining}s 后再试），本次调用未发出。",
+            **kwargs,
+        )
+
+    def _can_wait_for(self, error: ModelCallError) -> bool:
+        """
+        服务端给了 Retry-After 时，只有等得起才在这次调用里重试。
+
+        等不起（超过退避上限）就不重试：提前去试等于没有遵循 Retry-After，
+        只会多挨一次限流。
+        """
+        if error.retry_after is None:
+            return True
+        return error.retry_after <= self.retry_policy.backoff_max_seconds
+
+    def _record_access_outcome(self, key: AccessKey, model: str, error: ModelCallError) -> None:
+        """按响应语义记下「哪个范围不能再用」。只在真的收到了服务端的响应时才会走到。"""
+        if error.block_scope and error.block_permanent:
+            if error.block_scope == SCOPE_MODEL and not model:
+                # 不知道是哪个模型，就没法只拦这一个模型；不为此去拦整把凭证
+                return
+            entry = self.access.block(
+                key,
+                scope=error.block_scope,
+                reason=error.block_reason,
+                model=model,
+                status_code=error.status_code,
+                component=self.component,
+            )
+            log_event(
+                _logger,
+                logging.ERROR,
+                "model.access_blocked",
+                component=self.component,
+                model=entry.model,
+                scope=entry.scope,
+                reason=entry.reason,
+                status_code=error.status_code,
+                endpoint=key.endpoint_id,
+                credential=key.credential,
+                recovery="restart or POST /admin/circuit/reset",
+            )
+            return
+
+        if not model:
+            return
+
+        if isinstance(error, ModelAuthError):
+            self.access.hold(
+                key,
+                reason=REASON_FORBIDDEN,
+                seconds=AMBIGUOUS_FORBIDDEN_HOLD_SECONDS,
+                model=model,
+                status_code=error.status_code,
+                component=self.component,
+            )
+        elif (
+            isinstance(error, ModelRateLimitError)
+            and error.retry_after is not None
+            and not self._can_wait_for(error)
+        ):
+            self.access.hold(
+                key,
+                reason=REASON_RATE_LIMITED,
+                seconds=error.retry_after,
+                model=model,
+                status_code=error.status_code,
+                component=self.component,
+            )
 
     # ------------------------------------------------------------------
     # 熔断
@@ -447,7 +788,7 @@ class ModelTransport:
         只有基础设施类失败才计入熔断。
 
         鉴权失败、参数错误是确定性的：它们本来就秒回，熔断没有意义，
-        反而会让配置修好之后还要等冷却。
+        反而会让配置修好之后还要等冷却。额度耗尽同理（它不是 `ModelRateLimitError`）。
         """
         return isinstance(
             error,
@@ -462,8 +803,12 @@ class ModelTransport:
     def _record_circuit_outcome(self, error: ModelCallError) -> None:
         if self._is_infrastructure_failure(error):
             self.circuit.record_failure()
+        elif isinstance(error, (ModelAuthError, ModelQuotaExhaustedError)):
+            # 凭证被拒、额度耗尽：链路是通的，但这**不是一次成功的调用**。
+            # 不清失败计数、不合上熔断器；后续还发不发由 model_access 决定。
+            self.circuit.record_inconclusive()
         else:
-            # 能拿到明确的业务错误说明链路本身是通的
+            # 参数错误、返回体解析失败：服务正常应答了，链路本身是通的
             self.circuit.record_success()
 
     def _record_usage(self, result: Dict[str, Any], model: str) -> Dict[str, int]:

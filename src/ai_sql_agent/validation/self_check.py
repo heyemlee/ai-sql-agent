@@ -1,9 +1,30 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Dict, Optional, Protocol
 
-from .objects import AnomalyType, ValidationFinding
+from .objects import (
+    SELF_CHECK_MISMATCH,
+    SELF_CHECK_NOT_APPLICABLE,
+    SELF_CHECK_NOT_RUN,
+    SELF_CHECK_PASSED,
+    AnomalyType,
+    ValidationFinding,
+)
+
+
+@dataclass
+class SelfCheckResult:
+    """一次语义自检的结果。`status` 说的是**做没做成**，不只是有没有发现。"""
+
+    status: str
+    """passed / mismatch / not_run / not_applicable（常量见 objects.py）。"""
+
+    finding: Optional[ValidationFinding] = None
+    paraphrase: Optional[str] = None
+    error: str = ""
+    """没做成时的异常类名。"""
 
 
 class ParaphraseClient(Protocol):
@@ -102,13 +123,31 @@ class SemanticSelfChecker:
         """
         返回 (发现, 复述文本)。模型不可用时返回 (None, None)，不阻断主链路。
 
+        只想知道「有没有发现」时用它。**它分不出「做了、没问题」和「没做成」**——
+        要区分这两种（校验器必须区分）用 `run`。
+        """
+        result = self.run(
+            query, sql, preceding_summary=preceding_summary, known_units=known_units
+        )
+        return result.finding, result.paraphrase
+
+    def run(
+        self,
+        query: str,
+        sql: str,
+        preceding_summary: str = "",
+        known_units: Optional[Dict[str, str]] = None,
+    ) -> "SelfCheckResult":
+        """
+        做一次语义自检，并如实说明做没做成。
+
         preceding_summary 非空表示这是多步计划的最后一步，比对时要告诉审阅者
         前面已经做完了什么。不告诉它的后果是系统性误报：跨库查询的最后一步
         只做「后半段」，拿原问题去比必然判成「漏掉了筛选条件」——
         实测跨库样本的误报率因此达到 100%，等于把提示变成噪音。
         """
         if not self.client or not sql.strip():
-            return None, None
+            return SelfCheckResult(status=SELF_CHECK_NOT_APPLICABLE)
 
         facts = ""
         if known_units:
@@ -132,24 +171,25 @@ class SemanticSelfChecker:
                     query=query, paraphrase=paraphrase, facts=facts
                 )
             verdict_raw = self.client.generate(compare_prompt)
-        except Exception:
-            # 自检是增强项，不能因为它挂掉就让整条查询失败
-            return None, None
+        except Exception as exc:
+            # 自检是增强项，不能因为它挂掉就让整条查询失败——但也不能假装它做过了。
+            return SelfCheckResult(status=SELF_CHECK_NOT_RUN, error=type(exc).__name__)
 
         conclusion = self._extract(verdict_raw, "结论") or ""
         reason = self._extract(verdict_raw, "理由") or verdict_raw.strip()
 
         if "不一致" in conclusion:
-            return (
-                ValidationFinding(
+            return SelfCheckResult(
+                status=SELF_CHECK_MISMATCH,
+                finding=ValidationFinding(
                     anomaly=AnomalyType.SEMANTIC_MISMATCH,
                     detail=f"SQL 实际行为与问题不一致：{reason}（复述：{paraphrase}）",
                     severity="block",
                 ),
-                paraphrase,
+                paraphrase=paraphrase,
             )
 
-        return None, paraphrase
+        return SelfCheckResult(status=SELF_CHECK_PASSED, paraphrase=paraphrase)
 
     @staticmethod
     def _extract(text: str, label: str) -> str:

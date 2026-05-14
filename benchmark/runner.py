@@ -6,7 +6,87 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections import Counter
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+ABORT_MODEL_ACCESS = "model_access_unavailable"
+"""中止原因：模型凭证被拒 / 额度耗尽 / 无权使用模型（见 ai_sql_agent.core.model_access）。"""
+
+EXIT_INCOMPLETE = 3
+"""
+评测没有跑完时入口的退出码。与另外两个非零码分开：1 是「跑完了，没达标」，
+2 是「压根没法跑」（没配凭证）；3 是「跑到一半停了，已完成的部分存下来了，没有结论」。
+"""
+
+
+def save_incomplete(payload: Dict[str, Any], output: Optional[str], prefix: str) -> Path:
+    """
+    把没跑完的那部分结果存下来。没指定路径就写到当前目录的 runtime_data/ 下。
+
+    文件里 `incomplete` 一定是 true：这份东西只用来看「停下来之前跑了什么」，
+    不能当成一轮评测的结果引用。
+    """
+    import time
+
+    payload = {**payload, "incomplete": True}
+    if output:
+        target = Path(output)
+    else:
+        target = Path("runtime_data") / f"{prefix}_incomplete_{time.strftime('%Y%m%d-%H%M%S')}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def model_access_blocks() -> List[Dict[str, Any]]:
+    """
+    当前进程里已知的、**永久性**的模型访问故障（凭证被拒、额度耗尽、模型无权限）。
+
+    只读本进程的状态表，不发任何请求。基准入口靠它决定要不要停下来：凭证已经被拒了，
+    剩下的题每一道都只会得到「模型不可用」，逐题跑完既测不出任何东西，还会算出一个
+    看起来像样的准确率。
+    """
+    from ai_sql_agent.core import MODEL_ACCESS
+
+    return MODEL_ACCESS.permanent_blocks()
+
+
+class BenchmarkIncomplete(RuntimeError):
+    """
+    一轮评测没能跑完（目前唯一的原因：模型凭证不可用）。
+
+    带着已经完成的那部分结果，由入口决定怎么保存；**不是**一个可以拿来算指标的结果。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        completed: int,
+        planned: int,
+        hits: int = 0,
+        blocks: Optional[List[Dict[str, Any]]] = None,
+        rows: Optional[List[Dict[str, Any]]] = None,
+    ):
+        super().__init__(message)
+        self.stage = stage
+        self.completed = completed
+        self.planned = planned
+        self.hits = hits
+        self.blocks = list(blocks or [])
+        self.rows = list(rows or [])
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "incomplete": True,
+            "abort_reason": ABORT_MODEL_ACCESS,
+            "stage": self.stage,
+            "completed": self.completed,
+            "planned": self.planned,
+            "hits": self.hits,
+            "abort_detail": self.blocks,
+            "items": self.rows,
+        }
 
 
 @dataclass
@@ -81,6 +161,19 @@ class BenchmarkReport:
     items: List[BenchmarkItemResult] = field(default_factory=list)
     total_columns: int = 0
     """全库字段总数，用于把「平均进图字段数」换算成占比。"""
+
+    planned_total: int = 0
+    """本来要跑多少条。跑完时等于 total；中途停下时 total 只是已完成的条数。"""
+
+    incomplete: bool = False
+    """
+    这一轮没有跑完。**没跑完的报告里的指标不是这份评测集上的指标**——
+    只是已完成那几条上的数，不能拿去比门禁线，也不能和完整轮次取均值。
+    """
+
+    abort_reason: str = ""
+    abort_detail: List[Dict[str, Any]] = field(default_factory=list)
+    """中止时已知的模型访问故障（不含 Key，不含主机名）。"""
 
     @property
     def column_recall(self) -> float:
@@ -195,6 +288,10 @@ class BenchmarkReport:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "incomplete": self.incomplete,
+            "planned_total": self.planned_total or self.total,
+            "abort_reason": self.abort_reason,
+            "abort_detail": self.abort_detail,
             "total": self.total,
             "correct": self.correct,
             "accuracy": round(self.accuracy, 4),
@@ -378,11 +475,16 @@ class BenchmarkRunner:
         pipeline=None,
         dataset_path: Optional[str | Path] = None,
         enable_repair: Optional[bool] = None,
+        access_check: Optional[Callable[[], List[Dict[str, Any]]]] = None,
     ):
         """
         enable_repair 显式传 False 时关闭回溯回路，用于测「回溯增益」：
         同一评测集分别开/关跑一次，两次准确率之差即增益。
+
+        access_check 返回当前已知的模型访问故障，非空就停止评测；默认读本进程的
+        模型访问状态表（不发请求）。测试里可以换成自己的。
         """
+        self.access_check = access_check or model_access_blocks
         if pipeline is None:
             from ai_sql_agent.pipeline import Text2SQLPipeline
             from ai_sql_agent.pipeline.objects import PipelineConfig
@@ -435,11 +537,26 @@ class BenchmarkRunner:
             items = items[:limit]
 
         report = BenchmarkReport(
-            total=len(items), correct=0, total_columns=self._total_columns()
+            total=len(items),
+            correct=0,
+            total_columns=self._total_columns(),
+            planned_total=len(items),
         )
 
         for item in items:
-            result = self._run_item(item)
+            # 模型凭证已知不可用就停：先问一次（上一轮可能已经撞上了），跑完这一条再问一次。
+            # 第二次问到了，说明这一条是在故障里跑出来的，不算数——不计入已完成的结果。
+            blocks = self.access_check()
+            if not blocks:
+                result = self._run_item(item)
+                blocks = self.access_check()
+            if blocks:
+                report.incomplete = True
+                report.abort_reason = ABORT_MODEL_ACCESS
+                report.abort_detail = blocks
+                report.total = len(report.items)
+                break
+
             report.items.append(result)
             report.category_totals[result.category] = (
                 report.category_totals.get(result.category, 0) + 1
@@ -587,14 +704,22 @@ class BenchmarkRunner:
         )
 
 
-def run_holdout_recall(pipeline=None, holdout_path: Optional[str | Path] = None) -> float:
+def run_holdout_recall(
+    pipeline=None,
+    holdout_path: Optional[str | Path] = None,
+    access_check: Optional[Callable[[], List[Dict[str, Any]]]] = None,
+) -> float:
     """
     留出集字段召回率。
 
     与评测集分开跑：评测集的召回率被短语表、别名、枚举词表反复调过，
     留出集用完全不同的口语问法且不参与调参，才是「上线后遇到真实用户」的估计值。
     发布门禁卡的是这一项，评测集那一项只作为不许退化的下限。
+
+    模型凭证不可用时抛 `BenchmarkIncomplete`（带着已完成的逐题结果），不返回一个数——
+    一个只跑了一半的召回率不是召回率。
     """
+    access_check = access_check or model_access_blocks
     if pipeline is None:
         from ai_sql_agent.pipeline import Text2SQLPipeline
 
@@ -606,9 +731,25 @@ def run_holdout_recall(pipeline=None, holdout_path: Optional[str | Path] = None)
         return 0.0
 
     hit = 0
+    rows: List[Dict[str, Any]] = []
     for item in items:
-        result = pipeline.run(item["query"])
+        blocks = access_check()
+        if not blocks:
+            result = pipeline.run(item["query"])
+            blocks = access_check()
+        if blocks:
+            raise BenchmarkIncomplete(
+                f"留出集只跑完 {len(rows)}/{len(items)} 条：模型凭证不可用。",
+                stage="holdout",
+                completed=len(rows),
+                planned=len(items),
+                hits=hit,
+                blocks=blocks,
+                rows=rows,
+            )
         visible = set(result.prompt_columns or result.retrieved_columns)
-        if all(column in visible for column in item["gold_columns"]):
+        matched = all(column in visible for column in item["gold_columns"])
+        rows.append({"id": item.get("id"), "query": item["query"], "hit": matched})
+        if matched:
             hit += 1
     return hit / len(items)

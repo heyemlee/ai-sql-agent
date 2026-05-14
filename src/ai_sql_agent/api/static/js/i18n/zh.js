@@ -129,6 +129,8 @@ export default {
   'anomaly.aggregation_unrequested.help': '明细被合成了合计数，而问题并没有要求汇总',
   'anomaly.shape_contradicts_plan': '结果结构与计划不符',
   'anomaly.shape_contradicts_plan.help': '按这条查询的结构，只能返回与计划不同的行数',
+  'anomaly.self_check_not_run': '答案核对未执行',
+  'anomaly.self_check_not_run.help': '「查询是否回答了问题」这道自动核对没有做成（模型不可用），这个结果没有经过它',
 
   'error.network': '连不上服务。请确认服务在运行，并且你在公司网络内。',
   'error.401': 'API Key 没填或不正确。请到「设置 → 高级设置」里填写。',

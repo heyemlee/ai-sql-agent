@@ -593,33 +593,49 @@ class Text2SQLPipeline:
             repair_attempts: List[dict] = []
 
             if not execution_result.success and self.config.enable_repair and not denied:
-                with stage(
-                    "repair",
-                    _logger,
-                    step=step_index,
-                    database=sql_cot_step.database,
-                    error=execution_result.error,
-                ) as repair_stage:
-                    outcome = self.sql_repair.repair(
+                try:
+                    with stage(
+                        "repair",
+                        _logger,
+                        step=step_index,
                         database=sql_cot_step.database,
-                        sql=sql_result.sql,
-                        error_message=execution_result.error or "",
-                        local_schema=local_schema,
-                        sql_dialect=step_dialect,
-                        execute=lambda database, sql: self.mcp_router.execute(
-                            {"database": database, "sql": sql}
-                        ),
-                    )
-                    repair_attempts = [
-                        attempt.to_dict() for attempt in outcome.attempts
-                    ]
-                    SQL_REPAIRS.inc(
-                        result="repaired" if outcome.repaired else "failed"
-                    )
-                    repair_stage.set(
-                        attempts=len(repair_attempts),
-                        repaired=outcome.repaired,
-                        final_sql=outcome.final_sql,
+                        error=execution_result.error,
+                    ) as repair_stage:
+                        outcome = self.sql_repair.repair(
+                            database=sql_cot_step.database,
+                            sql=sql_result.sql,
+                            error_message=execution_result.error or "",
+                            local_schema=local_schema,
+                            sql_dialect=step_dialect,
+                            execute=lambda database, sql: self.mcp_router.execute(
+                                {"database": database, "sql": sql}
+                            ),
+                        )
+                        repair_attempts = [
+                            attempt.to_dict() for attempt in outcome.attempts
+                        ]
+                        SQL_REPAIRS.inc(
+                            result="repaired" if outcome.repaired else "failed"
+                        )
+                        repair_stage.set(
+                            attempts=len(repair_attempts),
+                            repaired=outcome.repaired,
+                            final_sql=outcome.final_sql,
+                        )
+                except ModelCallError as exc:
+                    # 修复要靠模型重写 SQL。模型不可用时这里以前没有接住，异常一路冒到
+                    # HTTP 层变成 500——规划、生成阶段遇到同一个错误都是走降级的，
+                    # 修复不该是例外。
+                    SQL_REPAIRS.inc(result="model_unavailable")
+                    return self._degrade(
+                        query=query,
+                        keywords=resolved_keywords,
+                        schema_context=schema_context,
+                        retrieval_result=retrieval_result,
+                        access=access,
+                        user_id=user_id,
+                        failed_stage="repair",
+                        error=exc,
                     )
                 if outcome.repaired and outcome.final_result is not None:
                     execution_result = outcome.final_result
