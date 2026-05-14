@@ -142,6 +142,17 @@ make gate                  # Full release gate; requires model credentials
 
 CI is configured for unit tests, pgvector integration, a pinned A2A contract, demos, and container smoke tests. See the [workflow](.github/workflows/ci.yml) and [benchmark guide](benchmark/README.md).
 
+### Known limits and unfinished verification (as of 2026-10-04)
+
+- **Model regression for the English adaptation is incomplete.** Two full gate rounds per side plus a partial third were run before the model key was disabled; the gate fails on the same three metrics before and after, and no full gate has been run on the final code. Record: [benchmark/baseline/2026-10-04](benchmark/baseline/2026-10-04/README.md). Do not cite those numbers as a baseline.
+- **PostgreSQL is not verified on a real database** for anything added here: the identifier-case rules in authorization, the preview SQL (not schema-qualified; structure is read from `public`, names resolve through `search_path`), and the least-privilege binding. Unit tests only.
+- **`AI_SQL_MAX_ROWS` and `AI_SQL_MAX_EXECUTION_SECONDS` are logged at startup but not applied**: queries run with 1000 rows / 10 s. Preview paging relies on that cap being at least the page size.
+- **The catalog reads table structure before checking the caller's policy** (cached, single-flight); nothing is returned to a caller who may not see it.
+- **Handling of a rejected model credential is verified with mock transports only.** The wording lists that recognise "quota exhausted", "key disabled" and "model not permitted" are heuristics; state is per process; requests already in flight when the first rejection arrives cannot be recalled.
+- **English UI:** dictionary text is shown as written when the semantic metadata has no English keys, and server-side free text (routing reason, validator notes, error messages) is Chinese.
+- **Routing fallback:** when the routing model is unavailable, the rule-based fallback sends most colloquial Chinese questions (30 of the 40 hold-out phrasings) to conversation instead of a query.
+- **Joint integration with the Helpdesk over A2A has not been run** for this change set.
+
 <details>
 <summary><strong>API reference</strong></summary>
 
