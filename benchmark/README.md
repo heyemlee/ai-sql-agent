@@ -196,8 +196,8 @@ entirely — and a cross-database query depends on precisely that second databas
 
 Driving the silent-error rate down is about **increasing detection coverage**,
 not about making the model more accurate. The four checks are ordered by cost.
-The first two are static — regex plus plan text, no model call, no look at the
-results — so they cost almost nothing and can run on every single query:
+The first two are static — the SQL's structure plus plan text, no model call, no
+look at the results — so they cost almost nothing and can run on every single query:
 
 | Check | Cost | What it catches |
 |---|---|---|
@@ -416,6 +416,26 @@ python -m benchmark.run_benchmark --smoke
 # Release gate: non-zero exit if any metric misses its threshold, so it can run in CI
 python -m benchmark.gate
 ```
+
+### The bilingual business cases (bilingual_cases.json)
+
+The 150 evaluation cases and the 40 holdout cases are all asked in Chinese.
+`bilingual_cases.json` covers the other direction: **the same business question asked
+once in Chinese and once in English should get the same answer**. Four scenarios,
+eight cases, one gold SQL per pair — supplier on-time rate, unpaid purchase balance,
+cross-database order progress, and latest stock with its unit.
+
+```bash
+python -m benchmark.run_benchmark --dataset benchmark/bilingual_cases.json --repeat 3
+```
+
+It is **not part of the gate** — eight cases are too few to set a meaningful line. Its
+job is to show, after a change that touches language (routing word lists, the
+generation prompt, the aggregation cues in the shape check, the semantic self-check),
+whether the English phrasing does worse than the Chinese one. Judging is the same as
+for the evaluation set. `tests/test_bilingual_cases.py` locks that every gold SQL
+returns rows on the built-in demo data; those tests check the fixture only and are no
+substitute for a model run.
 
 ## Regenerating the dataset
 

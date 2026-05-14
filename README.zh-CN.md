@@ -46,7 +46,7 @@
 | 层次 | 技术 | 在项目中的作用 |
 | --- | --- | --- |
 | 运行时与 API | Python 3.11+ · FastAPI · Uvicorn · Pydantic v2 | 类型化请求响应、服务入口、配置校验 |
-| Web Console | 原生 HTML · CSS · JavaScript | 内置查询界面，由 FastAPI 提供静态页面 |
+| Web Console | 原生 HTML · CSS · ES Module（无构建步骤） | 业务查数、数据浏览、历史查询三个入口，由 FastAPI 托管 |
 | 模型接入 | HTTPX · OpenAI 兼容协议 · Anthropic 协议 | 规划、SQL 生成与问答；可连接 vLLM / Ollama 等兼容服务 |
 | Schema 检索 | 自实现 BM25 · NumPy 向量索引 · RRF · Rerank 客户端 | 融合关键词和语义召回，定位相关库、表与字段 |
 | 业务语义 | PyYAML · SchemaGraph | 定义字段含义、别名、指标口径、关联键与 JOIN 基数 |
@@ -149,6 +149,9 @@ CI 配置覆盖单元测试、pgvector 集成、固定版本的 A2A 契约、演
 | --- | --- |
 | `POST /query` | 自然语言查询，返回答案、分步 SQL / 结果、风险与追踪信息 |
 | `GET /history` | 查询历史，默认仅自己的记录 |
+| `GET /whoami` | 本次请求解析出的身份（与 `/query` 同一套解析）与服务能力 |
+| `GET /catalog` | 当前身份可见的数据目录：数据域、表、字段、单位与业务术语 |
+| `POST /catalog/{database}/{table}/rows` | 只读分页预览，支持搜索 / 筛选 / 排序；不接受 SQL |
 | `POST /memory/save` | 保存个人长期记忆 |
 | `POST /feedback` · `GET /feedback/stats` | 回答反馈与管理员统计 |
 | `GET /health` · `GET /readyz` | 存活与就绪检查 |
@@ -156,6 +159,8 @@ CI 配置覆盖单元测试、pgvector 集成、固定版本的 A2A 契约、演
 | `POST /admin/schema/reload` | 管理员重建 Schema 索引 |
 
 `POST /query` 响应包含 `answer`、`has_risk`、`degraded`、`trace_id` 及分步执行信息。
+
+目录接口沿用 `/query` 的调用方身份与表列权限。预览语句由服务端按「真实存在且可见的列」拼出，值全部走绑定参数，执行走生成 SQL 用的同一个只读执行器与授权关卡。取回的内容在数据库里就设了上限，不是取回来再截：长文本截到 2000 个字符，二进制字段只取大小。
 
 </details>
 

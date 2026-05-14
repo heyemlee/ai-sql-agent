@@ -174,6 +174,78 @@ environment:
   AI_SQL_SEMANTIC_DIR: /app/semantic
 ```
 
+### The same metadata feeds the console's Data page
+
+`GET /catalog` joins this metadata with the databases' real table structure and trims
+it to what the caller's policy allows, so people can see what there is to ask about
+before asking. A table that is documented but missing from the database is shown as
+missing, and a database that cannot be reached is shown as unavailable — never as an
+empty list.
+
+Names and descriptions for people are optional extra keys, accepted on a database, a
+table or a column. They are **not** sent to the model; retrieval keeps reading
+`description` and `aliases`.
+
+```yaml
+name: erp_db
+label_en: Orders & Purchasing        # or `label:` for one name in every language
+label_zh: 订单与采购
+description_en: Orders, suppliers, purchasing and supplier payments.
+tables:
+  supplier:
+    label_en: Suppliers
+    columns:
+      on_time_rate:
+        description_en: Share of deliveries that arrived by the agreed date.
+        business_usage_en: Find suppliers that deliver late.   # the column's `business_usage`
+        unit: ratio
+```
+
+The shared file takes the same kind of addition for glossary terms and cross-database
+links. The keys of `metric_definitions_en` are the terms of `metric_definitions`; there
+is still one definition, this is how it reads in English:
+
+```yaml
+# _shared.yaml
+metric_definitions:
+  准时率: 准时率是供应商按约定交期到货的批次占比。
+metric_definitions_en:
+  准时率:
+    term: On-time rate
+    definition: Share of a supplier's deliveries that arrived by the agreed date.
+cross_database_links:
+  - left: erp_db.supplier.supplier_id
+    right: wms_db.batch.supplier_id
+    meaning: ERP 供应商编号与入库批次的供应商编号同域
+    meaning_en: Same set of suppliers in both systems.
+```
+
+Without them the page falls back, in order, to the first alias in the reader's language
+and then to the technical name spelled out; databases named after a common system type
+(`erp_db`, `pm_db`, `mes_db`, `wms_db`) get a default business title. A description that
+exists only in another language is shown as written rather than translated.
+
+Limits for the read-only preview are `AI_SQL_CATALOG_*` (see `.env.example`);
+`AI_SQL_CATALOG_ENABLED=false` turns the Data page off without affecting questions —
+the console takes the caller's identity from `GET /whoami`, which stays available.
+
+What the preview does and does not do:
+
+- Browsing has its own rate bucket (`AI_SQL_CATALOG_RATE_LIMIT_PER_MINUTE`), so paging
+  through a table does not use up a caller's question budget. A key whose own
+  `rate_limit_per_minute` is lower is held to the lower value.
+- Values are bounded in SQL: text is cut at 2,000 characters (the response says when a
+  cell was cut) and binary columns return their size only. Filters and sorting still use
+  the full value.
+- Business terms are filtered like tables: a definition that names a field the caller
+  cannot see is withheld.
+- Table or field names that the read-only safety check rejects (it scans the whole
+  statement for write keywords, quoted identifiers included — `update`, `Last Update`,
+  `set`) are listed in the catalog but marked as not previewable. Questions that touch
+  such a column are refused by the same check.
+- A database file that is missing, or present but empty (0 bytes), shows as unavailable.
+  Loading the schema no longer creates the file when it is missing.
+
 ## 2.7. Feedback: how the system gets better with use
 
 The console shows a "was this right?" prompt under every answer. That verdict is the
@@ -239,7 +311,7 @@ unauthorized table is rejected and never reaches the database).
 | `/health` | Liveness: process only, no dependency checks | livenessProbe |
 | `/readyz` | Readiness: memory store, audit store, pgvector | readinessProbe |
 | `/metrics` | Prometheus scrape | ServiceMonitor / scrape_config |
-| `/` | Query console (single page, no build step) | Reachable directly on the network |
+| `/` | Web console: Ask, Data, History (static files under `/static`, no build step) | Reachable directly on the network |
 
 When a dependency wobbles, `/readyz` returns 503 and traffic is pulled, while
 `/health` still returns 200 — that keeps the orchestrator from restarting the
@@ -422,3 +494,10 @@ raw memory content):
 docker compose --project-directory . -f deploy/docker-compose.prod.yml exec postgres \
   pg_dump -U ai_sql ai_sql | gzip > ai_sql_$(date +%F).sql.gz
 ```
+
+The memory store is `runtime_data/memory.db` under the directory the API starts in,
+unless `AI_SQL_MEMORY_DB_PATH` says otherwise. Two instances on one machine need a
+path each: with a shared file, a question asked on one instance is answered on the
+other as "the earlier result". The file named by the setting is opened as it is —
+nothing is moved or cleared when the setting changes, so pointing an instance at a
+new path starts it with an empty history and leaves the old file where it was.

@@ -156,6 +156,69 @@ environment:
   AI_SQL_SEMANTIC_DIR: /app/semantic
 ```
 
+### 同一份元数据也是页面「数据浏览」的来源
+
+`GET /catalog` 把这份元数据与各库真实的表结构对在一起，再按调用方的权限裁剪，
+让人在提问之前就能看到有哪些数据可问。元数据里登记了、库里没有的表显示为「库里没有」；
+连不上的库显示为「不可用」——都不会显示成一张空清单。
+
+给人看的名字与说明是可选的附加键，库、表、字段三层都认。它们**不会**发给模型，
+检索读的仍然是 `description` 与 `aliases`。
+
+```yaml
+name: erp_db
+label_en: Orders & Purchasing        # 或写 `label:`，所有语言共用一个名字
+label_zh: 订单与采购
+description_en: Orders, suppliers, purchasing and supplier payments.
+tables:
+  supplier:
+    label_en: Suppliers
+    columns:
+      on_time_rate:
+        description_en: Share of deliveries that arrived by the agreed date.
+        business_usage_en: Find suppliers that deliver late.   # 字段 `business_usage` 的英文写法
+        unit: ratio
+```
+
+共享文件里的业务术语和跨库关联也可以补同样的键。`metric_definitions_en` 的键就是
+`metric_definitions` 里的指标名——口径仍然只有一份，这里是它的英文写法：
+
+```yaml
+# _shared.yaml
+metric_definitions:
+  准时率: 准时率是供应商按约定交期到货的批次占比。
+metric_definitions_en:
+  准时率:
+    term: On-time rate
+    definition: Share of a supplier's deliveries that arrived by the agreed date.
+cross_database_links:
+  - left: erp_db.supplier.supplier_id
+    right: wms_db.batch.supplier_id
+    meaning: ERP 供应商编号与入库批次的供应商编号同域
+    meaning_en: Same set of suppliers in both systems.
+```
+
+没写时页面依次退回：当前语言的第一个别名 → 把技术名拆开；库标识符是常见系统类型的
+（`erp_db`、`pm_db`、`mes_db`、`wms_db`）有一个默认的业务名。只有另一种语言的说明时
+照原文显示，不做翻译。
+
+只读预览的上限由 `AI_SQL_CATALOG_*` 控制（见 `.env.example`）；
+`AI_SQL_CATALOG_ENABLED=false` 可以只关掉「数据浏览」，不影响提问——
+页面从 `GET /whoami` 取调用方身份，这个接口不受开关影响。
+
+预览做什么、不做什么：
+
+- 浏览有自己的限流桶（`AI_SQL_CATALOG_RATE_LIMIT_PER_MINUTE`），翻表不占提问的额度。
+  Key 自己的 `rate_limit_per_minute` 更低时，按更低的那个算。
+- 取回的值在 SQL 里就设了上限：文本截到 2000 个字符（响应里会标明哪次截过），
+  二进制字段只取大小。筛选和排序仍然按完整的值算。
+- 业务术语和表一样按权限裁剪：定义里提到了调用方看不到的字段，整条不给。
+- 只读安全校验不放行的表名、字段名（它按整条语句扫写操作关键字，引号里的也算——
+  `update`、`Last Update`、`set`）在目录里照常列出，但标成「预览不了」。
+  提问涉及这样的字段时，同样会被这道校验拒掉。
+- 库文件不存在，或者存在但是 0 字节，都显示为「不可用」。读表结构不再在文件缺失时
+  顺手把它建出来。
+
 ## 二·七、反馈回路：让工具越用越准
 
 页面上每条回答下面都有「这条回答对吗」。这个判定是唯一不依赖我们自己出题的
@@ -216,7 +279,7 @@ python -m ai_sql_agent.feedback resolve <trace_id>       # 标记某条已处理
 | `/health` | 存活：只看进程，不查依赖 | livenessProbe |
 | `/readyz` | 就绪：查记忆库、审计库、pgvector | readinessProbe |
 | `/metrics` | Prometheus 抓取 | ServiceMonitor / scrape_config |
-| `/` | 查询界面（单页，无构建步骤） | 内网直接访问 |
+| `/` | 查询界面：业务查数、数据浏览、历史查询（静态文件在 `/static` 下，无构建步骤） | 内网直接访问 |
 
 依赖抖动时 `/readyz` 返回 503 摘掉流量，但 `/health` 仍然 200，
 避免编排系统把进程反复重启。
@@ -386,3 +449,8 @@ python -m ai_sql_agent.ops audit --dsn "$AI_SQL_BUSINESS_DSN"
 docker compose --project-directory . -f deploy/docker-compose.prod.yml exec postgres \
   pg_dump -U ai_sql ai_sql | gzip > ai_sql_$(date +%F).sql.gz
 ```
+
+记忆库默认是 API 启动目录下的 `runtime_data/memory.db`，`AI_SQL_MEMORY_DB_PATH` 可以改。
+同一台机器上起两个实例时要各配各的路径：共用一个文件的话，在一个实例里问过的问题，
+会被另一个实例当成「刚才的查询结果」来回答。配置指向的文件按原样打开——改配置不会
+搬动或清空任何东西，所以把实例指到新路径等于从空的历史开始，旧文件留在原处。

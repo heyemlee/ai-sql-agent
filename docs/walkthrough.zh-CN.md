@@ -151,7 +151,7 @@ python -m unittest discover -s tests
 ./scripts/run_api.sh
 ```
 
-打开 http://localhost:8000 ,内置一个单页查询控制台(原生 HTML/JS,无构建步骤)。
+打开 http://localhost:8000 ,内置查询界面有三个入口:业务查数、数据浏览、历史查询(原生 HTML/CSS/ES Module,无构建步骤;学习模式会按每次请求实际发生的步骤讲解)。
 或者直接打接口:
 
 ```bash
@@ -1096,16 +1096,22 @@ if not repaired_sql or repaired_sql.strip() == current_sql.strip():
 > 模型答一个 `SUM(po_amt)`。数字本身算得没错,但用户以为看到的是每一单的金额,
 > 拿到的是总额,而且全程没有任何迹象提示这一点。**21 条静默错误里 4 条是这一类。**
 >
-> 两条检查都是静态的(正则 + 计划文本),成本接近零,因此可以对每条查询都跑。
+> 两条检查都是静态的(只看 SQL 的结构与计划文本),成本接近零,因此可以对每条查询都跑。
 
 实现只有两个判断:
 
 ```python
 def wants_aggregation(query):    # 问句里有没有「统计/合计/总额/平均/各/每个/占比...」
-def is_structurally_single_row(sql):  # SQL 有聚合函数且没有 GROUP BY
+def is_structurally_single_row(sql):  # 最外层查询有聚合函数且没有 GROUP BY
 ```
 
 用户没要求汇总 + SQL 结构上只返回一行 → 报异常。
+
+「结构上只返回一行」只看**最外层查询**(用 sqlglot 解析,解析不了才退回按全文搜)。
+聚合出现在别处并不折叠结果:「每种物料取最新一张快照」写成
+`WHERE snapshot_date = (SELECT MAX(snapshot_date) …)`,全文有 MAX、没有 GROUP BY,
+外层却一行不少。按全文搜会把它报成「只能返回 1 行」,而结果表里明明是 8 行——
+一条和眼前结果自相矛盾的提示,比不提示更伤信任。
 
 ### 14.4 语义自检:两步走,而不是直接问「这条 SQL 对不对」
 
@@ -1292,7 +1298,10 @@ class TokenBucketLimiter:
 
 | 端点 | 用途 | 鉴权 |
 | --- | --- | --- |
-| `GET /` | 内置查询控制台(单页 HTML/JS) | — |
+| `GET /` | 内置查询界面(静态文件在 `/static` 下) | — |
+| `GET /whoami` | 本次请求解析出的身份与服务能力(页面发问前靠它知道 user_id) | API Key |
+| `GET /catalog` | 数据目录:当前身份可见的数据域、表、字段 | API Key |
+| `POST /catalog/{库}/{表}/rows` | 只读分页预览(搜索/筛选/排序,不接受 SQL) | API Key |
 | `POST /query` | 自然语言查询入口 | API Key |
 | `GET /history` | 查询历史(默认只看自己的) | API Key |
 | `POST /memory/save` | 保存结果到个人长期记忆 | API Key |

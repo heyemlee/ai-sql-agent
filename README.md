@@ -46,7 +46,7 @@ A fresh query follows **normalization → database / table / column retrieval �
 | Layer | Technology | Role |
 | --- | --- | --- |
 | Runtime & API | Python 3.11+ · FastAPI · Uvicorn · Pydantic v2 | Typed requests/responses, service endpoints, configuration validation |
-| Web console | Vanilla HTML · CSS · JavaScript | Built-in query UI served by FastAPI |
+| Web console | Vanilla HTML · CSS · ES modules (no build step) | Ask in plain language, browse the data catalog, review history; served by FastAPI |
 | Model transport | HTTPX · OpenAI-compatible protocol · Anthropic protocol | Planning, SQL generation, and answers; compatible endpoints include vLLM / Ollama |
 | Schema retrieval | Custom BM25 · NumPy vector index · RRF · Rerank client | Fuse lexical and semantic recall across databases, tables, and columns |
 | Business semantics | PyYAML · SchemaGraph | Field meanings, aliases, metrics, join keys, and JOIN cardinality |
@@ -149,6 +149,9 @@ CI is configured for unit tests, pgvector integration, a pinned A2A contract, de
 | --- | --- |
 | `POST /query` | Answer, per-step SQL/results, risk flags, and trace information |
 | `GET /history` | Query history; own records by default |
+| `GET /whoami` | The identity this request resolves to (same resolution as `/query`) and what the service supports |
+| `GET /catalog` | Data catalog the caller may see: domains, tables, fields, units, business terms |
+| `POST /catalog/{database}/{table}/rows` | Read-only, paginated preview with search / filter / sort; no SQL accepted |
 | `POST /memory/save` | Save personal long-term memory |
 | `POST /feedback` · `GET /feedback/stats` | Answer feedback and administrator statistics |
 | `GET /health` · `GET /readyz` | Liveness and readiness |
@@ -156,6 +159,8 @@ CI is configured for unit tests, pgvector integration, a pinned A2A contract, de
 | `POST /admin/schema/reload` | Administrator-triggered schema index rebuild |
 
 `POST /query` includes `answer`, `has_risk`, `degraded`, `trace_id`, and per-step execution information.
+
+The catalog endpoints reuse the caller identity and table/column policy of `/query`. A preview is built server-side from an allowlist of real, visible columns, binds every value as a parameter, and runs through the same read-only executor and authorization gate as generated SQL. What it fetches is bounded in the database, not afterwards: long text is cut at 2,000 characters and binary fields return only their size.
 
 </details>
 
