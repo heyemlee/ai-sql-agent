@@ -445,11 +445,15 @@ DELETE FROM ai_sql_vector_meta;
 
 ## 8.2. What happens when the model is unavailable
 
-Not a 5xx. When the model fails during planning or generation, the system replays
-the SQL that last succeeded for the same question from the same user — the data is
-still queried live and permissions are re-checked. With no replayable history it
-returns an explicit degradation notice instead. Both the `degraded` field in the
+Not a 5xx. When the model fails during planning, generation or repair, the system
+replays the SQL that last succeeded for the same question from the same user — the
+data is still queried live and permissions are re-checked. With no replayable history
+it returns an explicit degradation notice instead. Both the `degraded` field in the
 response and the `degraded` column in the audit table record this.
+
+If only the semantic self-check could not run (the query itself succeeded), the answer
+is returned with a `self_check_not_run` risk finding, so `has_risk` is true: a result
+that was not checked is not reported as one that passed.
 
 ```promql
 # A spike in the degradation rate means something is wrong on the model side
@@ -461,6 +465,36 @@ sum(rate(ai_sql_degraded_responses_total[5m])) by (reason, failed_stage)
 SELECT created_at, user_id, query, degraded FROM ai_sql_audit_log
 WHERE degraded ORDER BY id DESC LIMIT 20;
 ```
+
+### When the credential itself is rejected
+
+A rejected key is different from a flaky service: retrying, or letting the next stage
+try, only sends more requests that are bound to fail. The single entry point for model
+calls remembers it, per **service address + credential** (the key is kept only as a
+salted fingerprint, never in plaintext, never in logs):
+
+| The service says | What stops | Until |
+| --- | --- | --- |
+| 401, or 403 naming the key as invalid / disabled | every call with that key to that service | restart, or admin reset |
+| 402, or a body that explicitly says quota / balance is exhausted | the same | restart, or admin reset |
+| 403 saying the key may not use this model | that model only | restart, or admin reset |
+| 429 with a `Retry-After` longer than the in-request backoff limit | that model, for `Retry-After` (capped at 5 minutes) | expires by itself |
+| 403 that explains nothing | that model, for 60 seconds | expires by itself |
+
+An ordinary 429 is still retried in place, a bounded number of times, waiting as long
+as `Retry-After` says. Other keys, other services and other models are not affected.
+
+Once a key is known to be rejected, a question costs zero model calls instead of two or
+three, and the answer is the usual degraded one. `GET /readyz` lists the known faults
+under `model_access` and stops reporting `model_credentials: ok`; it never probes the
+model to find out. To recover, fix the key or quota and restart — or, without a restart,
+call the existing admin endpoint `POST /admin/circuit/reset` (admin key required), which
+also clears these. Nothing is retried automatically, and the reset does not verify the
+key: the next real request does.
+
+What this cannot do: requests already in flight when the first rejection arrives have
+been sent. With N concurrent requests, up to N rejected calls go out before the rest
+are stopped.
 
 ## 8.3. Read-only accounts on the business databases
 

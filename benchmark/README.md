@@ -417,6 +417,21 @@ python -m benchmark.run_benchmark --smoke
 python -m benchmark.gate
 ```
 
+### When the model credential stops working mid-run
+
+Before and after **every item**, the benchmark and the gate look at the model-access
+faults this process already knows about (key rejected, quota exhausted, model not
+permitted — local state only, no request is sent). As soon as there is one, they stop:
+
+- the item that hit it is not counted, the remaining items are not run, and **nothing is
+  re-run or retried**;
+- what was completed is written to disk marked `incomplete: true` (the `--output` path;
+  `--partial-output` for the gate; otherwise `runtime_data/*_incomplete_<time>.json`);
+- the exit code is **3**. 1 means "finished, below the line", 2 means "could not run"
+  (no credentials), 3 means "did not finish, no verdict";
+- the gate prints neither a pass nor a fail. Numbers from an unfinished round cannot be
+  compared with the thresholds or averaged with complete rounds.
+
 ### The bilingual business cases (bilingual_cases.json)
 
 The 150 evaluation cases and the 40 holdout cases are all asked in Chinese.
