@@ -2,7 +2,7 @@ import unittest
 
 import httpx
 
-from ai_sql_agent.core import ModelTransport, RetryPolicy
+from ai_sql_agent.core import ModelAccessRegistry, ModelTransport, RetryPolicy
 from ai_sql_agent.core.circuit import CircuitBreaker, CircuitConfig, CircuitState
 from ai_sql_agent.core.errors import (
     ModelAuthError,
@@ -78,6 +78,8 @@ class TransportCircuitTest(unittest.TestCase):
             client=httpx.Client(transport=httpx.MockTransport(handler)),
             retry_policy=RetryPolicy(max_retries=0, backoff_base_seconds=0),
             sleeper=lambda seconds: None,
+            # 各用各的状态表：一个用例里被拒的假 Key 不该挡住别的用例
+            access_registry=ModelAccessRegistry(),
         )
         transport.circuit = CircuitBreaker(
             component, CircuitConfig(failure_threshold=threshold, reset_seconds=30)
@@ -103,9 +105,16 @@ class TransportCircuitTest(unittest.TestCase):
         self.assertEqual(calls["n"], 3)
 
     def test_auth_errors_do_not_trip_the_breaker(self):
-        """确定性错误本来就秒回，熔断只会让改好配置后还要等冷却。"""
+        """
+        确定性错误本来就秒回，熔断只会让改好配置后还要等冷却。
+
+        「被拒之后别再发」不归熔断器管，归模型访问状态表：5 次调用里只有第一次真的发了出去，
+        其余在本地短路（短路的错误也是一种 ModelAuthError，上层走同一条降级链路）。
+        """
+        calls = {"n": 0}
 
         def unauthorized(request):
+            calls["n"] += 1
             return httpx.Response(401, text="bad key")
 
         transport = self._transport(unauthorized)
@@ -115,6 +124,7 @@ class TransportCircuitTest(unittest.TestCase):
                 transport.post_json("https://model/v1", {})
 
         self.assertIs(transport.circuit.state, CircuitState.CLOSED)
+        self.assertEqual(calls["n"], 1)
 
     def test_circuit_open_error_is_a_model_call_error(self):
         # 上层的降级链路捕获的是 ModelCallError，熔断必须落进同一个分支

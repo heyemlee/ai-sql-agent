@@ -47,3 +47,18 @@ def isolate_from_local_config():
         else:
             os.environ[key] = value
     reload_settings()
+
+
+@pytest.fixture(autouse=True)
+def forget_rejected_model_credentials():
+    """
+    模型访问状态是进程级的：一把 Key 被拒之后，同一个地址 + 同一把 Key 的调用不再发出。
+
+    测试里的假地址、假 Key 来来回回就那几个，一个用例故意制造的 401 不该挡住下一个用例。
+    需要这张表的用例自己在 setUp 里也会清一次——CI 走的是 `unittest discover`，不经过这里。
+    """
+    from ai_sql_agent.core import MODEL_ACCESS
+
+    MODEL_ACCESS.reset_all()
+    yield
+    MODEL_ACCESS.reset_all()

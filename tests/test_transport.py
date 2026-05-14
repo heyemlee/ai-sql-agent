@@ -3,6 +3,7 @@ import unittest
 import httpx
 
 from ai_sql_agent.core import (
+    ModelAccessRegistry,
     ModelAuthError,
     ModelRateLimitError,
     ModelResponseError,
@@ -18,13 +19,19 @@ from ai_sql_agent.core import (
 
 
 def make_transport(handler, *, max_retries=2):
-    """构造一个走 MockTransport 的 ModelTransport，重试不真的 sleep。"""
+    """
+    构造一个走 MockTransport 的 ModelTransport，重试不真的 sleep。
+
+    每个 transport 用自己的一张模型访问状态表：进程内共用的那张会记住「这把 Key 被拒过」，
+    一个用例里的 401 不该让后面用同一个假地址、假 Key 的用例发不出请求。
+    """
     return ModelTransport(
         "coder",
         api_key="test-key",
         client=httpx.Client(transport=httpx.MockTransport(handler)),
         retry_policy=RetryPolicy(max_retries=max_retries, backoff_base_seconds=0),
         sleeper=lambda seconds: None,
+        access_registry=ModelAccessRegistry(),
     )
 
 
