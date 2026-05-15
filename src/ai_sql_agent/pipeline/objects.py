@@ -56,7 +56,9 @@ class PipelineConfig:
     """
     # 单次查询 ~8k Token 预算
     prompt_budget: Optional[PromptBudgetConfig] = None
-    # SQL 执行治理：单条查询最大返回行数与最长执行时间
+    # SQL 执行治理：单条查询最大返回行数与最长执行时间。API 服务按 AI_SQL_MAX_ROWS /
+    # AI_SQL_MAX_EXECUTION_SECONDS 填这两项（api/app.py），直接构造时用这里的默认值。
+    # 只对进程内执行器生效：use_mcp_protocol=True 时上限由 MCP server 进程自己定。
     max_rows: int = 1000
     max_execution_seconds: float = 10.0
     # 执行失败后的 Log-driven 修复回路

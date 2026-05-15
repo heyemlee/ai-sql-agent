@@ -58,7 +58,7 @@ class StepLogResponse(BaseModel):
     row_limit: Optional[int] = None
     """
     这一步生效的行数上限（契约 §4.6.3）。`truncated=true` 时必须有值——
-    否则调用方分不清「10000 行封顶」还是「被临时调小的上限截了」。
+    否则调用方分不清「服务配置的上限封顶」还是「被临时调小的上限截了」。
     """
 
     as_of: Optional[str] = None

@@ -35,7 +35,7 @@ from ai_sql_agent.core import (
     use_trace_id,
 )
 from ai_sql_agent.memory import create_memory_service
-from ai_sql_agent.pipeline import Text2SQLPipeline, DynamicSqlAgentService
+from ai_sql_agent.pipeline import PipelineConfig, Text2SQLPipeline, DynamicSqlAgentService
 
 from .limits import RequestLimiter
 from .result_summary import StepLogResponse, parse_denied_tables, summarize_result, apply_summary_to_audit
@@ -202,6 +202,13 @@ async def lifespan(app: FastAPI):
     app.state.audit = create_audit_store()
     app.state.limiter = RequestLimiter(app.state.audit)
 
+    # 行数上限与执行超时取配置（AI_SQL_MAX_ROWS / AI_SQL_MAX_EXECUTION_SECONDS），经这份
+    # PipelineConfig 交给执行器。启动日志也从它读：日志打出来的数就是执行器在用的数。
+    pipeline_config = PipelineConfig(
+        max_rows=settings.max_rows,
+        max_execution_seconds=settings.max_execution_seconds,
+    )
+
     log_event(
         _logger,
         logging.INFO,
@@ -215,8 +222,8 @@ async def lifespan(app: FastAPI):
         audit=settings.audit_enabled,
         schema_refresh_seconds=settings.schema_refresh_seconds,
         rate_limit_per_minute=settings.default_rate_limit_per_minute,
-        max_rows=settings.max_rows,
-        max_execution_seconds=settings.max_execution_seconds,
+        max_rows=pipeline_config.max_rows,
+        max_execution_seconds=pipeline_config.max_execution_seconds,
     )
 
     # 记忆库的位置取配置（AI_SQL_MEMORY_DB_PATH）：两个实例各用各的库，对话历史才不会串
@@ -237,6 +244,7 @@ async def lifespan(app: FastAPI):
     app.state.certified_library = certified_library
 
     pipeline = Text2SQLPipeline(
+        pipeline_config,
         # 模型不可用时可以重放这位用户同一问题上次成功的 SQL
         sql_history_lookup=audit_store.last_successful_sqls,
         # 模型正常时，把确认过正确的相似查询当写法参考注入

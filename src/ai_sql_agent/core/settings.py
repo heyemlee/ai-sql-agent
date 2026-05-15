@@ -284,8 +284,29 @@ class SqlAgentSettings(BaseSettings):
     memory_db_path: str = "runtime_data/memory.db"
 
     # ---- SQL 执行治理 ----
-    max_rows: int = 10000
-    max_execution_seconds: float = 30.0
+    max_rows: int = Field(default=1000, ge=1)
+    """
+    单条查询最多返回多少行，超出的部分丢弃，结果里标 `truncated`。
+
+    API 启动时经 `PipelineConfig` 交给每个库的执行器（`api/app.py` 的 `lifespan`），
+    启动日志 `api.startup` 打出来的就是执行器在用的数。
+
+    这个配置项以前只进了启动日志：默认值写着 10000，实际生效的一直是 `PipelineConfig`
+    的 1000。默认值按实际生效的那个对齐，所以不设这个变量的部署行为不变。
+
+    调大之前先看这些行去了哪儿：`/query` 响应和 A2A 的 data part 带全部行，
+    对话记忆把整份结果存进记忆库，做摘要时也是整份交给摘要器。
+    没有「0 = 不限」这个取值，0 和负数在读配置时直接报错。
+    """
+
+    max_execution_seconds: float = Field(default=10.0, gt=0)
+    """
+    单条查询最长执行多久，超时由数据库侧中止（SQLite 的 progress handler、
+    PostgreSQL 的 `statement_timeout`）。与 `max_rows` 一样经 `PipelineConfig` 生效，
+    默认值同样从没生效过的 30 对齐到实际生效的 10。
+
+    必须大于 0：PostgreSQL 把 `statement_timeout = 0` 当成「不限时」。
+    """
 
     db_pool_max_connections: int = 8
     """

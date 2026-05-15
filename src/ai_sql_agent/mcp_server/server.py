@@ -21,7 +21,8 @@ server = MCPServer(
     "再用 execute_sql 执行 SELECT / WITH 查询。",
 )
 
-# 数据库执行治理参数与 Pipeline 保持一致
+# 执行治理参数是固定值，与 PipelineConfig 的默认值相同。这个进程不读 AI_SQL_MAX_ROWS /
+# AI_SQL_MAX_EXECUTION_SECONDS：那两个配置管的是 API 进程里的执行器。
 _MAX_ROWS = 1000
 _MAX_EXECUTION_SECONDS = 10.0
 

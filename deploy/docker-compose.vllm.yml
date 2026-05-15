@@ -121,9 +121,10 @@ services:
       # ---- 鉴权 ----
       AI_SQL_AUTH_MODE: api_key
       AI_SQL_API_KEYS_FILE: /run/secrets/api_keys.json
-      # ---- 执行治理 ----
-      AI_SQL_MAX_ROWS: "10000"
-      AI_SQL_MAX_EXECUTION_SECONDS: "30"
+      # ---- 执行治理：单查询行数上限与超时，启动时交给执行器 ----
+      # 这里原来写的 10000 / 30 从未生效；1000 / 10 是一直实际在用的值，调大是真的会变。
+      AI_SQL_MAX_ROWS: "1000"
+      AI_SQL_MAX_EXECUTION_SECONDS: "10"
       # ---- 调用治理：本地推理比公网快，超时可收紧 ----
       AI_SQL_HTTP_TIMEOUT_SECONDS: "45"
       AI_SQL_HTTP_MAX_RETRIES: "2"
