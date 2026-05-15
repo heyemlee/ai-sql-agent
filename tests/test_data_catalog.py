@@ -1275,6 +1275,66 @@ class CatalogHardeningTest(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, "too_deep")
 
+    def test_a_row_cap_below_the_page_size_does_not_skip_rows(self):
+        """
+        执行器的行数上限比页大小还低时，一页只给得出「上限」那么多行。页大小不跟着压下来的话，
+        下一页的偏移照旧按请求的页大小算，中间那一段哪一页都翻不到——每一页看起来还都正常。
+        """
+        catalog, db_path = _catalog_from_script(
+            self.directory,
+            "CREATE TABLE item (id INTEGER PRIMARY KEY, name TEXT);",
+            rows=[(
+                "INSERT INTO item VALUES (?, ?)",
+                [(index, f"item-{index}") for index in range(1, 13)],
+            )],
+        )
+        catalog.router.register_executor("lab_db", SQLiteMCPExecutor("lab_db", db_path, max_rows=5))
+
+        pages = []
+        while not pages or pages[-1]["has_more"]:
+            self.assertLess(len(pages), 10, "翻页没有收敛")
+            pages.append(catalog.preview(
+                ALLOW_ALL, database="lab_db", table="item",
+                query=PreviewQuery(page=len(pages) + 1, page_size=8),
+            ))
+
+        self.assertEqual(
+            [row[0] for page in pages for row in page["rows"]], list(range(1, 13))
+        )
+        # 实际的页大小如实报出来：页面按它算「第几到第几条」
+        self.assertEqual([page["page_size"] for page in pages], [5, 5, 5])
+        self.assertEqual([page["offset"] for page in pages], [0, 5, 10])
+        self.assertEqual({page["total_rows"] for page in pages}, {12})
+
+    def test_a_row_cap_at_or_above_the_page_size_leaves_the_page_size_alone(self):
+        catalog, db_path = _catalog_from_script(
+            self.directory,
+            "CREATE TABLE item (id INTEGER PRIMARY KEY, name TEXT);",
+            rows=[(
+                "INSERT INTO item VALUES (?, ?)",
+                [(index, f"item-{index}") for index in range(1, 13)],
+            )],
+        )
+        for cap in (8, 9):
+            with self.subTest(cap=cap):
+                catalog.router.register_executor(
+                    "lab_db", SQLiteMCPExecutor("lab_db", db_path, max_rows=cap)
+                )
+                first, second = (
+                    catalog.preview(
+                        ALLOW_ALL, database="lab_db", table="item",
+                        query=PreviewQuery(page=page, page_size=8),
+                    )
+                    for page in (1, 2)
+                )
+                self.assertEqual(
+                    (first["page_size"], len(first["rows"]), first["has_more"]), (8, 8, True)
+                )
+                self.assertEqual(
+                    (second["offset"], [row[0] for row in second["rows"]], second["has_more"]),
+                    (8, [9, 10, 11, 12], False),
+                )
+
     # ---- 真实库里会有的名字 ----
 
     def test_awkward_names_are_reported_honestly_and_break_nothing_else(self):
