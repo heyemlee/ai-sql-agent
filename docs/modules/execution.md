@@ -23,6 +23,10 @@ Both executors share the same constraints:
 - **Execution timeout**: after `max_execution_seconds` (default 10s) a progress
   handler aborts the query.
 
+The API service fills both from `AI_SQL_MAX_ROWS` and `AI_SQL_MAX_EXECUTION_SECONDS`
+(through `PipelineConfig`) for the in-process executors. The MCP protocol path does not
+read them: the stdio server keeps the defaults above.
+
 ## Two execution paths
 
 ```text

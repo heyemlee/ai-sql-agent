@@ -46,13 +46,32 @@ curl -s localhost:8000/readyz | python -m json.tool
 | `AI_SQL_FEEDBACK_ENABLED` | `true` | 收集用户对回答的对错判定 |
 | `AI_SQL_CERTIFIED_SQL_ENABLED` | `true` | 把确认正确的查询作为参考写法复用 |
 | `AI_SQL_PGVECTOR_DSN` | 指向内网 PG | Schema 向量、长期记忆、审计共用 |
-| `AI_SQL_MAX_ROWS` | `1000` | 单查询返回行数上限 |
+| `AI_SQL_MAX_ROWS` | `1000` | 单查询返回行数上限；超出的行丢弃，该步骤标 `truncated`。见下方「执行上限」 |
 | `AI_SQL_MAX_EXECUTION_SECONDS` | `10` | 单查询执行超时（数据库侧中断） |
 | `AI_SQL_HTTP_MAX_RETRIES` | `2` | 模型 429/5xx 退避重试次数 |
 | `AI_SQL_DEFAULT_RATE_LIMIT_PER_MINUTE` | `60` | 未在 Key 上单独配置时的默认限流 |
 | `AI_SQL_DEFAULT_DAILY_TOKEN_QUOTA` | 按预算设 | 0 表示不限，建议设上限保护模型账单 |
 | `AI_SQL_SCHEMA_REFRESH_SECONDS` | `300` | Schema 变更轮询间隔，0 为关闭 |
 | `AI_SQL_LOG_FORMAT` | `json` | 便于日志系统采集 |
+
+### 执行上限
+
+`AI_SQL_MAX_ROWS` 与 `AI_SQL_MAX_EXECUTION_SECONDS` 在 API 启动时交给每个库的执行器，
+启动日志 `api.startup` 打出来的就是实际生效的值。不设时是 1000 行、10 秒。
+
+- **升级时先看一眼自己的配置。** 更早的版本里这两个变量只进了启动日志：
+  不管配成什么，查询一直按 1000 行 / 10 秒执行。本仓库的 compose 文件以前写的是
+  `10000` / `30`；照着它抄出去的 compose，或者还留着这两个数的 `.env`，
+  升级后第一次重启就会生效。
+- **调大行数上限是有代价的。** 返回的每一行都会进 `/query` 响应和 A2A 的 data part，
+  整份结果还会存进对话记忆、做摘要时交给摘要器。有理由再调，调完看一下响应大小和记忆库。
+- 两个值都必须大于 0。`0` 会在启动时被拒绝，它不表示「不限」。
+- 「数据浏览」走的是同一批执行器。上限比请求的每页行数还小时，一页按上限给，
+  响应里的 `page_size` 是实际用的页大小。
+- MCP stdio 服务（`python -m ai_sql_agent.mcp_server.server`，
+  `PipelineConfig(use_mcp_protocol=True)` 走的也是它）不读这两个变量，固定 1000 行 / 10 秒。
+- 在 SQLite 上验证过。PostgreSQL 上这两个值分别落到取数行数和 `statement_timeout`；
+  这条分支只有用假驱动的单元测试，**没有在真实 PostgreSQL 上跑过**。
 
 ## 二·五、模型部署形态（公网 API / 内网 vLLM）
 

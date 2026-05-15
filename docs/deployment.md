@@ -48,13 +48,40 @@ it is mounted read-only instead. Rotating a key means editing the file and runni
 | `AI_SQL_FEEDBACK_ENABLED` | `true` | Collect right/wrong verdicts from users |
 | `AI_SQL_CERTIFIED_SQL_ENABLED` | `true` | Reuse confirmed-correct queries as reference examples |
 | `AI_SQL_PGVECTOR_DSN` | internal PG | Shared by schema vectors, long-term memory and audit |
-| `AI_SQL_MAX_ROWS` | `1000` | Row cap per query |
+| `AI_SQL_MAX_ROWS` | `1000` | Row cap per query; rows beyond it are dropped and the step is marked `truncated`. See "Execution limits" below |
 | `AI_SQL_MAX_EXECUTION_SECONDS` | `10` | Per-query timeout, aborted on the database side |
 | `AI_SQL_HTTP_MAX_RETRIES` | `2` | Backoff retries on model 429/5xx |
 | `AI_SQL_DEFAULT_RATE_LIMIT_PER_MINUTE` | `60` | Default when a key has no override |
 | `AI_SQL_DEFAULT_DAILY_TOKEN_QUOTA` | per budget | 0 means unlimited; set a cap to protect the model bill |
 | `AI_SQL_SCHEMA_REFRESH_SECONDS` | `300` | Schema-change poll interval; 0 disables it |
 | `AI_SQL_LOG_FORMAT` | `json` | For log collectors |
+
+### Execution limits
+
+`AI_SQL_MAX_ROWS` and `AI_SQL_MAX_EXECUTION_SECONDS` are handed to every database
+executor when the API starts, and the `api.startup` log line prints the values in
+force. Unset, they are 1000 rows and 10 seconds.
+
+- **Upgrading: check what your own configuration says.** Earlier versions only logged
+  these two variables: queries always ran with 1000 rows / 10 s, whatever was
+  configured. The compose files in this repository used to set `10000` / `30`. A copy of
+  them, or an `.env` that still carries those numbers, takes effect on the next restart
+  after upgrading.
+- **Raising the row cap is not free.** Every returned row travels in the `/query`
+  response and the A2A data part, and the whole result is stored in conversation memory
+  and handed to the memory summarizer. Raise it for a reason, and watch response size
+  and the memory database afterwards.
+- Both values must be positive. `0` is rejected at startup; it does not mean
+  "unlimited".
+- The Data page reads through the same executors. When the cap is lower than the
+  requested page size, pages shrink to the cap, and the `page_size` in the response is
+  the size actually used.
+- The MCP stdio server (`python -m ai_sql_agent.mcp_server.server`, also used by
+  `PipelineConfig(use_mcp_protocol=True)`) does not read these variables. It keeps a
+  fixed 1000 rows / 10 s.
+- Verified on SQLite. On PostgreSQL the same values become the fetch size and
+  `statement_timeout`; that branch is covered by unit tests against a stubbed driver and
+  has **not been run against a real PostgreSQL database**.
 
 ## 2.5. Where the model runs: public API or self-hosted vLLM
 
