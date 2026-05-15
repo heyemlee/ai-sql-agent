@@ -88,9 +88,11 @@ class SettingsTest(unittest.TestCase):
             self.assertEqual(settings.openai_api_key, "sk-new")
 
     def test_execution_governance_defaults(self):
+        # 1000 行 / 10 秒是一直实际生效的上限。这里原来钉的是 10000 / 30——那组数只进过
+        # 启动日志，从没到过执行器（见 tests/test_execution_limits_setting.py）。
         with env(AI_SQL_MAX_ROWS=None, AI_SQL_MAX_EXECUTION_SECONDS=None) as settings:
-            self.assertEqual(settings.max_rows, 10000)
-            self.assertEqual(settings.max_execution_seconds, 30.0)
+            self.assertEqual(settings.max_rows, 1000)
+            self.assertEqual(settings.max_execution_seconds, 10.0)
 
     def test_execution_governance_is_configurable(self):
         with env(AI_SQL_MAX_ROWS="50", AI_SQL_MAX_EXECUTION_SECONDS="2.5") as settings:
