@@ -255,8 +255,12 @@ def _artifact(task_id: str, summary, trace_id: str) -> Dict[str, Any]:
     """
     结果载荷：文本 part（答案）+ data part。send 与 stream **完全同构**（契约 §4.4）。
 
-    data part 的字段集来自 `ResultSummary.data_part()`——`/query` 用的是同一个
-    函数。同构不是靠两边都记得改，是靠只有一份。
+    data part 的字段集来自 `ResultSummary.data_part()`，send 与 stream 都经本函数
+    调它——这两条的同构不是靠两边都记得改，是靠只有一份。
+
+    `/query` 不走这里，也不调 `data_part()`：它同样先 `summarize_result()` 得到
+    `ResultSummary`，再在 `ai_sql_agent.api.app` 的 `query()` 里逐字段填
+    `QueryResponse`。那一侧的对齐靠 `tests/test_business_outcome.py` 守着。
     """
     return {
         "artifactId": uuid.uuid4().hex, "name": "answer",

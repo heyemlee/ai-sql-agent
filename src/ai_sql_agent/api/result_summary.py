@@ -113,9 +113,17 @@ class ResultSummary:
         """
         artifact 的 data part（契约 §4.4 / §4.6）。
 
-        `/query`、A2A `message/send`、A2A `message/stream` 三处共用这一个函数。
-        §4.4 要求三者**完全同构**——「调用方走 send 还是走 stream，能做的信任
-        判断必须一模一样」。各写一遍必然漂，所以只有这一份。
+        §4.4 要求 `/query`、A2A `message/send`、A2A `message/stream` 三者
+        **完全同构**——「调用方走 send 还是走 stream，能做的信任判断必须一模一样」。
+        三者都先用 `summarize_result()` 把 pipeline 结果归纳成 `ResultSummary`，
+        但调这个函数的只有 A2A：send 与 stream 都经
+        `ai_sql_agent.a2a.server._artifact()` 走到这里。这两条各写一遍必然漂，
+        所以只有这一份。
+
+        `/query` 不调它：`ai_sql_agent.api.app` 的 `query()` 逐字段填
+        `QueryResponse`。那一侧与这里的对齐靠 `tests/test_business_outcome.py`
+        守着（响应体与 data part 过同一份契约 schema，并比对三个承载者的业务字段），
+        不是靠共用这个函数——这里加字段，`QueryResponse` 与 `query()` 也要跟着加。
         """
         return {
             "route": self.route,

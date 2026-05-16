@@ -101,8 +101,10 @@ class QueryResponse(BaseModel):
 
     # ---- 契约 §4.6 业务终态语义 ----
     #
-    # 与 A2A artifact 的 data part 是同一套字段（都由 ResultSummary.data_part()
-    # 产出）。契约 §4.4 要求两条 transport 能做的信任判断一模一样，「走哪条路
+    # 与 A2A artifact 的 data part 是同一套字段，取值都来自 summarize_result()
+    # 归纳出的 ResultSummary：A2A 那边调 ResultSummary.data_part()；这里不调它，
+    # 由 query() 逐字段填进来，两边的对齐靠 tests/test_business_outcome.py 守着。
+    # 契约 §4.4 要求两条 transport 能做的信任判断一模一样，「走哪条路
     # 信息更多」本身就是缺陷。
     execution_status: str = "failed"
     """§4.6.1：这次查库到底跑成什么样。缺失/算不出来按 failed 处置。"""
