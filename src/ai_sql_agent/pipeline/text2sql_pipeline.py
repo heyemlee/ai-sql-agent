@@ -1226,7 +1226,8 @@ class Text2SQLPipeline:
         """
         执行前的数据权限预判，返回被拒的表 / 列标识。
 
-        **这不是那道强制关卡**——关卡在 `MCPRouter.execute`（见
+        **这不是那道强制关卡**——关卡在每个执行器的 `execute()` 入口
+        （`ai_sql_agent.execution.authorization.enforce`，判据见
         `ai_sql_agent.auth.enforcement`），它拦不住就没人拦得住。这里提前判一次是为了
         两件关卡做不了的事：把越权当成一种**不该重试**的失败（改 SQL 也拿不到
         权限，进修复回路只会白烧模型调用），以及把被拒的名字落进审计的
