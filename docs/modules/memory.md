@@ -15,7 +15,13 @@ the Text2SQL pipeline all call it directly.
 - a summarization run reads the last completed version, so it never blocks the
   current request;
 - summaries preserve the user's goal, business definitions, filters, SQL results,
-  analytical conclusions and task status.
+  analytical conclusions and task status;
+- the model summarizer reads a bounded excerpt of each message, not the stored
+  payload: up to 4,000 characters of message text and, for a query result, up to
+  3,000 characters holding the question, each step's database, executed SQL, row
+  count, `truncated` / `row_limit`, column names and as many leading rows as fit.
+  When rows are left out the prompt says so. The limits are per message
+  (`SummaryBudgetConfig`); the stored message is never shortened.
 
 With model credentials configured (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`), the
 service summarizes using the project's existing model client. Without a key it

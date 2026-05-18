@@ -18,7 +18,11 @@ from .objects import (
 )
 from .short_term import ShortTermMemoryConfig, ShortTermMemoryService
 from .storage import SQLiteMemoryStore
-from .summarizer import ExtractiveMemorySummarizer, ModelMemorySummarizer
+from .summarizer import (
+    ExtractiveMemorySummarizer,
+    ModelMemorySummarizer,
+    SummaryBudgetConfig,
+)
 from .reranker import AliyunMemoryReranker
 from .vector_store import PgVectorLongTermMemoryConfig, PgVectorLongTermVectorIndex
 
@@ -45,4 +49,5 @@ __all__ = [
     "ShortTermMemoryConfig",
     "ShortTermMemoryService",
     "SQLiteMemoryStore",
+    "SummaryBudgetConfig",
 ]
