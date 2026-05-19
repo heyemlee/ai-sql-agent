@@ -142,8 +142,9 @@ make gate                  # Full release gate; requires model credentials
 
 CI is configured for unit tests, pgvector integration, a pinned A2A contract, demos, and container smoke tests. See the [workflow](.github/workflows/ci.yml) and [benchmark guide](benchmark/README.md).
 
-### Known limits and unfinished verification (as of 2026-10-04)
+### Known limits and unfinished verification (updated 2026-10-06)
 
+- **Conversation-summary input limits are verified offline only.** The model reads bounded per-message excerpts while stored results remain complete. There is no total prompt budget, and the explicit save-to-knowledge-base summary path remains unbounded. Real multi-turn summary quality has not been verified. See [memory verification and limits](docs/modules/memory.md#verification-and-remaining-limits-2026-10-06).
 - **Model regression for the English adaptation is incomplete.** Two full gate rounds per side plus a partial third were run before the model key was disabled; the gate fails on the same three metrics before and after, and no full gate has been run on the final code. Record: [benchmark/baseline/2026-10-04](benchmark/baseline/2026-10-04/README.md). Do not cite those numbers as a baseline.
 - **PostgreSQL is not verified on a real database** for anything added here: the identifier-case rules in authorization, the preview SQL (not schema-qualified; structure is read from `public`, names resolve through `search_path`), and the least-privilege binding. Unit tests only.
 - **`AI_SQL_MAX_ROWS` and `AI_SQL_MAX_EXECUTION_SECONDS` are applied only to the API's in-process executors** (defaults 1000 rows / 10 s, the limits that were already in force while the variables were ignored). That is verified on SQLite; the PostgreSQL branch has unit tests against a stubbed driver only. The MCP stdio server keeps a fixed 1000 rows / 10 s. Preview pages shrink to the row cap when it is lower than the page size.

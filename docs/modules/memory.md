@@ -28,6 +28,26 @@ service summarizes using the project's existing model client. Without a key it
 falls back to offline extractive summarization, which keeps local runs working.
 Any other `MemorySummarizer` can be injected into `ConversationMemoryService`.
 
+### Verification and remaining limits (2026-10-06)
+
+The closeout integration passed 798 offline tests with 23 skipped tests and
+33 passing subtests, including the pinned A2A contract v1.12. Model clients were
+fake or local mock endpoints; external network connections were blocked and no
+live model credentials or shared databases were used. Existing vector-scoring
+runtime warnings and docstring deprecation warnings remain.
+
+The limits apply per message, not to the entire summarization call. A backlog
+can still include up to `summary_batch_size` messages (50 by default), and the
+previous summary is not bounded by `SummaryBudgetConfig`. The explicit
+save-to-knowledge-base path (`summarize_memory`, `POST /memory/save`) still reads
+the full content and metadata. Storage is unchanged.
+
+Real-model summary quality over multi-turn conversations, real PostgreSQL
+behavior and successful Helpdesk/SQL Agent integration remain unverified. The
+benchmark release gate does not exercise conversation memory and cannot replace
+the summary-quality check. This closeout did not run a model benchmark, restart
+a service or deploy an image.
+
 ## Long-term memory
 
 - Nothing is written unless the save method is called explicitly;
