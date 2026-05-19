@@ -118,6 +118,9 @@ python -m ai_sql_agent.semantic validate semantic/
 
 设置 `AI_SQL_SEMANTIC_DIR=semantic/` 后重启。校验会将元数据与真实库结构比对；未配置目录时使用内置演示语义层。
 
+橱柜业务的精简示例使用四库、九张表、60 个字段，统一通过订单号关联。
+生成数据并设置 `AI_SQL_SEMANTIC_DIR=tools/simple_erp/semantic` 即可使用，见[精简业务库说明](tools/simple_erp/README.md)。
+
 部署到共享环境前，开启 `AI_SQL_AUTH_MODE=api_key` 并配置权限文件与业务库只读账号。Docker Compose、pgvector 与内网 vLLM 配置见 [部署指南](docs/deployment.zh-CN.md)。
 
 ## 评测与当前边界

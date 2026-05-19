@@ -118,6 +118,9 @@ python -m ai_sql_agent.semantic validate semantic/
 
 Set `AI_SQL_SEMANTIC_DIR=semantic/` and restart. Validation compares metadata with the live database schema. Without a configured directory, the built-in demo semantic layer is used.
 
+The simplified cabinet-shop example uses four databases, nine tables, and 60 columns linked by order number.
+Generate its data and set `AI_SQL_SEMANTIC_DIR=tools/simple_erp/semantic`; see the [simplified database guide](tools/simple_erp/README.md).
+
 For shared deployments, enable `AI_SQL_AUTH_MODE=api_key` and configure permissions and read-only database accounts. See the [deployment guide](docs/deployment.md) for Docker Compose, pgvector, and private vLLM setups.
 
 ## Evaluation and current limits
