@@ -59,6 +59,10 @@ jobs:
       - name: 单元测试 + pgvector 集成测试 + 跨仓库契约用例
         run: python -m unittest discover -s tests -v
 
+      - name: 精简业务库迁移与目录测试
+        # unittest discover does not collect pytest functions or fixtures.
+        run: python -m pytest tests/test_simple_erp.py -q
+
       - name: 契约用例确实跑到了（不是整组 skip）
         # 契约仓库拉不到时那组用例会自动 skip。skip 不是通过——
         # 跨仓库断言静默消失，正是这套东西要防的那类事故。

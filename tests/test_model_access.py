@@ -578,6 +578,8 @@ class _ModelServiceEnvironment(unittest.TestCase):
         "AI_SQL_ANTHROPIC_BASE_URL": "https://model.invalid/v1",
         "AI_SQL_SEMANTIC_DIR": "",
         "AI_SQL_AUTH_MODE": "disabled",
+        # These tests use private temporary stores even when CI provides pgvector.
+        "AI_SQL_PGVECTOR_DSN": "",
         "AI_SQL_HTTP_MAX_RETRIES": "0",
         "AI_SQL_CERTIFIED_SQL_ENABLED": "false",
     }
@@ -688,9 +690,17 @@ class RepairDegradesTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self._cwd = os.getcwd()
+        self._backend_env = mock.patch.dict(os.environ, {"AI_SQL_PGVECTOR_DSN": ""})
+        self._backend_env.start()
         os.chdir(self._tmp.name)
-        self.addCleanup(self._tmp.cleanup)
-        self.addCleanup(os.chdir, self._cwd)
+        self.addCleanup(self._restore_environment)
+        reload_settings()
+
+    def _restore_environment(self):
+        os.chdir(self._cwd)
+        self._backend_env.stop()
+        reload_settings()
+        self._tmp.cleanup()
 
     def pipeline_whose_first_sql_fails(self, repair_error, **kwargs):
         from ai_sql_agent.execution import MCPExecutionResult
@@ -770,8 +780,13 @@ class RepairDegradesTest(unittest.TestCase):
             block_scope="credential", block_reason="credential_rejected", block_permanent=True,
         )
         with TestClient(app) as client:
+            from ai_sql_agent.audit import SQLiteAuditStore
             from ai_sql_agent.execution import MCPExecutionResult
 
+            # A temporary file alone does not override the CI PostgreSQL backend.
+            self.assertIsInstance(app.state.audit, SQLiteAuditStore)
+            self.assertEqual(app.state.audit.last_successful_sqls(
+                "li", "查询准时率低于0.9的供应商名称"), [])
             pipeline = app.state.pipeline
             real_execute, state = pipeline.mcp_router.execute, {"n": 0}
 
