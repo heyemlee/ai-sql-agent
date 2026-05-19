@@ -30,3 +30,6 @@ docs/internal/
 # 模拟 ERP 的派生产物：数据库由 tools/sim_erp/build.py 生成（确定性，同 SEED 同结果），
 # 语义 YAML 由 tools/sim_erp/semantic.py 从规格表生成。都不入库，避免与生成器漂移。
 tools/sim_erp/semantic/
+
+# 精简业务库的语义配置由 tools/simple_erp/schema.py 生成。
+tools/simple_erp/semantic/
