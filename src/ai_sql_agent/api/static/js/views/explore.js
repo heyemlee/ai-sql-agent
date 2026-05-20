@@ -1,132 +1,216 @@
 /* 数据浏览：不提问，先看看系统里有什么。
 
-   两层：目录（业务域 → 表）与单张表（字段说明 + 只读预览）。
-   目录来自 /catalog，预览来自 /catalog/{库}/{表}/rows——两个都是服务端按当前身份
+   三层，从粗到细：
+   - 全部数据（#/data）：有哪几个库、各有多少张表多少条记录、库与库之间靠什么连着；
+   - 一个库（#/data/<库>）：它的每张表长什么样——多少条、状态怎么分布、记录落在哪段时间；
+   - 一张表（#/data/<库>/<表>）：概览 + 记录 + 字段说明，见 exploreTable.js。
+
+   左边的导航一直在：从任何一张表到另一个库的任何一张表都只要点一下。
+
+   目录来自 /catalog，统计来自 /catalog/{库}/{表}/profile——两个都是服务端按当前身份
    算出来的。这个文件里没有任何表名、字段名或样例数据：服务端没给的，这里画不出来。 */
 
-import { api } from '../api.js';
 import {
-  catalog, domainTitle, domains, ensureColumns, findDomain, findTable, loadCatalog,
+  catalog, domainTitle, domains, ensureColumns, findDomain, loadCatalog,
 } from '../catalog.js';
-import { $, announce, copyText, delegate, html, icon, setHtml, toast } from '../dom.js';
-import { descriptionOf, formatRange, formatTime, labelOf, localized } from '../format.js';
-import { has, t, tn } from '../i18n.js';
+import { barRow, columnChart, rebucket, seriesSlots, stackedBar, valueList } from '../charts.js';
+import { dataHref } from '../dataRoute.js';
+import { $, delegate, html, icon, setHtml } from '../dom.js';
+import { formatCompact, formatCount, formatRange, formatTime, labelOf, localized } from '../format.js';
+import { t, tn } from '../i18n.js';
+import { buildLinks, crossDatabaseLinks } from '../links.js';
+import { findProfile, profileSupport } from '../profile.js';
 import { emit, on, state } from '../state.js';
 import { notice } from '../steps.js';
-import { renderTable } from '../table.js';
+import { bindTable, drawTable, leaveTable, onProfile, openTable, tableActions } from './exploreTable.js';
+import {
+  allTables, catalogProblem, consumePrefill, countChip, databaseSlot, dbTile, domainSummary, fieldCount,
+  requestBreakdowns, requestCounts, rowCount, setPrefill, sumCounts, tableSummary, unavailableReason,
+} from './exploreParts.js';
 
-const PAGE_SIZES = [25, 50, 100];
-const OPERATORS = {
-  text: ['contains', 'eq', 'starts_with', 'is_empty', 'not_empty'],
-  number: ['eq', 'gte', 'lte', 'gt', 'lt', 'is_empty', 'not_empty'],
-  date: ['eq', 'gte', 'lte', 'is_empty', 'not_empty'],
-  binary: ['is_empty', 'not_empty'],     // 二进制字段只能问「有没有内容」
-};
-const VALUELESS = ['is_empty', 'not_empty'];
+// 一个库里的表不超过这么多时，库页面上每张表都画分布和时间轴；再多就只给行数
+const RICH_CARDS_UP_TO = 12;
 
 let root;
 let route = { database: '', table: '' };
-let tab = 'records';
-let query = freshQuery();
-let draft = { column: '', op: '' };
-let preview = { status: 'idle', data: null, error: null };
-let controller = null;
-let sequence = 0;
 let stale = false;            // 这一页不在眼前时目录变了（换了身份、重连）：回来要重读
+let needle = '';              // 导航里的查找词
+let navOpen = false;          // 窄屏上导航是不是展开着
+let frame = 0;
 
-function freshQuery() {
-  return { page: 1, pageSize: PAGE_SIZES[0], search: '', filters: [], sort: null };
+const pageSlot = () => root.querySelector('[data-role="page"]');
+const hashQuery = () => { const mark = location.hash.indexOf('?'); return mark === -1 ? '' : location.hash.slice(mark + 1); };
+const matches = (term, texts) => texts.some((text) => String(text || '').toLowerCase().includes(term));
+
+/* ─── 左边的导航 ───────────────────────────────────────────────── */
+
+function tree() {
+  const term = needle.trim().toLowerCase();
+  const groups = domains().map((domain) => {
+    const domainHit = !term || matches(term, [domainTitle(domain), domain.database, ...(domain.aliases || [])]);
+    const tables = domain.tables.map((table) => {
+      const tableHit = !term || matches(term, [labelOf(table), table.name, ...(table.aliases || [])]);
+      // 表名对不上时再看字段：找「手机号在哪张表」的人打的是字段名
+      const column = tableHit ? null : (table.columns || [])
+        .find((item) => matches(term, [labelOf(item), item.name, ...(item.aliases || [])]));
+      return { table, column, show: domainHit || tableHit || Boolean(column) };
+    }).filter((item) => item.show);
+    return { domain, tables, show: domainHit || tables.length > 0 };
+  }).filter((group) => group.show);
+
+  if (!groups.length) return html`<p class="muted dx-nav-empty">${t('data.nav.noMatch')}</p>`;
+  return html`<ul class="dx-tree">${groups.map(({ domain, tables }) => {
+    const here = route.database === domain.database;
+    return html`<li>
+      <a class="dx-db-link" id="nav:${domain.database}" href="${dataHref(domain.database)}"
+        ${here && !route.table ? html`aria-current="page"` : ''}>
+        ${dbTile(domain.database, 'is-sm')}<span class="dx-nav-name">${domainTitle(domain)}</span>
+        ${domain.status !== 'available' ? html`<span class="chip chip-danger">${t('data.unavailable')}</span>` : ''}</a>
+      ${tables.length ? html`<ul>${tables.map(({ table, column }) => html`<li>
+        <a class="dx-table-link" id="nav:${domain.database}:${table.name}" href="${dataHref(domain.database, table.name)}"
+          ${here && route.table === table.name ? html`aria-current="page"` : ''}>
+          <span class="dx-nav-name">${labelOf(table)}${column
+            ? html`<span class="dx-nav-hint">${t('data.nav.hasField', { name: labelOf(column) })}</span>` : ''}</span>
+          ${table.status === 'missing' ? html`<span class="chip chip-warn">${t('data.missing')}</span>` : countChip(domain.database, table.name)}
+        </a></li>`)}</ul>` : ''}
+    </li>`;
+  })}</ul>`;
 }
 
-const operatorsFor = (column) => OPERATORS[column && OPERATORS[column.kind] ? column.kind : 'text'];
-const serverOperators = () => (state.service && state.service.preview && state.service.preview.operators) || null;
-const maxFilters = () => (state.service && state.service.preview && state.service.preview.max_filters) || 5;
-
-/* 说明文字。数据字典没有当前语言的版本时照原文给，并标明是原文。 */
-function description(entity) {
-  const { text, original } = descriptionOf(entity);
-  if (!text) return html`<span class="muted">${t('data.noDescription')}</span>`;
-  return original
-    ? html`<span class="original-note" lang="zh" title="${t('data.originalNote')}">${text}</span>`
-    : html`<span>${text}</span>`;
+function drawTree() {
+  const node = root.querySelector('[data-role="tree"]');
+  if (node) setHtml(node, tree());
 }
 
-/* 英文界面而数据字典只有中文说明时，先给一句英文概要，原文跟在后面。
-   概要只是把目录里已有的名字列出来（这张表有哪些字段、这个域有哪些表），
-   不是对原文的翻译——口径这种东西译错一个词，比让人看到一段中文危险。 */
-function summarized(entity, key, names) {
-  const { original } = descriptionOf(entity);
-  if (!original || !names.length) return description(entity);
-  return html`<span>${t(key, { names: names.join(', ') })}</span>${description(entity)}`;
+function drawSide() {
+  const side = root.querySelector('[data-role="side"]');
+  side.hidden = catalog.status !== 'ready' || !domains().length;
+  // 没有导航时内容区占满整行（样式按这个标记切换栏数）
+  root.querySelector('.dx').dataset.side = side.hidden ? 'off' : 'on';
+  if (side.hidden) { setHtml(side, ''); return; }
+  setHtml(side, html`<button type="button" class="dx-side-toggle" data-action="toggle-nav" aria-expanded="${String(navOpen)}">
+      ${icon('data')}<span class="grow">${t('data.nav.browse')}</span>${icon('chevronDown', 'icon-sm')}</button>
+    <div class="dx-side-body" data-open="${String(navOpen)}">
+      <label class="dx-find">${icon('search', 'icon-sm')}<span class="sr-only">${t('data.nav.find')}</span>
+        <input class="input" id="navFind" type="search" maxlength="60" value="${needle}"
+          placeholder="${t('data.nav.find')}" autocomplete="off"></label>
+      <a class="dx-home" id="nav:" href="#/data" ${!route.database ? html`aria-current="page"` : ''}>${icon('home', 'icon-sm')}${t('data.nav.all')}</a>
+      <nav aria-label="${t('data.nav.label')}" data-role="tree">${tree()}</nav>
+    </div>`);
 }
 
-const tableSummary = (table) => summarized(
-  table,
-  'data.holds',
-  (table.columns || [])
-    .filter((column) => column.status === 'available')
-    .map((column) => (column.unit ? `${labelOf(column)} (${column.unit})` : labelOf(column))),
-);
+/* ─── 全部数据 ─────────────────────────────────────────────────── */
 
-const domainSummary = (domain) => summarized(domain, 'data.contains', domain.tables.map(labelOf));
-
-/* ─── 目录还没拿到时的几种状态 ──────────────────────────────────── */
-
-function catalogProblem() {
-  if (catalog.status === 'idle' || catalog.status === 'loading') {
-    return html`<div class="loading" role="status"><span class="spinner"></span>${t('data.loading')}</div>`;
-  }
-  if (catalog.status === 'unsupported') {
-    return notice('info', 'info', t('data.unsupported.title'), html`<p>${t('data.unsupported.body')}</p>`);
-  }
-  if (catalog.status === 'disabled') {
-    return notice('info', 'info', t('data.disabled.title'), html`<p>${t('data.disabled.body')}</p>`);
-  }
-  if (catalog.status === 'error') {
-    const error = catalog.error || {};
-    const key = error.status === 0 ? 'error.network'
-      : has('error.' + error.status) ? 'error.' + error.status
-        : error.status >= 500 ? 'error.5xx' : 'error.generic';
-    return html`${notice('danger', 'error', t('data.error.title'), html`<p>${t(key)}</p>
-        <p class="original">${error.status ? `HTTP ${error.status}` : t('error.noResponse')}${error.serverMessage
-          ? html` · <span lang="zh">${error.serverMessage}</span>` : ''}</p>`)}
-      <div class="row"><button type="button" class="btn btn-sm" data-action="reload">${icon('refresh', 'icon-sm')}${t('action.tryAgain')}</button>
-        <button type="button" class="btn btn-sm btn-ghost" data-action="open-settings">${t('action.checkSettings')}</button></div>`;
-  }
-  return '';
+function kpi(label, value, sub = '', title = '') {
+  return html`<div class="kpi"><p class="kpi-label">${label}</p>
+    <p class="kpi-value" ${title ? html`title="${title}"` : ''}>${value}</p>
+    ${sub ? html`<p class="kpi-sub muted">${sub}</p>` : ''}</div>`;
 }
 
-/* ─── 目录 ─────────────────────────────────────────────────────── */
+/* 记录数这一格。还没数完时先给占位；有表没数出来时照实说「至少」。 */
+function recordKpi(pairs, label) {
+  if (profileSupport() !== 'on') return '';
+  const counts = sumCounts(pairs);
+  // 表太多、没有逐张去数的时候不给总数：给一个只加了一部分的数，比不给更糟
+  if (!counts.expected || counts.unasked) return '';
+  if (counts.known + counts.failed < counts.expected) return kpi(label, '···', t('data.kpi.counting'));
+  const short = formatCompact(counts.total);
+  const full = formatCount(counts.total);
+  // 大数写短了才在下面补一行完整的；本来就没缩写时不重复一遍
+  const sub = counts.failed ? tn('data.kpi.partial', counts.failed) : short === full ? '' : t('data.kpi.exact', { n: full });
+  return kpi(label, (counts.failed ? '≥ ' : '') + short, sub, full);
+}
 
-function domainCard(domain) {
+function tableRows(domain, peak) {
+  return html`<ul class="tbl-rows">${domain.tables.map((table) => {
+    const count = rowCount(domain.database, table.name);
+    return html`<li><a class="tbl-row" href="${dataHref(domain.database, table.name)}">
+      <span class="tbl-name">${labelOf(table)} <span class="tech">${table.name}</span></span>
+      ${table.status === 'missing'
+        ? html`<span class="chip chip-warn">${t('data.missing')}</span>`
+        : html`${barRow(count || 0, peak)}${countChip(domain.database, table.name)}`}
+    </a></li>`;
+  })}</ul>`;
+}
+
+function databaseCard(domain, peak) {
   const unavailable = domain.status !== 'available';
-  const reason = has('data.reason.' + domain.status_reason) ? t('data.reason.' + domain.status_reason) : t('data.reason.unknown');
-  return html`<section class="domain" aria-labelledby="domain-${domain.database}">
-    <div class="domain-head">
-      <h2 class="domain-title" id="domain-${domain.database}">${domainTitle(domain)}
-        <span class="tech">${domain.database}</span>
-        ${unavailable ? html`<span class="chip chip-danger">${icon('error', 'icon-sm')}${t('data.unavailable')}</span>` : ''}</h2>
-      <p class="domain-desc">${domainSummary(domain)}</p>
-    </div>
+  const pairs = domain.tables.map((table) => ({ domain, table }));
+  const counts = sumCounts(pairs);
+  const facts = [tn('data.tableCount', domain.tables.length)];
+  if (profileSupport() === 'on' && counts.expected && counts.known === counts.expected) {
+    facts.push(tn('data.recordCount', counts.total, { count: formatCount(counts.total) }));
+  }
+  return html`<section class="db-card db-c${databaseSlot(domain.database)}" aria-labelledby="db-${domain.database}">
+    <header class="db-card-head">
+      ${dbTile(domain.database, 'is-lg')}
+      <div class="grow">
+        <h2 class="db-card-title" id="db-${domain.database}"><a href="${dataHref(domain.database)}">${domainTitle(domain)}</a></h2>
+        <p class="tech">${domain.database}${unavailable ? '' : ' · ' + facts.join(' · ')}</p>
+      </div>
+      ${unavailable ? html`<span class="chip chip-danger">${icon('error', 'icon-sm')}${t('data.unavailable')}</span>` : ''}
+    </header>
+    <p class="db-card-desc">${domainSummary(domain)}</p>
     ${unavailable
-      ? html`<div class="card-pad">${notice('danger', 'error', t('data.unavailable.title'), html`<p>${reason}</p><p>${t('data.unavailable.body')}</p>`)}</div>`
-      : domain.tables.length
-        ? html`<ul class="table-list">${domain.tables.map((table) => html`<li>
-            <a class="table-link" href="#/data/${encodeURIComponent(domain.database)}/${encodeURIComponent(table.name)}">
-              <span><span class="name">${labelOf(table)}</span> <span class="tech">${table.name}</span></span>
-              <span class="desc">${tableSummary(table)}</span>
-              <span class="count">${table.status === 'missing'
-                ? html`<span class="chip chip-warn">${t('data.missing')}</span>`
-                : tn('data.fieldCount', (table.columns || []).length || table.column_count || 0)}</span>
-            </a></li>`)}</ul>`
-        : html`<p class="card-pad muted">${t('data.noTables')}</p>`}
+      ? notice('danger', 'error', t('data.unavailable.title'), html`<p>${unavailableReason(domain)}</p><p>${t('data.unavailable.body')}</p>`)
+      : domain.tables.length ? tableRows(domain, peak) : html`<p class="muted">${t('data.noTables')}</p>`}
   </section>`;
 }
 
-function drawCatalog() {
+/* 库与库靠什么连着：一行一个「共用的键」，一列一个库，格子里是用到这个键的表。 */
+function keyMatrix(links, list) {
+  if (!links.groups.length) return '';
+  return html`<section class="card card-pad stack" aria-labelledby="linksTitle">
+    <div><h2 class="section-title" id="linksTitle">${t('data.links.title')}</h2>
+      <p class="muted">${t('data.links.lead')}</p></div>
+    <div class="matrix-wrap"><table class="key-matrix">
+      <thead><tr><th scope="col">${t('data.links.key')}</th>${list.map((domain) => html`<th scope="col">
+        <a class="matrix-db" href="${dataHref(domain.database)}">${dbTile(domain.database, 'is-xs')}${domainTitle(domain)}</a></th>`)}</tr></thead>
+      <tbody>${links.groups.map((group) => {
+        const hubLabel = labelOf(group.hub.columnEntry);
+        return html`<tr>
+          <th scope="row"><span class="key-name">${icon('key', 'icon-sm')}${hubLabel}</span>
+            <span class="tech">${group.hub.column}</span>
+            <span class="muted key-span">${group.databases.length > 1
+              ? t('data.links.span', { tables: group.members.length, databases: group.databases.length })
+              : t('data.links.spanSame', { tables: group.members.length })}</span></th>
+          ${list.map((domain) => {
+            const members = group.members.filter((member) => member.database === domain.database);
+            return html`<td>${members.map((member) => {
+              const own = labelOf(member.columnEntry);
+              return html`<a class="chip chip-link" href="${dataHref(member.database, member.table)}">${labelOf(member.tableEntry)}${own !== hubLabel
+                ? html`<span class="muted"> · ${own}</span>` : ''}</a>`;
+            })}</td>`;
+          })}
+        </tr>`;
+      })}</tbody>
+    </table></div>
+  </section>`;
+}
+
+function glossary(data) {
+  if (!data.glossary || !data.glossary.length) return '';
+  return html`<details class="disclosure">
+    <summary>${t('data.glossary', { n: data.glossary.length })}</summary>
+    <div class="disclosure-body"><p class="muted">${t('data.glossaryNote')}</p>
+      <dl class="glossary">${data.glossary.map((item) => {
+        const term = localized(item, 'term');
+        const definition = localized(item, 'definition');
+        return html`<div><dt ${term.original ? html`lang="zh"` : ''}>${term.text}</dt>
+          <dd ${definition.original ? html`lang="zh" class="original-note" title="${t('data.originalNote')}"` : ''}>${definition.text}</dd></div>`;
+      })}</dl></div>
+  </details>`;
+}
+
+function overviewPage() {
   const problem = catalogProblem();
   const data = catalog.data;
-  setHtml(root, html`<div class="page stack-lg">
+  const list = domains();
+  const pairs = allTables();
+  const fields = pairs.reduce((sum, { table }) => sum + fieldCount(table), 0);
+  // 所有条形共用一把尺：最长的那条是全部表里记录最多的一张
+  const peak = Math.max(0, ...pairs.map(({ domain, table }) => rowCount(domain.database, table.name) || 0));
+  return html`<div class="page page-wide stack-lg">
     <div class="page-head">
       <div><h1 class="page-title" tabindex="-1" data-role="view-title">${t('data.title')}</h1>
         <p class="page-sub">${t('data.lead')}</p></div>
@@ -136,483 +220,230 @@ function drawCatalog() {
     ${problem}
     ${data ? html`
       ${data.access_limited ? notice('info', 'info', t('data.limited.title'), html`<p>${t('data.limited.body')}</p>`) : ''}
-      ${domains().length ? domains().map(domainCard) : html`<div class="empty-state"><strong>${t('data.empty.title')}</strong>${t('data.empty.body')}</div>`}
-      ${data.glossary && data.glossary.length ? html`<details class="disclosure">
-        <summary>${t('data.glossary', { n: data.glossary.length })}</summary>
-        <div class="disclosure-body"><p class="muted">${t('data.glossaryNote')}</p>
-          <dl class="glossary">${data.glossary.map((item) => {
-            const term = localized(item, 'term');
-            const definition = localized(item, 'definition');
-            return html`<div><dt ${term.original ? html`lang="zh"` : ''}>${term.text}</dt>
-              <dd ${definition.original ? html`lang="zh" class="original-note" title="${t('data.originalNote')}"` : ''}>${definition.text}</dd></div>`;
-          })}</dl></div>
-      </details>` : ''}
+      ${list.length ? html`
+        <div class="kpis">
+          ${kpi(t('data.kpi.databases'), formatCount(list.length))}
+          ${kpi(t('data.kpi.tables'), formatCount(pairs.length))}
+          ${kpi(t('data.kpi.fields'), formatCount(fields))}
+          ${recordKpi(pairs, t('data.kpi.records'))}
+        </div>
+        <div class="db-grid">${list.map((domain) => databaseCard(domain, peak))}</div>
+        ${keyMatrix(buildLinks(data.domains), list)}`
+        : html`<div class="empty-state"><strong>${t('data.empty.title')}</strong>${t('data.empty.body')}</div>`}
+      ${glossary(data)}
       ${state.learning ? html`<section class="learn"><div class="learn-head"><span class="row">${icon('learn')}${t('learn.catalog.title')}</span></div>
         <div class="learn-body"><p class="learn-note">${t('learn.catalog.note')}</p>
         <p class="learn-src">src/ai_sql_agent/catalog/service.py · api/catalog.py · semantic/loader.py · retrieval/access.py</p></div></section>` : ''}
     ` : ''}
-  </div>`);
-}
-
-/* ─── 单张表 ───────────────────────────────────────────────────── */
-
-function previewColumns(table, data) {
-  const entries = new Map((table.columns || []).map((column) => [column.name, column]));
-  return data.columns.map((column) => {
-    const entry = entries.get(column.name);
-    return {
-      key: column.name,
-      label: entry ? labelOf(entry) : column.name,
-      unit: entry ? entry.unit : '',
-      numeric: column.kind === 'number',
-      sortable: column.sortable !== false,
-      plain: Boolean(entry && (entry.role === 'join_key' || entry.primary_key)),
-      hint: entry ? descriptionOf(entry).text : '',
-    };
-  });
-}
-
-function filterLabel(table, filter) {
-  const entry = (table.columns || []).find((column) => column.name === filter.column);
-  const name = entry ? labelOf(entry) : filter.column;
-  return VALUELESS.includes(filter.op)
-    ? `${name} ${t('filter.op.' + filter.op)}`
-    : `${name} ${t('filter.op.' + filter.op)} ${filter.value}`;
-}
-
-function toolbar(table) {
-  const columns = (table.columns || [])
-    .filter((column) => column.status === 'available' && column.previewable !== false);
-  const chosen = columns.find((column) => column.name === draft.column) || columns[0];
-  const allowed = serverOperators();
-  const operators = operatorsFor(chosen).filter((op) => !allowed || allowed.includes(op));
-  const op = operators.includes(draft.op) ? draft.op : operators[0];
-  const full = query.filters.length >= maxFilters();
-
-  return html`<form class="filters" data-form="search" role="search">
-      <div class="field field-wide"><label for="tableSearch">${t('data.search')}</label>
-        <input class="input" id="tableSearch" type="search" maxlength="100" value="${query.search}"
-          placeholder="${t('data.searchPlaceholder')}" autocomplete="off"></div>
-      <button type="submit" class="btn">${t('action.search')}</button>
-    </form>
-    <form class="filters" data-form="filter">
-      <div class="field"><label for="filterColumn">${t('filter.field')}</label>
-        <select class="select" id="filterColumn" data-input="filter-column">${columns.map((column) => html`<option
-          value="${column.name}" ${chosen && column.name === chosen.name ? 'selected' : ''}>${labelOf(column)}</option>`)}</select></div>
-      <div class="field"><label for="filterOp">${t('filter.condition')}</label>
-        <select class="select" id="filterOp" data-input="filter-op">${operators.map((item) => html`<option
-          value="${item}" ${item === op ? 'selected' : ''}>${t('filter.op.' + item)}</option>`)}</select></div>
-      <div class="field" ${VALUELESS.includes(op) ? 'hidden' : ''}><label for="filterValue">${t('filter.value')}</label>
-        <input class="input" id="filterValue" maxlength="200" autocomplete="off"
-          ${chosen && chosen.kind === 'number' ? html`inputmode="decimal"` : ''}
-          placeholder="${chosen && chosen.kind === 'date' ? 'YYYY-MM-DD' : chosen && chosen.value_range ? chosen.value_range : ''}"></div>
-      <button type="submit" class="btn" ${full ? 'disabled' : ''}>${icon('plus', 'icon-sm')}${t('filter.add')}</button>
-    </form>
-    ${query.filters.length || query.search ? html`<div class="filter-chips" aria-label="${t('filter.active')}">
-      ${query.search ? html`<span class="filter-chip">${t('filter.searchChip', { term: query.search })}
-        <button type="button" data-action="clear-search" title="${t('filter.remove')}"
-          aria-label="${t('filter.removeNamed', { name: t('filter.searchChip', { term: query.search }) })}">${icon('close', 'icon-sm')}</button></span>` : ''}
-      ${query.filters.map((filter, index) => html`<span class="filter-chip">${filterLabel(table, filter)}
-        <button type="button" data-action="remove-filter" data-index="${index}" title="${t('filter.remove')}"
-          aria-label="${t('filter.removeNamed', { name: filterLabel(table, filter) })}">${icon('close', 'icon-sm')}</button></span>`)}
-      <button type="button" class="link-btn" data-action="clear-filters">${t('filter.clear')}</button>
-    </div>` : ''}`;
-}
-
-function previewError(error) {
-  const code = error.code || '';
-  const key = has('data.error.' + code) ? 'data.error.' + code
-    : error.status === 0 ? 'error.network'
-      : error.status === 401 ? 'error.401'
-        : error.status === 403 ? 'error.403'
-          : 'data.error.failed';
-  return html`${notice('danger', 'error', t('data.error.previewTitle'), html`<p>${t(key)}</p>
-      <p class="original">${error.status ? `HTTP ${error.status}` : t('error.noResponse')}${code ? ` · ${code}` : ''}${error.serverMessage
-        ? html` · <span lang="zh">${error.serverMessage}</span>` : ''}</p>`)}
-    <div class="row"><button type="button" class="btn btn-sm" data-action="retry-preview">${icon('refresh', 'icon-sm')}${t('action.tryAgain')}</button></div>`;
-}
-
-function results(table) {
-  if (preview.status === 'error') return previewError(preview.error);
-  if (!preview.data) {
-    return html`<div class="loading" role="status"><span class="spinner"></span>${t('data.loadingRows')}</div>`;
-  }
-
-  const data = preview.data;
-  const filtered = Boolean(query.search || query.filters.length);
-  const columns = previewColumns(table, data);
-  const from = data.offset + 1;
-  const to = data.offset + data.rows.length;
-  const entries = new Map((table.columns || []).map((column) => [column.name, column]));
-  const dates = (data.date_ranges || []).map((range) =>
-    `${entries.has(range.column) ? labelOf(entries.get(range.column)) : range.column} ${formatRange(range)}`);
-
-  const count = data.rows.length === 0
-    ? ''
-    : data.total_rows != null
-      ? t('data.range', { from, to, total: data.total_rows })
-      : t('data.rangeUnknown', { from, to });
-
-  let body;
-  if (!data.rows.length && filtered) {
-    body = html`<div class="empty-state"><strong>${t('data.noMatch.title')}</strong>${t('data.noMatch.body')}
-      <div><button type="button" class="btn btn-sm" data-action="clear-filters">${t('filter.clear')}</button></div></div>`;
-  } else if (!data.rows.length && data.offset > 0) {
-    body = html`<div class="empty-state"><strong>${t('data.pastEnd.title')}</strong>
-      <div><button type="button" class="btn btn-sm" data-action="page" data-page="1">${t('data.firstPage')}</button></div></div>`;
-  } else if (!data.rows.length) {
-    body = html`<div class="empty-state"><strong>${t('data.emptyTable.title')}</strong>${t('data.emptyTable.body')}</div>`;
-  } else {
-    body = renderTable({
-      columns,
-      rows: data.rows,
-      sort: query.sort,
-      sortAction: 'sort',
-      label: t('data.tableLabel', { table: labelOf(table) }),
-    });
-  }
-
-  return html`<div class="stack" aria-busy="${preview.status === 'loading' ? 'true' : 'false'}">
-    <div class="result-meta" role="status">
-      ${count ? html`<span><strong>${count}</strong></span>` : ''}
-      <span><strong>${t('meta.recordDates')}:</strong> ${dates.length ? dates.join('; ') : t('data.noDateFields')}</span>
-      <span title="${t('meta.readHint')}">${data.as_of_source === 'snapshot'
-        ? t('meta.readSnapshot', { time: formatTime(data.as_of) })
-        : data.as_of ? t('meta.readLive', { time: formatTime(data.as_of) }) : t('meta.readUnknown')}</span>
-      ${preview.status === 'loading' ? html`<span class="row"><span class="spinner"></span>${t('data.loadingRows')}</span>` : ''}
-    </div>
-    ${data.columns_hidden ? html`<p class="muted">${icon('info', 'icon-sm')} ${t('data.columnsHidden')}</p>` : ''}
-    ${(data.columns_unsupported || []).length ? html`<p class="muted">${icon('info', 'icon-sm')} ${t('data.columnsUnsupported', {
-      names: data.columns_unsupported.join(', '),
-    })}</p>` : ''}
-    ${data.search_columns_limited ? html`<p class="muted">${icon('info', 'icon-sm')} ${t('data.searchLimited', {
-      n: (data.search_columns || []).length,
-    })}</p>` : ''}
-    ${data.cells_truncated ? html`<p class="muted">${icon('info', 'icon-sm')} ${t('data.cellsTruncated', { n: data.cell_limit })}</p>` : ''}
-    ${data.stable_order === false && (data.has_more || data.page > 1)
-      ? html`<p class="muted">${icon('info', 'icon-sm')} ${t('data.unstableOrder')}</p>` : ''}
-    ${body}
-    <div class="table-foot">
-      <label class="row">${t('data.pageSize')}
-        <select class="select select-auto" data-input="page-size">${PAGE_SIZES.map((size) => html`<option
-          value="${size}" ${size === query.pageSize ? 'selected' : ''}>${size}</option>`)}</select></label>
-      <span class="pager">
-        <button type="button" class="btn btn-sm" data-action="page" data-which="prev" data-page="${data.page - 1}" ${data.page <= 1 ? 'disabled' : ''}>${t('table.prev')}</button>
-        <span>${t('data.pageNumber', { page: data.page })}</span>
-        <button type="button" class="btn btn-sm" data-action="page" data-which="next" data-page="${data.page + 1}" ${data.has_more ? '' : 'disabled'}>${t('table.next')}</button>
-      </span>
-    </div>
-    ${state.learning ? html`<section class="learn"><div class="learn-head"><span class="row">${icon('learn')}${t('learn.preview.title')}</span>
-        <span class="chip chip-info chip-wrap">POST /catalog/${route.database}/${route.table}/rows</span></div>
-      <div class="learn-body stack">
-        <div class="row-between"><span class="muted">${t('learn.preview.sql', { dialect: data.dialect })}</span>
-          <button type="button" class="btn btn-sm btn-ghost" data-action="copy-sql">${icon('copy', 'icon-sm')}${t('action.copySql')}</button></div>
-        <pre class="code">${data.sql}</pre>
-        <dl class="kv"><dt>${t('process.traceId')}</dt><dd><span class="mono">${data.trace_id}</span></dd></dl>
-        <p class="learn-note">${t('learn.preview.note')}</p>
-        <p class="learn-src">src/ai_sql_agent/catalog/preview.py · catalog/service.py · execution/sqlite_executor.py · auth/enforcement.py</p>
-      </div></section>` : ''}
   </div>`;
 }
 
-function fieldItem(column) {
-  const role = column.role && has('role.' + column.role) ? t('role.' + column.role) : '';
-  const note = descriptionOf(column);
-  const usage = localized(column, 'usage');
-  // 数据字典里当前语言能读的说明排最前；只有原文的那几段，先给界面语言能读的
-  // 结构化信息（角色、取值、关联），原文退到后面。说明和用途各自判断，互不连带。
-  const dictionary = [note, usage.text && usage.text !== note.text ? usage : null]
-    .filter((item) => item && item.text);
-  const paragraph = (item) => html`<p ${item.original
-    ? html`class="original-note" lang="zh" title="${t('data.originalNote')}"` : ''}>${item.text}</p>`;
-  const readable = dictionary.filter((item) => !item.original).map(paragraph);
-  const originals = dictionary.filter((item) => item.original).map(paragraph);
-  return html`<li>
-    <div>
-      <div class="field-name">${labelOf(column)}</div>
-      <div class="tech">${column.name}</div>
-      <div class="field-facts">
-        ${column.status === 'missing' ? html`<span class="chip chip-warn">${t('data.missing')}</span>` : ''}
-        ${column.primary_key ? html`<span class="chip">${t('data.key')}</span>` : ''}
-        ${column.status !== 'missing' && column.previewable === false ? html`<span class="chip chip-warn">${t('data.notInPreview')}</span>` : ''}
-        ${has('kind.' + column.kind) && column.status !== 'missing' ? html`<span class="chip">${t('kind.' + column.kind)}</span>` : ''}
-        ${column.unit ? html`<span class="chip">${t('data.unit', { unit: column.unit })}</span>` : ''}
-        ${column.data_type ? html`<span class="tech">${column.data_type}</span>` : ''}
-      </div>
-    </div>
-    <div class="field-desc">
-      ${readable}
-      ${role ? html`<p>${role}</p>` : ''}
-      ${column.value_range ? html`<p><span class="muted">${t('data.values')}</span> <span class="mono">${column.value_range}</span></p>` : ''}
-      ${(column.references || []).map((reference) => {
-        const target = findTable(reference.database, reference.table);
-        const domain = findDomain(reference.database);
-        const name = `${domain ? domainTitle(domain) : reference.database} › ${target ? labelOf(target) : reference.table} › ${reference.column}`;
-        const remark = localized(reference, 'note');
-        return html`<p>${icon('link', 'icon-sm')} <span class="muted">${t(reference.relation === 'cross_database' ? 'data.linkedAcross' : 'data.linked')}</span>
-          <a href="#/data/${encodeURIComponent(reference.database)}/${encodeURIComponent(reference.table)}">${name}</a>
-          ${remark.text ? html`<span ${remark.original ? html`class="original-note" lang="zh"` : html`class="muted"`}>${remark.text}</span>` : ''}</p>`;
-      })}
-      ${originals}
-      ${!dictionary.length ? html`<p class="muted">${t(column.documented ? 'data.noDescription' : 'data.undocumented')}</p>` : ''}
-    </div>
-  </li>`;
+/* ─── 一个库 ───────────────────────────────────────────────────── */
+
+/* 表卡片上的那张小图：先找声明过取值的分布（状态、类型），没有就找最常见的几个取值。只看不点。 */
+function headline(profile, nameOf) {
+  const rows = profile.total_rows || 0;
+  const live = profile.facets.filter((facet) => facet.values.some((item) => item.count > 0));
+  const series = live.find((facet) => seriesSlots(facet).size);
+  if (series) {
+    const slots = seriesSlots(series);
+    const items = series.values.map((item) => ({
+      value: item.value, text: String(item.value), count: item.count, slot: slots.get(String(item.value)),
+    }));
+    const total = items.reduce((sum, item) => sum + item.count, 0);
+    return { column: series.column, body: html`${stackedBar(items, nameOf(series.column))}${valueList({ column: series.column, items, total })}` };
+  }
+  const most = (facet) => Math.max(...facet.values.map((item) => item.count));
+  const top = live.find((facet) => facet.complete || most(facet) >= Math.max(2, rows * 0.005));
+  if (!top) return null;
+  const items = [...top.values].sort((a, b) => b.count - a.count).slice(0, 4)
+    .map((item) => ({ value: item.value, text: String(item.value), count: item.count, slot: 0 }));
+  return { column: top.column, body: valueList({ column: top.column, items, total: rows, bars: true }) };
 }
 
-function drawTable() {
+function tableCard(domain, table, rich) {
+  // 只看已经要过的那一份；要不要去取由 showData 决定（表多的库不逐张取分布）
+  const entry = profileSupport() === 'on' ? findProfile(domain.database, table.name, { breakdowns: rich }) : null;
+  const profile = entry && entry.status === 'ready' ? entry.data : null;
+  const labels = new Map((table.columns || []).map((column) => [column.name, labelOf(column)]));
+  const head = profile && rich ? headline(profile, (name) => labels.get(name) || name) : null;
+  const line = profile && rich ? profile.timelines.find((item) => item.buckets.length) : null;
+  const span = profile ? profile.columns.find((column) => line && column.name === line.column && column.min !== undefined) : null;
+  return html`<article class="tbl-card">
+    <header class="tbl-card-head">
+      <div class="grow"><h3 class="tbl-card-title"><a class="stretched" href="${dataHref(domain.database, table.name)}">${labelOf(table)}</a></h3>
+        <p class="tech">${table.name} · ${tn('data.fieldCount', fieldCount(table))}</p></div>
+      ${table.status === 'missing' ? html`<span class="chip chip-warn">${t('data.missing')}</span>`
+        : profile && typeof profile.total_rows === 'number'
+          ? html`<p class="tbl-card-count" title="${formatCount(profile.total_rows)}">${formatCompact(profile.total_rows)}<span>${t('data.recordsUnit')}</span></p>`
+          : entry && entry.status === 'loading' ? html`<span class="spinner" aria-hidden="true"></span>` : ''}
+    </header>
+    <p class="tbl-card-desc">${tableSummary(table)}</p>
+    ${head ? html`<div class="tbl-card-viz"><p class="viz-caption">${labels.get(head.column) || head.column}</p>${head.body}</div>` : ''}
+    ${line ? html`<div class="tbl-card-viz"><p class="viz-caption">${labels.get(line.column) || line.column}${span
+      ? html`<span class="muted"> · ${formatRange({ min: String(span.min).slice(0, 10), max: String(span.max).slice(0, 10) })}</span>` : ''}</p>
+      ${columnChart({ column: line.column, bars: rebucket(line.buckets).bars, label: t('viz.timelineLabel', { column: labels.get(line.column) || line.column }) })}</div>` : ''}
+  </article>`;
+}
+
+function databaseLinks(domain) {
+  const groups = crossDatabaseLinks(buildLinks(catalog.data.domains), domain.database);
+  if (!groups.length) return '';
+  return html`<section class="card card-pad stack" aria-labelledby="dbLinksTitle">
+    <div><h2 class="section-title" id="dbLinksTitle">${t('data.links.fromHere')}</h2>
+      <p class="muted">${t('data.links.fromHereLead')}</p></div>
+    <ul class="link-list">${groups.map((group) => html`<li>
+      <a class="link-db" href="${dataHref(group.domain.database)}">${dbTile(group.domain.database, 'is-sm')}${domainTitle(group.domain)}</a>
+      <ul>${group.links.map(({ mine, other }) => html`<li>
+        <a href="${dataHref(mine.database, mine.table)}">${labelOf(mine.tableEntry)}</a>
+        <span class="muted">${labelOf(mine.columnEntry)}</span>
+        <span class="link-arrow" aria-hidden="true">↔</span><span class="sr-only">${t('data.links.matches')}</span>
+        <a href="${dataHref(other.database, other.table)}">${labelOf(other.tableEntry)}</a>
+        <span class="muted">${labelOf(other.columnEntry)}</span></li>`)}</ul>
+    </li>`)}</ul>
+  </section>`;
+}
+
+function databasePage() {
   const problem = catalogProblem();
   const domain = findDomain(route.database);
-  const table = findTable(route.database, route.table);
-
   if (problem || !catalog.data) {
-    setHtml(root, html`<div class="page stack-lg"><h1 class="page-title" tabindex="-1" data-role="view-title">${t('data.title')}</h1>${problem}</div>`);
-    return;
+    return html`<div class="page stack-lg"><h1 class="page-title" tabindex="-1" data-role="view-title">${t('data.title')}</h1>${problem}</div>`;
   }
-  if (domain && domain.status !== 'available' && !table) {
-    // 库读不到时目录里没有它的表清单：这不是「没有这张表」，是「现在看不了」
-    const reason = has('data.reason.' + domain.status_reason) ? t('data.reason.' + domain.status_reason) : t('data.reason.unknown');
-    setHtml(root, html`<div class="page stack-lg">
-      <nav class="breadcrumbs" aria-label="${t('data.breadcrumb')}"><a href="#/data">${t('data.title')}</a>
-        <span aria-hidden="true">›</span><span>${domainTitle(domain)}</span></nav>
-      <h1 class="page-title" tabindex="-1" data-role="view-title">${route.table}</h1>
-      ${notice('danger', 'error', t('data.unavailable.title'), html`<p>${reason}</p><p>${t('data.unavailable.body')}</p>`)}
-      <div class="row"><button type="button" class="btn btn-sm" data-action="reload">${icon('refresh', 'icon-sm')}${t('action.tryAgain')}</button>
-        <a class="btn btn-sm btn-ghost" href="#/data">${icon('back', 'icon-sm')}${t('data.backToCatalog')}</a></div>
-    </div>`);
-    return;
-  }
-  if (!domain || !table) {
-    setHtml(root, html`<div class="page stack-lg">
+  if (!domain) {
+    return html`<div class="page stack-lg">
       <nav class="breadcrumbs" aria-label="${t('data.breadcrumb')}"><a href="#/data">${t('data.title')}</a></nav>
-      <h1 class="page-title" tabindex="-1" data-role="view-title">${t('data.notFound.title')}</h1>
-      ${notice('info', 'info', t('data.notFound.title'), html`<p>${t('data.notFound.body')}</p>`)}
+      <h1 class="page-title" tabindex="-1" data-role="view-title">${t('data.dbNotFound.title')}</h1>
+      ${notice('info', 'info', t('data.dbNotFound.title'), html`<p>${t('data.dbNotFound.body')}</p>`)}
       <p><a class="btn" href="#/data">${icon('back', 'icon-sm')}${t('data.backToCatalog')}</a></p>
-    </div>`);
+    </div>`;
+  }
+
+  const unavailable = domain.status !== 'available';
+  const pairs = domain.tables.map((table) => ({ domain, table }));
+  const fields = pairs.reduce((sum, { table }) => sum + fieldCount(table), 0);
+  const linked = crossDatabaseLinks(buildLinks(catalog.data.domains), domain.database).length;
+  const rich = domain.tables.length <= RICH_CARDS_UP_TO;
+  return html`<div class="page page-wide stack-lg">
+    <div>
+      <nav class="breadcrumbs" aria-label="${t('data.breadcrumb')}">
+        <a href="#/data">${t('data.title')}</a><span aria-hidden="true">›</span><span>${domainTitle(domain)}</span></nav>
+      <div class="page-head">
+        <div class="dx-title">${dbTile(domain.database, 'is-lg')}
+          <div><h1 class="page-title" tabindex="-1" data-role="view-title">${domainTitle(domain)}</h1>
+            <p class="tech">${domain.database} · ${domain.dialect} · ${t('data.readOnly')}</p></div></div>
+        <div class="row"><button type="button" class="btn btn-sm" data-action="ask-database">${icon('ask', 'icon-sm')}${t('data.askAbout')}</button></div>
+      </div>
+      <p class="page-sub">${domainSummary(domain)}</p>
+    </div>
+    ${unavailable
+      ? html`${notice('danger', 'error', t('data.unavailable.title'), html`<p>${unavailableReason(domain)}</p><p>${t('data.unavailable.body')}</p>`)}
+        <div class="row"><button type="button" class="btn btn-sm" data-action="reload">${icon('refresh', 'icon-sm')}${t('action.tryAgain')}</button></div>`
+      : html`<div class="kpis">
+          ${kpi(t('data.kpi.tables'), formatCount(domain.tables.length))}
+          ${kpi(t('data.kpi.fields'), formatCount(fields))}
+          ${recordKpi(pairs, t('data.kpi.records'))}
+          ${kpi(t('data.kpi.linked'), formatCount(linked))}
+        </div>
+        ${domain.tables.length
+          ? html`<div class="tbl-grid">${domain.tables.map((table) => tableCard(domain, table, rich))}</div>`
+          : html`<p class="muted">${t('data.noTables')}</p>`}
+        ${databaseLinks(domain)}`}
+  </div>`;
+}
+
+/* ─── 路由与重画 ───────────────────────────────────────────────── */
+
+function drawPage() {
+  if (route.table && catalog.status === 'ready') { drawTable(); return; }
+  if (route.table) {
+    // 目录还没到（或者没拿到）：先把原因摆出来，目录到了会再进来一次
+    setHtml(pageSlot(), html`<div class="page stack-lg"><h1 class="page-title" tabindex="-1" data-role="view-title">${t('data.title')}</h1>${catalogProblem()}</div>`);
     return;
   }
-
-  const available = table.status === 'available';
-  const columns = table.columns || [];
-  const unavailableDomain = domain.status !== 'available';
-  setHtml(root, html`<div class="page stack-lg">
-    <nav class="breadcrumbs" aria-label="${t('data.breadcrumb')}">
-      <a href="#/data">${t('data.title')}</a><span aria-hidden="true">›</span>
-      <span>${domainTitle(domain)}</span><span aria-hidden="true">›</span><span>${labelOf(table)}</span>
-    </nav>
-    <div class="page-head">
-      <div><h1 class="page-title" tabindex="-1" data-role="view-title">${labelOf(table)}</h1>
-        <p class="tech">${domain.database}.${table.name} · ${t('data.readOnly')}</p>
-        <p class="page-sub">${tableSummary(table)}</p></div>
-      <div class="row">
-        <button type="button" class="btn btn-sm" data-action="ask-about">${icon('ask', 'icon-sm')}${t('data.askAbout')}</button>
-      </div>
-    </div>
-    ${!available ? notice('warn', 'warn', t('data.missing.title'), html`<p>${t('data.missing.body')}</p>`) : ''}
-    ${unavailableDomain ? notice('danger', 'error', t('data.unavailable.title'), html`<p>${t('data.unavailable.body')}</p>`) : ''}
-    <div class="tabs" role="tablist" aria-label="${labelOf(table)}">
-      <button type="button" class="tab" role="tab" id="tab-records" aria-controls="tabpanel" aria-selected="${String(tab === 'records')}"
-        tabindex="${tab === 'records' ? '0' : '-1'}" data-action="tab" data-tab="records">${t('data.tab.records')}</button>
-      <button type="button" class="tab" role="tab" id="tab-fields" aria-controls="tabpanel" aria-selected="${String(tab === 'fields')}"
-        tabindex="${tab === 'fields' ? '0' : '-1'}" data-action="tab" data-tab="fields">${t('data.tab.fields', { n: columns.length })}</button>
-    </div>
-    <div id="tabpanel" role="tabpanel" aria-labelledby="tab-${tab}" class="stack">
-      ${tab === 'fields'
-        ? html`<ul class="field-list">${columns.map(fieldItem)}</ul>`
-        : !available || unavailableDomain
-          ? html`<p class="muted">${t('data.noPreview')}</p>`
-          : !table.previewable
-            ? notice('info', 'info', t('data.previewUnsupported.title'), html`<p>${t(domain.preview_supported
-              ? 'data.previewUnsupported.names' : 'data.previewUnsupported.body')}</p>`)
-            : html`<div data-role="toolbar" class="stack">${toolbar(table)}</div><div data-role="results">${results(table)}</div>`}
-    </div>
-  </div>`);
+  setHtml(pageSlot(), route.database ? databasePage() : overviewPage());
 }
 
-function drawResults() {
-  const slot = root.querySelector('[data-role="results"]');
-  const table = findTable(route.database, route.table);
-  if (slot && table) setHtml(slot, results(table));
+/* 概况是一张表一张表到的。攒一小会儿一起画，不是到一张画一遍。
+   用定时器，不用 requestAnimationFrame：页面不在前台（或者嵌在一个不重绘的容器里）时
+   后者根本不触发，数字就会一直停在「正在统计」，切回来之前谁也不知道其实早就数完了。 */
+function schedule() {
+  if (frame) return;
+  frame = setTimeout(() => {
+    frame = 0;
+    if (root.hidden) return;
+    drawTree();
+    if (!route.table) drawPage();
+  }, 30);
 }
 
-/* 重画工具栏。keep 说明哪些「打了一半还没提交」的输入要留住：
-   换一下筛选字段不该把刚打的搜索词清掉，加完一个筛选条件则应该把值清空等下一个。 */
-function drawToolbar(keep = {}) {
-  const slot = root.querySelector('[data-role="toolbar"]');
-  const table = findTable(route.database, route.table);
-  if (!slot || !table) return;
-  const typed = {
-    search: keep.search && $('tableSearch') ? $('tableSearch').value : null,
-    value: keep.value && $('filterValue') ? $('filterValue').value : null,
-  };
-  setHtml(slot, toolbar(table));
-  if (typed.search !== null && $('tableSearch')) $('tableSearch').value = typed.search;
-  if (typed.value !== null && $('filterValue')) $('filterValue').value = typed.value;
-}
-
-async function loadPreview() {
-  const table = findTable(route.database, route.table);
-  if (!table || table.status !== 'available' || !table.previewable) return;
-  if (controller) controller.abort();
-  controller = new AbortController();
-  const ticket = ++sequence;
-  preview = { ...preview, status: 'loading', error: null };
-  drawResults();
-
-  try {
-    const data = await api.rows(route.database, route.table, {
-      page: query.page,
-      page_size: query.pageSize,
-      search: query.search,
-      filters: query.filters,
-      sort: query.sort ? { column: query.sort.key, direction: query.sort.direction } : null,
-    }, controller.signal);
-    if (ticket !== sequence) return;       // 更晚发出的请求已经接管了
-    preview = { status: 'ready', data, error: null };
-    announce(data.rows.length
-      ? (data.total_rows != null
-        ? t('data.range', { from: data.offset + 1, to: data.offset + data.rows.length, total: data.total_rows })
-        : t('data.rangeUnknown', { from: data.offset + 1, to: data.offset + data.rows.length }))
-      : t(query.search || query.filters.length ? 'data.noMatch.title' : 'data.emptyTable.title'));
-  } catch (error) {
-    if ((error && error.name === 'AbortError') || ticket !== sequence) return;
-    preview = { status: 'error', data: null, error };
-    announce(t('data.error.previewTitle'));
-  }
-  drawResults();
-}
-
-function draw() {
-  if (route.table) drawTable();
-  else drawCatalog();
-}
-
-/* 路由进来：#/data 或 #/data/<库>/<表> */
-export async function showData(database = '', table = '') {
+/* 路由进来：#/data、#/data/<库> 或 #/data/<库>/<表>[?…] */
+export async function showData(database = '', table = '', query = '', { reload = false } = {}) {
   const changed = route.database !== database || route.table !== table;
+  const fresh = reload || stale;
   route = { database, table };
-  if (changed) {
-    query = freshQuery();
-    draft = { column: '', op: '' };
-    preview = { status: 'idle', data: null, error: null };
-    if (controller) controller.abort();
-  } else if (stale) {
-    // 离开这一页的时候换过身份：留着的那一页数据是按上一个身份读的，不能再摆出来
-    preview = { status: 'idle', data: null, error: null };
-    if (controller) controller.abort();
-  }
   stale = false;
+  navOpen = false;
   if (catalog.status === 'idle') loadCatalog();
-  draw();
-  if (!table || catalog.status !== 'ready') return;
+  drawSide();
+
+  if (catalog.status === 'ready') {
+    // 先把要的统计发出去，再画：这样第一遍画出来就知道哪些数字「还在数」
+    requestCounts();
+    if (database) requestCounts(database);
+    const domain = database && !table ? findDomain(database) : null;
+    if (domain && domain.tables.length <= RICH_CARDS_UP_TO) requestBreakdowns(domain);
+  }
+  if (!table || catalog.status !== 'ready') {
+    if (!table) leaveTable();
+    drawPage();
+    return;
+  }
 
   try { await ensureColumns(database, table); } catch (_) { /* 取不到字段说明时预览照常 */ }
   if (route.database !== database || route.table !== table) return;
-  draw();
-  if (tab === 'records' && (changed || preview.status === 'idle')) loadPreview();
-}
-
-function applyQuery(change) {
-  query = { ...query, ...change };
-  loadPreview();
+  openTable(pageSlot(), database, table, query, { changed, reload: fresh });
 }
 
 export function initExplore() {
   root = $('view-data');
+  setHtml(root, html`<div class="dx"><aside class="dx-side" data-role="side" hidden></aside><div class="dx-main" data-role="page"></div></div>`);
+  bindTable(root);
 
-  root.addEventListener('submit', (event) => {
-    const form = event.target;
-    if (form.dataset.form === 'search') {
-      event.preventDefault();
-      applyQuery({ search: $('tableSearch').value.trim(), page: 1 });
-      drawToolbar({ value: true });
-    } else if (form.dataset.form === 'filter') {
-      event.preventDefault();
-      const column = $('filterColumn').value;
-      const op = $('filterOp').value;
-      const value = VALUELESS.includes(op) ? '' : $('filterValue').value.trim();
-      if (!column || (!VALUELESS.includes(op) && !value)) {
-        if ($('filterValue')) $('filterValue').focus();
-        return;
-      }
-      if (query.filters.length >= maxFilters()) return;
-      applyQuery({ filters: [...query.filters, { column, op, value }], page: 1 });
-      drawToolbar({ search: true });
-    }
-  });
-
-  root.addEventListener('change', (event) => {
-    const kind = event.target.dataset.input;
-    // 重画是因为可选的条件、输入提示跟着字段变。焦点留在刚才操作的那个下拉框上
-    //（重画按 id 找回它）：用方向键挨个看选项时，每按一下都会触发一次 change。
-    if (kind === 'filter-column') { draft = { column: event.target.value, op: '' }; drawToolbar({ search: true, value: true }); }
-    if (kind === 'filter-op') { draft = { ...draft, column: $('filterColumn').value, op: event.target.value }; drawToolbar({ search: true, value: true }); }
-    if (kind === 'page-size') applyQuery({ pageSize: Number(event.target.value) || PAGE_SIZES[0], page: 1 });
-  });
-
-  root.addEventListener('keydown', (event) => {
-    // 标签页：左右方向键切换（roving tabindex）
-    if (!event.target.matches('[role="tab"]') || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-    event.preventDefault();
-    tab = tab === 'records' ? 'fields' : 'records';
-    draw();
-    if (tab === 'records' && preview.status === 'idle') loadPreview();
-    $('tab-' + tab).focus();
+  root.addEventListener('input', (event) => {
+    if (event.target.id !== 'navFind') return;
+    needle = event.target.value;
+    drawTree();
   });
 
   delegate(root, 'click', {
+    ...tableActions,
     reload: () => loadCatalog({ refresh: true }),
     'open-settings': () => emit('open-settings'),
-    tab: (target) => {
-      tab = target.dataset.tab;
-      draw();
-      if (tab === 'records' && preview.status === 'idle') loadPreview();
-      $('tab-' + tab).focus();
-    },
-    sort: (target) => {
-      const key = target.dataset.key;
-      let sort = null;
-      if (!query.sort || query.sort.key !== key) sort = { key, direction: 'asc' };
-      else if (query.sort.direction === 'asc') sort = { key, direction: 'desc' };
-      applyQuery({ sort, page: 1 });
-    },
-    page: (target) => applyQuery({ page: Math.max(1, Number(target.dataset.page) || 1) }),
-    'remove-filter': (target) => {
-      const index = Number(target.dataset.index);
-      applyQuery({ filters: query.filters.filter((_, position) => position !== index), page: 1 });
-      drawToolbar({ search: true, value: true });
-    },
-    'clear-search': () => { applyQuery({ search: '', page: 1 }); drawToolbar({ value: true }); },
-    'clear-filters': () => { applyQuery({ search: '', filters: [], page: 1 }); drawToolbar(); },
-    'retry-preview': () => loadPreview(),
-    'ask-about': () => {
-      const table = findTable(route.database, route.table);
-      if (!table) return;
-      pendingPrefill = t('data.askPrefill', { table: labelOf(table) });
+    'toggle-nav': () => { navOpen = !navOpen; drawSide(); },
+    'ask-database': () => {
+      const domain = findDomain(route.database);
+      if (!domain) return;
+      setPrefill(t('data.askPrefill', { table: domainTitle(domain) }));
       location.hash = '#/ask';
-    },
-    'copy-sql': async () => {
-      if (preview.data) toast(t(await copyText(preview.data.sql) ? 'toast.copied' : 'toast.copyFailed'));
     },
   });
 
   on('catalog', () => {
     if (root.hidden) { stale = true; return; }
-    if (route.table && catalog.status === 'ready') {
-      // 目录刷新后表可能变了：这页的预览也跟着重读，不留一份对不上的旧数据
-      preview = { status: 'idle', data: null, error: null };
-      showData(route.database, route.table);
-    } else {
-      draw();
-    }
+    // 目录刷新后表可能变了：正在看的那一页跟着重读，不留一份对不上的旧数据
+    showData(route.database, route.table, hashQuery(), { reload: true });
   });
-  on('lang', () => { if (!root.hidden) draw(); });
-  on('learning', () => { if (!root.hidden) draw(); });
+  on('profile', (entry) => {
+    if (root.hidden) return;
+    onProfile(entry);
+    schedule();
+  });
+  on('lang', () => { if (!root.hidden) { drawSide(); drawPage(); } });
+  on('learning', () => { if (!root.hidden) drawPage(); });
 }
 
-/* 「就这张表提问」带去问答页的话头；问答页显示出来之后取走。 */
-let pendingPrefill = '';
+/* 「就这份数据提问」带去问答页的话头；问答页显示出来之后取走。 */
 export function takePrefill() {
-  const text = pendingPrefill;
-  pendingPrefill = '';
-  return text;
+  return consumePrefill();
 }

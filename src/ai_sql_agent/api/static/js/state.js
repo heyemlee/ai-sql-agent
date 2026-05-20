@@ -9,7 +9,7 @@ const STORAGE_KEY = 'ai-sql-console/v2';
 const LEGACY_KEY = 'ai-sql-console/v1';
 // 会话标识不在其中：页面上的对话不跨刷新保留，服务端的会话也就不该悄悄延续——
 // 否则刷新后看着是一个空白的新对话，问出来的却是「根据之前的查询结果…」。
-const PERSISTED = ['lang', 'learning', 'base', 'userId', 'longTerm', 'transport', 'feedback'];
+const PERSISTED = ['lang', 'learning', 'base', 'userId', 'longTerm', 'transport', 'feedback', 'explorer'];
 const MAX_FEEDBACK_ENTRIES = 200;
 
 /* crypto.randomUUID 只在安全上下文里有（localhost 算，局域网 http 不算），留一条退路。 */
@@ -29,6 +29,7 @@ export const state = {
   longTerm: false,
   transport: 'auto',       // auto | query | stream
   feedback: {},            // trace_id -> 已提交的判定
+  explorer: { insights: true },   // 数据页的显示偏好：表页上的概览开不开
 
   apiKey: '',
   live: null,              // null 还没探测 / true / false
@@ -60,6 +61,7 @@ function load() {
   if (!['en', 'zh'].includes(state.lang)) state.lang = 'en';
   if (!['auto', 'query', 'stream'].includes(state.transport)) state.transport = 'auto';
   if (!state.feedback || typeof state.feedback !== 'object') state.feedback = {};
+  if (!state.explorer || typeof state.explorer !== 'object') state.explorer = { insights: true };
   try {
     state.apiKey = sessionStorage.getItem(STORAGE_KEY + '/key')
       || sessionStorage.getItem(LEGACY_KEY + '/key') || '';

@@ -94,6 +94,13 @@ export const api = {
       `/catalog/${encodeURIComponent(database)}/${encodeURIComponent(table)}/rows`,
       { body: { ...actAs(), ...body }, signal },
     ),
+  // 表概况：只有聚合结果（行数、取值分布、按月的记录数），没有记录本身
+  profile: (database, table, body, signal) =>
+    request(
+      'POST',
+      `/catalog/${encodeURIComponent(database)}/${encodeURIComponent(table)}/profile`,
+      { body: { ...actAs(), ...body }, signal },
+    ),
 
   history: (limit = 50) => request('GET', '/history', { params: { limit, ...actAs() } }),
   feedback: (traceId, verdict, comment) =>

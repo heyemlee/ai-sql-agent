@@ -40,7 +40,11 @@ export function html(strings, ...values) {
    用来认控件的属性必须是**重绘前后不变的**。data-page 不在其中：翻页按钮带的是
    「要去的页码」，翻完就变了，拿它认的话每翻一页焦点都丢——翻页按钮用 data-which
    （prev / next）认。 */
-const FOCUS_KEYS = ['lang', 'op', 'tab', 'step', 'scope', 'key', 'index', 'trace', 'verdict', 'which', 'example', 'detail'];
+const FOCUS_KEYS = [
+  'lang', 'op', 'tab', 'step', 'scope', 'key', 'index', 'trace', 'verdict', 'which', 'example', 'detail',
+  // 数据页：分布图里的一个取值、时间轴上的一根柱子、字段开关
+  'column', 'value', 'start', 'name',
+];
 
 function focusSelector(root) {
   const active = document.activeElement;
@@ -99,6 +103,17 @@ const ICONS = {
   learn: '<path d="M3 8.5 12 4l9 4.5-9 4.5z"/><path d="M7 11v4.5c0 1.2 2.2 2.5 5 2.5s5-1.3 5-2.5V11"/>',
   logo: '<path d="m12 3 2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4Z"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
+  filter: '<path d="M4 6h16M7 12h10M10 18h4"/>',
+  columns: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M9.5 5v14M14.5 5v14"/>',
+  table: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M4 14.5h16M10 10v9"/>',
+  chart: '<path d="M5 20V10m7 10V4m7 16v-7"/>',
+  key: '<circle cx="8" cy="15" r="3.5"/><path d="m10.6 12.4 8.4-8.4M16 7l2.5 2.5M13.5 9.5l2 2"/>',
+  chevronRight: '<path d="m9 6 6 6-6 6"/>',
+  chevronLeft: '<path d="m15 6-6 6 6 6"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  open: '<path d="M14 5h5v5M19 5l-8 8M11 6H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-4"/>',
+  home: '<path d="M4 11.5 12 5l8 6.5M6.5 10v9h11v-9"/>',
 };
 
 export function icon(name, extraClass = '') {

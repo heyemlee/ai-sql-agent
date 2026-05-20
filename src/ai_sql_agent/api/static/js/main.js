@@ -1,7 +1,8 @@
 /* 入口：启动、路由、顶栏。
 
-   三个一级入口对应三个视图，用 hash 路由（#/ask、#/data、#/data/<库>/<表>、#/history），
-   所以刷新和「把这张表的链接发给同事」都能回到同一个地方，服务端不需要为此加路由。 */
+   三个一级入口对应三个视图，用 hash 路由（#/ask、#/data、#/data/<库>、#/data/<库>/<表>、
+   #/history），所以刷新和「把这张表的链接发给同事」都能回到同一个地方，服务端不需要
+   为此加路由。数据页的地址后面还可以带一段 ?…（搜索词、筛选、排序，见 dataRoute.js）。 */
 
 import { api } from './api.js';
 import { loadCatalog } from './catalog.js';
@@ -24,13 +25,19 @@ let retryTimer = null;
 function parseRoute() {
   const hash = location.hash;
   if (hash !== '' && hash !== '#' && !hash.startsWith('#/')) return null;
+  // 问号后面是视图自己的状态，不参与分段：表名里真有问号的话，链接里它是转义过的
+  const mark = hash.indexOf('?');
+  const path = mark === -1 ? hash : hash.slice(0, mark);
+  const query = mark === -1 ? '' : hash.slice(mark + 1);
   let parts;
   try {
-    parts = hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
+    parts = path.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
   } catch (_) {
     return null;
   }
-  if (parts[0] === 'data') return { view: 'data', database: parts[1] || '', table: parts[2] || '' };
+  if (parts[0] === 'data') {
+    return { view: 'data', database: parts[1] || '', table: parts[2] || '', query };
+  }
   if (parts[0] === 'history') return { view: 'history' };
   if (parts[0] === 'ask' || parts[0] === '') return { view: 'ask' };
   return null;
@@ -54,7 +61,7 @@ function route({ initial = false } = {}) {
   });
   setTitle(target.view);
 
-  if (target.view === 'data') showData(target.database, target.table);
+  if (target.view === 'data') showData(target.database, target.table, target.query || '');
   if (target.view === 'history') showHistory();
   if (target.view === 'ask') {
     const text = takePrefill();

@@ -88,6 +88,36 @@ export function formatNumber(value, { unit = '', plain = false } = {}) {
   return text;
 }
 
+/* 「有多少条」。数的是记录，不是编号：一律带千分位（1,200）。 */
+export function formatCount(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  return new Intl.NumberFormat(locale(), { maximumFractionDigits: 0 }).format(value);
+}
+
+/* 统计卡片上的大数：写短（4,703 万 / 47M），完整的数放在悬停提示和表格里。
+   一百万以内不缩——卡片放得下，缩了反而丢精度（10,264 条写成「1 万」就少了两百多条）。 */
+export function formatCompact(value, { unit = '' } = {}) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  if (Math.abs(value) < 1000000) {
+    // 这里写的是数量和金额，不是编号：一千以上照样带千分位（formatNumber 为了编号不带）
+    const digits = isCurrency(unit) ? 2 : Number.isInteger(value) ? 0 : 2;
+    return new Intl.NumberFormat(locale(), { minimumFractionDigits: isCurrency(unit) ? 2 : 0, maximumFractionDigits: digits }).format(value);
+  }
+  return new Intl.NumberFormat(locale(), {
+    notation: 'compact', maximumFractionDigits: 1,
+  }).format(value);
+}
+
+/* 占比。不是零的一份不能显示成 0%。 */
+export function formatShare(part, whole) {
+  if (!(whole > 0) || !(part >= 0)) return '';
+  const share = part / whole;
+  if (part > 0 && share < 0.001) return '<0.1%';
+  return new Intl.NumberFormat(locale(), {
+    style: 'percent', maximumFractionDigits: share < 0.1 ? 1 : 0,
+  }).format(share);
+}
+
 /* 一个单元格 → { text, numeric, empty }。 */
 export function formatCell(value, options = {}) {
   if (value === null || value === undefined) return { text: '—', numeric: false, empty: true };
