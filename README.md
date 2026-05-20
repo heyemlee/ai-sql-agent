@@ -167,6 +167,7 @@ CI is configured for unit tests, pgvector integration, a pinned A2A contract, de
 | `GET /whoami` | The identity this request resolves to (same resolution as `/query`) and what the service supports |
 | `GET /catalog` | Data catalog the caller may see: domains, tables, fields, units, business terms |
 | `POST /catalog/{database}/{table}/rows` | Read-only, paginated preview with search / filter / sort; no SQL accepted |
+| `POST /catalog/{database}/{table}/profile` | Aggregates only, never rows: record count, how many values each field has, value breakdowns, records per month; same filters as the preview |
 | `POST /memory/save` | Save personal long-term memory |
 | `POST /feedback` · `GET /feedback/stats` | Answer feedback and administrator statistics |
 | `GET /health` · `GET /readyz` | Liveness and readiness |
@@ -175,7 +176,7 @@ CI is configured for unit tests, pgvector integration, a pinned A2A contract, de
 
 `POST /query` includes `answer`, `has_risk`, `degraded`, `trace_id`, and per-step execution information.
 
-The catalog endpoints reuse the caller identity and table/column policy of `/query`. A preview is built server-side from an allowlist of real, visible columns, binds every value as a parameter, and runs through the same read-only executor and authorization gate as generated SQL. What it fetches is bounded in the database, not afterwards: long text is cut at 2,000 characters and binary fields return only their size.
+The catalog endpoints reuse the caller identity and table/column policy of `/query`. A preview is built server-side from an allowlist of real, visible columns, binds every value as a parameter, and runs through the same read-only executor and authorization gate as generated SQL. What it fetches is bounded in the database, not afterwards: long text is cut at 2,000 characters and binary fields return only their size. The profile behind the Data page's charts follows the same rules and returns aggregates only; a field's breakdown ignores that field's own filter, so a chosen value can be swapped for another.
 
 </details>
 

@@ -47,6 +47,22 @@ from .preview import (
     supported_identifier,
     value_kind,
 )
+from .profile import (
+    MAX_FACET_VALUE_CHARS,
+    MAX_FACET_VALUES,
+    MAX_TIMELINE_BUCKETS,
+    StatsLayout,
+    build_facet_statement,
+    build_stats_statement,
+    build_timeline_statement,
+    declared_values,
+    facet_columns,
+    has_own_filters,
+    order_facet_values,
+    split_timeline,
+    sum_columns,
+    timeline_columns,
+)
 
 _logger = get_logger("catalog")
 
@@ -79,6 +95,12 @@ _SUMMARY_FAILURE_TTL_SECONDS = 60.0
 """数不出来（通常是超时）时多久之内不再试。每试一次就是一条跑满超时的全表扫描。"""
 
 _MAX_SUMMARY_ENTRIES = 512
+
+_PROFILE_BUDGET_FACTOR = 2.0
+"""
+一次概况总共最多花「单条查询超时」的几倍时间。预算用完之后还没轮到的分组直接跳过
+（`skipped` 里记 `budget`）：一张慢表不该让一个请求把连接占上半分钟。
+"""
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -120,6 +142,26 @@ class _Structure:
 
     expires_at: float = 0.0
     loaded_at: float = 0.0
+
+
+@dataclass
+class _Readable:
+    """一张表里这个人读得到、也写得进 SQL 的那一部分（见 `DataCatalog._readable`）。"""
+
+    executor: Any
+    dialect: str
+    actual: List[ColumnSchema]
+    allowed: List[ColumnSchema]
+    """有权限看的列。"""
+
+    shown: List[ColumnSchema]
+    """有权限看、名字也写得进预览 SQL 的列。"""
+
+    columns: List[PreviewColumn]
+    """`shown` 换成拼 SQL 用的样子。"""
+
+    meta: Any
+    """语义层里这张表的那一段；没登记时为 None。"""
 
 
 def _allows_table(access: Any, database: str, table: str, dialect: str = "") -> bool:
@@ -221,8 +263,65 @@ def _preview_cell(value: Any, column: PreviewColumn) -> Tuple[Any, bool]:
     return _cell(value), False
 
 
+def _column_stats(row: Dict[str, Any], layout: StatsLayout) -> List[Dict[str, Any]]:
+    """统计语句的那一行 → 每个字段一条：填了多少、最小最大、合计。"""
+    stats: List[Dict[str, Any]] = []
+    for index, name in enumerate(layout.columns):
+        try:
+            filled = int(row.get(f"f_{index}") or 0)
+        except (TypeError, ValueError):
+            filled = 0
+        entry: Dict[str, Any] = {"name": name, "filled": filled}
+        if filled and name in layout.ranged:
+            lowest, highest = row.get(f"lo_{index}"), row.get(f"hi_{index}")
+            if lowest is not None and highest is not None:
+                entry["min"], entry["max"] = _cell(lowest), _cell(highest)
+        if filled and name in layout.summed and row.get(f"sum_{index}") is not None:
+            entry["sum"] = _cell(row.get(f"sum_{index}"))
+        stats.append(entry)
+    return stats
+
+
+def _facet(name: str, result: Any, declared: Sequence[str], own: bool) -> Dict[str, Any]:
+    """分组语句的结果 → 一个字段的取值分布。"""
+    values: List[Dict[str, Any]] = []
+    distinct: Optional[int] = None
+    for row in result.rows[:MAX_FACET_VALUES]:
+        value = _cell(row.get("v"))
+        try:
+            count = int(row.get("n") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        item: Dict[str, Any] = {"value": value, "count": count}
+        if isinstance(value, str) and len(value) > MAX_FACET_VALUE_CHARS:
+            # 截过的取值只能看，不能拿去做「等于」筛选——它已经不是库里的那个值了
+            item["value"] = value[:MAX_FACET_VALUE_CHARS] + "…"
+            item["truncated"] = True
+        values.append(item)
+        if distinct is None:
+            try:
+                distinct = int(row.get("k"))
+            except (TypeError, ValueError):
+                distinct = None
+    # 不同取值的总数来自窗口函数；万一没拿到，就按「取回的行有没有被截」判断
+    complete = (
+        distinct <= len(values)
+        if distinct is not None
+        else not result.truncated and len(result.rows) <= MAX_FACET_VALUES
+    )
+    ordered, order = order_facet_values(values, declared, complete)
+    return {
+        "column": name,
+        "values": ordered,
+        "distinct": distinct if distinct is not None else (len(values) if complete else None),
+        "complete": complete,
+        "ordered_by": order,
+        "own_filters_excluded": own,
+    }
+
+
 class DataCatalog:
-    """数据目录与只读预览。一个进程一个实例，挂在 `app.state.catalog`。"""
+    """数据目录、只读预览与表概况。一个进程一个实例，挂在 `app.state.catalog`。"""
 
     def __init__(self, *, semantic: Any, databases: Sequence[Any], router: Any, clock=time.monotonic):
         self.semantic = semantic
@@ -234,6 +333,8 @@ class DataCatalog:
         # 每个库一把锁：同一时刻只让一个请求去读它的表结构，其余的等这一次的结果
         self._load_locks: Dict[str, threading.Lock] = {}
         self._summaries: Dict[Any, Tuple[float, Optional[int], List[Dict[str, Any]]]] = {}
+        # 概况的短缓存：值是整份结果，或者统计语句失败时的那个错误
+        self._profiles: Dict[Any, Tuple[float, Any]] = {}
         self._links = self._index_cross_database_links()
 
     @classmethod
@@ -605,23 +706,13 @@ class DataCatalog:
     # 预览
     # ------------------------------------------------------------------
 
-    def preview(
-        self,
-        access: Any,
-        *,
-        database: str,
-        table: str,
-        query: PreviewQuery,
-        caller: str = "",
-        user_id: str = "",
-    ) -> Dict[str, Any]:
+    def _readable(self, access: Any, database: str, table: str) -> _Readable:
         """
-        读一页真实数据。
+        预览与概况的共同入口：这张表在不在、这个人看不看得到、哪些列写得进 SQL。
 
-        SQL 由 `preview` 模块按清单拼出来，执行交给问答用的同一个路由与执行器：
-        授权关卡、只读校验、行数上限、超时都是那边的，这里只把上限再收紧一档。
+        两处用的是同一份判定。概况要是自己再判一遍，迟早和预览判得不一样——
+        那时候页面上的分布图里就会出现一个表格里看不到的字段。
         """
-        settings = get_settings()
         config = self._database(database)
         if config is None:
             raise _not_found()
@@ -675,6 +766,38 @@ class DataCatalog:
             )
             for column in shown
         ]
+        return _Readable(
+            executor=executor,
+            dialect=dialect,
+            actual=actual,
+            allowed=allowed,
+            shown=shown,
+            columns=columns,
+            meta=documented.get(table),
+        )
+
+    def preview(
+        self,
+        access: Any,
+        *,
+        database: str,
+        table: str,
+        query: PreviewQuery,
+        caller: str = "",
+        user_id: str = "",
+    ) -> Dict[str, Any]:
+        """
+        读一页真实数据。
+
+        SQL 由 `preview` 模块按清单拼出来，执行交给问答用的同一个路由与执行器：
+        授权关卡、只读校验、行数上限、超时都是那边的，这里只把上限再收紧一档。
+        """
+        settings = get_settings()
+        target = self._readable(access, database, table)
+        executor, dialect = target.executor, target.dialect
+        actual, allowed, shown, columns = (
+            target.actual, target.allowed, target.shown, target.columns
+        )
 
         page_size = max(1, min(int(query.page_size), settings.catalog_preview_max_page_size))
         # 执行器自己的行数上限是硬顶，请求只能把它调小（`MCPExecutionRequest.row_cap`）。
@@ -801,6 +924,209 @@ class DataCatalog:
             "trace_id": get_trace_id(),
         }
 
+    # ------------------------------------------------------------------
+    # 概况
+    # ------------------------------------------------------------------
+
+    def profile(
+        self,
+        access: Any,
+        *,
+        database: str,
+        table: str,
+        query: PreviewQuery,
+        breakdowns: bool = True,
+        caller: str = "",
+        user_id: str = "",
+    ) -> Dict[str, Any]:
+        """
+        一张表的概况：行数、各字段填了多少、取值分布、按月的记录数。
+
+        只做聚合，不返回任何一行记录。能统计的字段就是预览里看得到的那些
+        （`_readable`），筛选条件与预览同义，执行走同一个执行器——所以这里不会
+        数出一个预览里翻不到的东西。`breakdowns=False` 时只跑一条统计语句（目录页
+        要的只是每张表的行数），不逐字段分组。
+
+        结果带短缓存：同一个人在同一组条件下反复看同一张表，不每次都重扫。
+        统计语句本身失败（超时、被拒）按预览同样的错误码报出来；某一个字段的分布
+        算不出来只记在 `skipped` 里，其余照常返回。
+        """
+        settings = get_settings()
+        target = self._readable(access, database, table)
+        dialect, columns = target.dialect, target.columns
+
+        column_meta = target.meta.get("columns") if isinstance(target.meta, dict) else None
+        column_meta = column_meta if isinstance(column_meta, dict) else {}
+        described = {
+            name: item for name, item in column_meta.items() if isinstance(item, dict) and item
+        }
+        roles = {name: str(item.get("semantic_role") or "") for name, item in described.items()}
+        declared = {name: declared_values(item.get("value_range")) for name, item in described.items()}
+
+        try:
+            stats_statement, layout = build_stats_statement(
+                table, columns, query, dialect, summed=sum_columns(columns, roles)
+            )
+            facet_plan = [
+                (column, build_facet_statement(table, column, columns, query, dialect))
+                for column in facet_columns(columns, roles, declared, frozenset(described), dialect)
+            ] if breakdowns else []
+            timeline_plan = [
+                (column, build_timeline_statement(table, column, columns, query, dialect))
+                for column in timeline_columns(columns)
+            ] if breakdowns else []
+        except PreviewInputError as exc:
+            raise CatalogError(exc.code, exc.message) from exc
+
+        # 行级权限按用户生效：不同的人数出来的可以不一样，缓存不能互相借用
+        key = (
+            database, table, caller, user_id,
+            tuple(column.name for column in columns),
+            stats_statement.sql, stats_statement.params, bool(breakdowns),
+        )
+        now = self._clock()
+        with self._lock:
+            cached = self._profiles.get(key)
+        if cached is not None and cached[0] > now:
+            if isinstance(cached[1], CatalogError):
+                raise CatalogError(cached[1].code, cached[1].message, cached[1].status)
+            return {**cached[1], "trace_id": get_trace_id()}
+
+        started = time.perf_counter()
+        timeout = settings.catalog_preview_timeout_seconds
+        # 整个概况的时间预算：一条统计加上最多八条分组，每条都跑满超时的话要等四十多秒
+        deadline = now + timeout * _PROFILE_BUDGET_FACTOR
+        statements = [stats_statement.sql]
+        facets: List[Dict[str, Any]] = []
+        timelines: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, str]] = []
+
+        with authorization_scope(
+            access, caller=caller, user_id=user_id, trace_id=get_trace_id()
+        ):
+            stats = self.router.execute(
+                MCPExecutionRequest(
+                    database=database,
+                    sql=stats_statement.sql,
+                    params=stats_statement.params,
+                    max_rows=1,
+                    timeout_seconds=timeout,
+                )
+            )
+            if not stats.success or not stats.rows:
+                error = self._execution_error(
+                    database, table, stats.error or "", event="catalog.profile_failed"
+                )
+                # 统计都数不出来，分组更数不出来。一段时间内不再试：每试一次就是一遍全表扫描
+                self._remember_profile(key, error, _SUMMARY_FAILURE_TTL_SECONDS)
+                raise error
+
+            for part, plan, cap in (
+                ("values", facet_plan, MAX_FACET_VALUES + 1),
+                ("timeline", timeline_plan, MAX_TIMELINE_BUCKETS + 1),
+            ):
+                for column, statement in plan:
+                    if self._clock() >= deadline:
+                        skipped.append({"column": column.name, "part": part, "reason": "budget"})
+                        continue
+                    result = self.router.execute(
+                        MCPExecutionRequest(
+                            database=database,
+                            sql=statement.sql,
+                            params=statement.params,
+                            max_rows=cap,
+                            timeout_seconds=timeout,
+                        )
+                    )
+                    if not result.success:
+                        reason = "timeout" if "超时" in (result.error or "") else "failed"
+                        skipped.append({"column": column.name, "part": part, "reason": reason})
+                        log_event(
+                            _logger,
+                            logging.WARNING,
+                            "catalog.profile_part_failed",
+                            database=database,
+                            table=table,
+                            column=column.name,
+                            part=part,
+                            error=result.error or "",
+                        )
+                        continue
+                    statements.append(statement.sql)
+                    own = has_own_filters(query, column.name)
+                    if part == "values":
+                        facets.append(
+                            _facet(column.name, result, declared.get(column.name, ()), own)
+                        )
+                    else:
+                        buckets, unparsed = split_timeline(result.rows[:MAX_TIMELINE_BUCKETS])
+                        timelines.append({
+                            "column": column.name,
+                            "grain": "month",
+                            "buckets": buckets,
+                            "unparsed": unparsed,
+                            "truncated": bool(result.truncated)
+                            or len(result.rows) > MAX_TIMELINE_BUCKETS,
+                            "own_filters_excluded": own,
+                        })
+
+        row = stats.rows[0]
+        try:
+            total_rows: Optional[int] = int(row.get("total_rows"))
+        except (TypeError, ValueError):
+            total_rows = None
+        payload = {
+            "database": database,
+            "table": table,
+            "filtered": bool((query.search or "").strip() or query.filters),
+            "total_rows": total_rows,
+            "columns": _column_stats(row, layout),
+            "columns_limited": layout.limited,
+            # 有字段因为权限没给。只说「有」，不说是哪些、有几个
+            "columns_hidden": len(target.allowed) < len(target.actual),
+            "breakdowns": bool(breakdowns),
+            "facets": facets,
+            "timelines": timelines,
+            "skipped": skipped,
+            "as_of": stats.as_of or None,
+            "as_of_source": stats.as_of_source or None,
+            "dialect": dialect,
+            "sql": statements,
+        }
+        self._remember_profile(
+            key,
+            payload,
+            # 有分组没算出来（多半是超时）：留久一点，免得每次打开都把超时再跑一遍
+            _SUMMARY_FAILURE_TTL_SECONDS if skipped else _SUMMARY_TTL_SECONDS,
+        )
+
+        log_event(
+            _logger,
+            logging.INFO,
+            "catalog.profile",
+            caller=caller,
+            user_id=user_id,
+            database=database,
+            table=table,
+            total_rows=total_rows,
+            facets=len(facets),
+            timelines=len(timelines),
+            skipped=len(skipped),
+            filters=len(query.filters),
+            searched=bool((query.search or "").strip()),
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+        )
+        return {**payload, "trace_id": get_trace_id()}
+
+    def _remember_profile(self, key: Any, value: Any, ttl: float) -> None:
+        now = self._clock()
+        with self._lock:
+            if len(self._profiles) >= _MAX_SUMMARY_ENTRIES:
+                expired = [item for item, entry in self._profiles.items() if entry[0] <= now]
+                for item in expired or list(self._profiles)[: _MAX_SUMMARY_ENTRIES // 2]:
+                    self._profiles.pop(item, None)
+            self._profiles[key] = (now + ttl, value)
+
     def _summary(
         self,
         *,
@@ -868,7 +1194,9 @@ class DataCatalog:
             self._summaries[key] = (self._clock() + ttl, total_rows, list(date_ranges))
         return total_rows, date_ranges
 
-    def _execution_error(self, database: str, table: str, error: str) -> CatalogError:
+    def _execution_error(
+        self, database: str, table: str, error: str, *, event: str = "catalog.preview_failed"
+    ) -> CatalogError:
         """
         执行器的失败原因 → 给页面的错误。原始报错只进日志：
         驱动的报错里可能带着主机名、账号，不该原样送到浏览器。
@@ -876,7 +1204,7 @@ class DataCatalog:
         log_event(
             _logger,
             logging.WARNING,
-            "catalog.preview_failed",
+            event,
             database=database,
             table=table,
             error=error,

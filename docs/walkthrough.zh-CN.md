@@ -1302,6 +1302,7 @@ class TokenBucketLimiter:
 | `GET /whoami` | 本次请求解析出的身份与服务能力(页面发问前靠它知道 user_id) | API Key |
 | `GET /catalog` | 数据目录:当前身份可见的数据域、表、字段 | API Key |
 | `POST /catalog/{库}/{表}/rows` | 只读分页预览(搜索/筛选/排序,不接受 SQL) | API Key |
+| `POST /catalog/{库}/{表}/profile` | 表概况(只有聚合:行数、填充数、取值分布、按月的记录数) | API Key |
 | `POST /query` | 自然语言查询入口 | API Key |
 | `GET /history` | 查询历史(默认只看自己的) | API Key |
 | `POST /memory/save` | 保存结果到个人长期记忆 | API Key |

@@ -1,14 +1,14 @@
 """
-数据浏览接口：目录（有哪些业务数据）+ 只读分页预览。
+数据浏览接口：目录（有哪些业务数据）+ 只读分页预览 + 表概况（只聚合的统计）。
 
 与 `/query` 用**同一套身份解析**（API Key + 可选的 user_id，交集策略照旧）。
-这组接口没有任何一个参数能携带 SQL：预览请求体里只有页码、搜索词、列名与
+这组接口没有任何一个参数能携带 SQL：预览与概况的请求体里只有页码、搜索词、列名与
 筛选值，列名要过服务端清单，值走绑定参数——见 `ai_sql_agent.catalog`。
 
 限流单独计数（`catalog_rate_limit_per_minute`，且不超过这把 Key 自己的限速），
 不写审计表：审计表同时是 `/history`、每日配额与降级重放的数据源，把「翻了一页表」
 记进去，会让用户的提问历史里混进不是提问的东西，还会吃掉他当天的提问额度。
-访问痕迹记在结构化日志里（`catalog.preview`，带调用方、表名与 trace_id）。
+访问痕迹记在结构化日志里（`catalog.preview` / `catalog.profile`，带调用方、表名与 trace_id）。
 
 `/whoami` 不属于数据浏览：它只回答「这次请求是谁、这台服务支持什么」，
 关掉数据浏览、或者浏览被限流时照样可用——页面发问之前必须知道自己是谁。
@@ -32,6 +32,7 @@ from ai_sql_agent.catalog.preview import (
     MAX_VALUE_LENGTH,
     OPERATORS,
 )
+from ai_sql_agent.catalog.profile import MAX_FACET_VALUES, MAX_FACETS, MAX_TIMELINES
 from ai_sql_agent.core import get_logger, get_settings, log_event
 from ai_sql_agent.core.metrics import LIMIT_REJECTIONS
 from ai_sql_agent.execution.data_time import now_rfc3339
@@ -76,6 +77,25 @@ class PreviewRequest(BaseModel):
     search: str = Field(default="", max_length=MAX_SEARCH_LENGTH)
     filters: List[PreviewFilterModel] = Field(default_factory=list, max_length=MAX_FILTERS)
     sort: Optional[PreviewSortModel] = None
+
+
+class ProfileRequest(BaseModel):
+    """
+    一张表的概况。和预览一样只收「看哪些行」：搜索词与筛选条件，同义、同上限。
+    没有页码和排序——聚合结果与它们无关。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = ""
+    search: str = Field(default="", max_length=MAX_SEARCH_LENGTH)
+    filters: List[PreviewFilterModel] = Field(default_factory=list, max_length=MAX_FILTERS)
+
+    breakdowns: bool = True
+    """
+    要不要逐字段的取值分布与时间轴。目录页只要每张表的行数时传 false：
+    那样只跑一条统计语句，不为每个字段各扫一遍表。
+    """
 
 
 def _principal(request: Request, api_key: Optional[ApiKeyRecord], user_id: str) -> Principal:
@@ -151,6 +171,13 @@ def _service() -> Dict[str, Any]:
             "max_cell_chars": MAX_CELL_CHARS,
             "max_search_columns": MAX_SEARCH_COLUMNS,
             "operators": list(OPERATORS),
+        },
+        # 页面据此决定画不画统计。没有这一项的是不带概况接口的旧版本进程
+        "profile": {
+            "enabled": settings.catalog_profile_enabled,
+            "max_facets": MAX_FACETS,
+            "max_facet_values": MAX_FACET_VALUES,
+            "max_timelines": MAX_TIMELINES,
         },
     }
 
@@ -263,6 +290,51 @@ def catalog_rows(
             database=database,
             table=table,
             query=query,
+            caller=principal.caller,
+            user_id=principal.user_id,
+        )
+    except CatalogError as error:
+        raise _http_error(error) from error
+
+
+@router.post("/catalog/{database}/{table}/profile")
+def catalog_profile(
+    database: str,
+    table: str,
+    body: ProfileRequest,
+    request: Request,
+    api_key: Optional[ApiKeyRecord] = Depends(require_api_key),
+) -> Dict[str, Any]:
+    """
+    一张表的概况：总行数、各字段填了多少、取值分布、按月的记录数。
+
+    **只有聚合结果，没有任何一行记录。** 能统计的字段就是预览里看得到的那些，
+    筛选条件与预览同义，走同一个执行器（授权关卡、只读校验、超时照旧）。
+    一个字段的分布不受它自己的筛选条件影响（`own_filters_excluded`），
+    所以页面上点了一个取值之后还能换成另一个。算不出来的分布记在 `skipped` 里。
+    """
+    principal = _principal(request, api_key, body.user_id)
+    _admit(request, principal)
+    if not get_settings().catalog_profile_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "profile_disabled", "message": "表概况未启用。"},
+        )
+
+    query = PreviewQuery(
+        search=body.search,
+        filters=[
+            PreviewFilter(column=item.column, op=item.op, value=item.value)
+            for item in body.filters
+        ],
+    )
+    try:
+        return request.app.state.catalog.profile(
+            principal.policy,
+            database=database,
+            table=table,
+            query=query,
+            breakdowns=body.breakdowns,
             caller=principal.caller,
             user_id=principal.user_id,
         )

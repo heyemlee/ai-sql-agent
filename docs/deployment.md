@@ -266,6 +266,16 @@ What the preview does and does not do:
   the full value.
 - Business terms are filtered like tables: a definition that names a field the caller
   cannot see is withheld.
+- The charts on the Data page come from `POST /catalog/{database}/{table}/profile`:
+  record count, how many values each field has, value breakdowns and records per month.
+  It returns aggregates only, covers exactly the columns the preview shows, takes the
+  same search and filters, and shares the browsing rate bucket. A field's breakdown
+  ignores that field's own filter, so a chosen value can be swapped for another. Each
+  aggregate is a full scan bounded by `AI_SQL_CATALOG_PREVIEW_TIMEOUT_SECONDS`, and one
+  request stops starting new scans after twice that; breakdowns that did not finish are
+  reported as skipped rather than shown as empty. Results are cached for 15 seconds per
+  caller and user. `AI_SQL_CATALOG_PROFILE_ENABLED=false` turns the statistics off and
+  leaves the catalog and the preview as they are.
 - Table or field names that the read-only safety check rejects (it scans the whole
   statement for write keywords, quoted identifiers included — `update`, `Last Update`,
   `set`) are listed in the catalog but marked as not previewable. Questions that touch

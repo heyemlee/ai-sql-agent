@@ -352,6 +352,15 @@ class SqlAgentSettings(BaseSettings):
     catalog_structure_ttl_seconds: float = 30.0
     """表结构的缓存时长。每次打开目录都去读一遍系统表没有必要。"""
 
+    catalog_profile_enabled: bool = True
+    """
+    表概况（行数、各字段的取值分布、按月的记录数）开不开。页面的分布图和时间轴靠它。
+
+    概况只做聚合、不返回记录，权限与预览同一份；但每一项都是一遍全表扫描，
+    几千万行的表上会一条条跑到超时（`catalog_preview_timeout_seconds`）。
+    那样的部署可以只关它：目录和预览照常，页面不再显示统计。
+    """
+
     # ---- A2A 流式资源 ----
     a2a_stream_max_concurrent: int = 8
     """
