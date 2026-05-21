@@ -114,6 +114,14 @@ const ICONS = {
   chevronDown: '<path d="m6 9 6 6 6-6"/>',
   open: '<path d="M14 5h5v5M19 5l-8 8M11 6H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-4"/>',
   home: '<path d="M4 11.5 12 5l8 6.5M6.5 10v9h11v-9"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  reply: '<path d="M9 7 4 12l5 5M4 12h10a6 6 0 0 1 6 6v1"/>',
+  arrowUpRight: '<path d="M8 16 16 8M9 8h7v7"/>',
+  thumbUp: '<path d="M7 11v9H4.5a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1zm0 0 4-7.5a2 2 0 0 1 2.6 2.3L13 9h5.2a2 2 0 0 1 2 2.4l-1.3 7a2 2 0 0 1-2 1.6H7"/>',
+  thumbDown: '<path d="M7 13V4H4.5a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1zm0 0 4 7.5a2 2 0 0 0 2.6-2.3L13 15h5.2a2 2 0 0 0 2-2.4l-1.3-7a2 2 0 0 0-2-1.6H7"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.7 2.2c-.8.5-1.3 1-1.3 1.9M12 16.6v.2"/>',
+  hash: '<path d="M9.5 4 7.5 20M16.5 4l-2 16M4.5 9h16M3.5 15h16"/>',
 };
 
 export function icon(name, extraClass = '') {

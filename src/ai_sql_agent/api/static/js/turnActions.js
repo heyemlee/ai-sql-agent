@@ -12,6 +12,7 @@ import { save, state } from './state.js';
 export const newTurnUi = () => ({
   open: {},
   tables: {},
+  views: {},          // 每一步结果正在用哪种看法（数字 / 图表 / 表格）；没选过就用默认的
   feedback: { open: false, comment: '', sending: false, error: '' },
 });
 
@@ -72,6 +73,10 @@ export function bindTurnActions(root, { turnOf, redraw }) {
     }),
     'page-table': withTurn((turn, target) => {
       tableUi(turn, target.dataset.scope).page = Number(target.dataset.page) || 1;
+      redraw(turn);
+    }),
+    'step-view': withTurn((turn, target) => {
+      turn.ui.views[target.dataset.step] = target.dataset.which;
       redraw(turn);
     }),
 

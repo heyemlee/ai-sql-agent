@@ -252,6 +252,17 @@ and then to the technical name spelled out; databases named after a common syste
 (`erp_db`, `pm_db`, `mes_db`, `wms_db`) get a default business title. A description that
 exists only in another language is shown as written rather than translated.
 
+The suggested questions on the Ask page are assembled from this catalog too; the page
+carries no question of its own. A `filter` or `dimension` column whose `value_range`
+declares its values as a list (`open / shipped / closed`) gives "count by" and "list
+where" questions, a numeric `metric` gives "top 10" and "average by", and a `time` column
+gives "per month" — each worded with the table and column labels above. Totals are never
+suggested: the dictionary does not say whether a metric can be added up, and a rate or a
+unit price cannot. Tables whose columns have no roles get no suggestions, and a database
+that cannot be read is left out. A suggestion is only text placed in the question box for
+the person to edit and send. With the catalog turned off there are no suggestions; asking
+still works.
+
 Limits for the read-only preview are `AI_SQL_CATALOG_*` (see `.env.example`);
 `AI_SQL_CATALOG_ENABLED=false` turns the Data page off without affecting questions —
 the console takes the caller's identity from `GET /whoami`, which stays available.

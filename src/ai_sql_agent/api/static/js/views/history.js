@@ -15,20 +15,10 @@ import { has, t } from '../i18n.js';
 import { historyStatus } from '../model.js';
 import { renderResult } from '../result.js';
 import { on, resultCache, state } from '../state.js';
-import { notice, sourceLabel } from '../steps.js';
+import { historyTone, notice, sourceLabel } from '../steps.js';
 import { bindTurnActions, newTurnUi } from '../turnActions.js';
 import { rerun } from './ask.js';
 
-const STATUS_TONE = {
-  success: ['chip-ok', 'check'],
-  completed: ['', 'check'],
-  no_data: ['chip-info', 'empty'],
-  review: ['chip-warn', 'warn'],
-  partial: ['chip-warn', 'warn'],
-  degraded: ['chip-warn', 'info'],
-  failed: ['chip-danger', 'error'],
-  conversation: ['', 'ask'],
-};
 const FILTERS = ['all', 'success', 'no_data', 'review', 'failed', 'other'];
 
 let root;
@@ -38,7 +28,7 @@ let filter = 'all';
 const cachedTurns = new Map();     // trace_id -> 回看缓存结果用的 turn（记着折叠、翻页状态）
 
 function statusChip(status) {
-  const [tone, glyph] = STATUS_TONE[status] || STATUS_TONE.completed;
+  const [tone, glyph] = historyTone(status);
   return html`<span class="chip ${tone}">${icon(glyph, 'icon-sm')}${t('hstatus.' + status)}</span>`;
 }
 

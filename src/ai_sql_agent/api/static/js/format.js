@@ -159,6 +159,21 @@ export function formatTime(iso) {
     : { dateStyle: 'medium', timeStyle: 'medium' }).format(date);
 }
 
+/* 「多久以前」。一周以内说相对时间（5 分钟前、昨天），再早就直接写日期——
+   「23 天前」还得自己倒着数，不如一个日期好认。now 可以传进来，测试时用。 */
+export function formatRelative(iso, now = Date.now()) {
+  const date = new Date(iso);
+  if (!iso || Number.isNaN(date.getTime())) return String(iso || '');
+  const seconds = Math.round((date.getTime() - now) / 1000);
+  const ago = Math.abs(seconds);
+  const relative = new Intl.RelativeTimeFormat(locale(), { numeric: 'auto' });
+  if (ago < 45) return relative.format(0, 'second');
+  if (ago < 3600) return relative.format(Math.round(seconds / 60), 'minute');
+  if (ago < 86400) return relative.format(Math.round(seconds / 3600), 'hour');
+  if (ago < 7 * 86400) return relative.format(Math.round(seconds / 86400), 'day');
+  return new Intl.DateTimeFormat(locale(), { dateStyle: 'medium' }).format(date);
+}
+
 export function formatDuration(ms) {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;

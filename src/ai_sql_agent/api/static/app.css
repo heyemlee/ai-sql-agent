@@ -239,50 +239,216 @@ details.disclosure > .disclosure-body > * + * { margin-top: 14px; }
 .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); }
 
 /* ─── ask ──────────────────────────────────────────────────────── */
-.ask-home { padding-top: clamp(24px, 8vh, 88px); }
-.ask-home h1 { font-size: clamp(26px, 3.4vw, 36px); font-weight: 650; letter-spacing: -0.8px; line-height: 1.2; }
-.ask-home .lead { margin-top: 10px; color: var(--muted); font-size: 16px; }
-.composer { display: flex; align-items: flex-end; gap: 8px; padding: 10px 10px 10px 16px; border: 1px solid var(--border-strong); border-radius: 16px; background: var(--bg); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04); }
-.composer:focus-within { border-color: var(--fg); box-shadow: var(--focus); }
-.composer textarea { flex: 1; min-height: 28px; max-height: 180px; padding: 6px 0; border: 0; outline: none; resize: none; background: transparent; font-size: 16px; line-height: 1.5; }
-.send-btn { display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 50%; background: var(--accent); color: var(--on-accent); flex: none; }
-.send-btn:disabled { background: #e6e6e6; color: #9a9a9a; opacity: 1; }
-.composer-hint { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
-.examples { display: grid; gap: 8px; }
-.example { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; align-items: baseline; width: 100%; padding: 11px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); text-align: left; }
-.example:hover { background: var(--surface-2); border-color: var(--border-strong); }
-.example .topic { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+/* 提问页自己用的几个量（阅读栏宽、问题气泡的底色、两档浮起的阴影）。 */
+:root {
+  --ask-max: 840px;
+  --bubble: #f2f2f3;
+  --lift-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 3px 10px rgba(0, 0, 0, 0.05);
+  --lift-md: 0 1px 3px rgba(0, 0, 0, 0.04), 0 10px 32px rgba(0, 0, 0, 0.08);
+}
+#view-ask { overflow-x: clip; }
 
+/* 小按钮：答案下面的操作、面板头上的工具、首页各段右上角的入口。没有边框，悬停才有底色。 */
+.act { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--fg-2); font-size: 13px; font-weight: 500; text-decoration: none; white-space: nowrap; }
+.act:hover:not(:disabled) { background: var(--surface); color: var(--fg); }
+.icon-btn-sm { width: 28px; height: 28px; }
+
+/* 首页 */
+.ask-home { position: relative; isolation: isolate; max-width: 760px; margin: 0 auto; padding: clamp(28px, 9vh, 92px) 24px 72px; }
+/* 上方一片很淡的点阵，向下、向两边淡出。纯装饰，不承载信息。 */
+.ask-home::before {
+  content: ""; position: absolute; z-index: -1; inset: 0 -170px auto; height: 430px; pointer-events: none;
+  background-image: radial-gradient(circle at 1px 1px, rgba(23, 23, 23, 0.14) 1px, transparent 0);
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(58% 78% at 50% 0%, #000 0%, transparent 100%);
+  mask-image: radial-gradient(58% 78% at 50% 0%, #000 0%, transparent 100%);
+}
+.ask-hero { text-align: center; }
+.ask-mark { display: inline-grid; place-items: center; width: 46px; height: 46px; margin-bottom: 18px; border-radius: 14px; background: var(--accent); color: var(--on-accent); box-shadow: 0 6px 18px rgba(23, 23, 23, 0.22); }
+.ask-mark .icon { width: 24px; height: 24px; }
+.ask-hero h1 { font-size: clamp(27px, 3.4vw, 36px); font-weight: 680; letter-spacing: -0.9px; line-height: 1.18; }
+.ask-hero .lead { margin-top: 12px; color: var(--muted); font-size: 16px; text-wrap: balance; }
+.ask-home .composer { margin-top: 30px; }
+
+/* 输入框：上面是字，下面一条工具栏（左边是说明或「新对话」，右边是发送）。 */
+.composer { display: flex; flex-direction: column; gap: 6px; padding: 14px 12px 10px 18px; border: 1px solid var(--border-strong); border-radius: 20px; background: var(--bg); box-shadow: var(--lift-md); transition: border-color 0.15s, box-shadow 0.15s; }
+.composer:focus-within { border-color: #8f8f8f; box-shadow: 0 0 0 4px rgba(23, 23, 23, 0.07), var(--lift-md); }
+.composer textarea { display: block; width: 100%; min-height: 27px; max-height: 180px; padding: 0; border: 0; outline: none; resize: none; background: transparent; font-size: 16.5px; line-height: 1.6; }
+.composer textarea::placeholder { color: #767676; }
+.ask-home .composer textarea { min-height: 54px; }
+.composer-bar { display: flex; align-items: center; gap: 12px; min-height: 36px; }
+.composer-bar > :first-child { margin-right: auto; }
+.composer-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.composer-keys { color: #767676; font-size: 12px; white-space: nowrap; }
+.composer-send { display: inline-flex; }
+.send-btn { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border: 0; border-radius: 50%; background: var(--accent); color: var(--on-accent); transition: background 0.15s, transform 0.1s; }
+.send-btn:hover:not(:disabled) { background: var(--accent-hover); }
+.send-btn:active:not(:disabled) { transform: scale(0.94); }
+.send-btn:disabled { background: #e9e9e9; color: #a3a3a3; opacity: 1; }
+.composer-caution { margin-top: 10px; color: var(--muted); font-size: 12px; text-align: center; }
+
+.ask-offline { margin-top: 16px; }
+/* 能问的业务域：一排可以点的标签，点一个只看它的问法。 */
+.scope-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.scope-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 2px 10px 2px 4px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--fg-2); font-size: 12.5px; white-space: nowrap; transition: border-color 0.15s, background 0.15s, color 0.15s; }
+.scope-chip.is-all { padding: 2px 12px; }
+.scope-chip:hover { border-color: var(--border-strong); background: var(--surface-2); color: var(--fg); }
+.scope-chip[aria-pressed="true"] { border-color: var(--fg); background: var(--fg); color: var(--bg); }
+.scope-chip.is-ghost { width: 132px; }
+.scope-chip.is-ghost, .suggest.is-ghost, .skeleton i { border-color: transparent; background: linear-gradient(90deg, #f3f3f3 25%, #fafafa 37%, #f3f3f3 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; }
+
+.ask-section { margin-top: 36px; }
+/* 屏幕够宽时，输入框下面的几段比输入框略宽一些：四五个业务域的标签能排在一行里 */
+@media (min-width: 900px) {
+  .ask-section { margin-inline: -44px; }
+}
+.ask-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; margin-bottom: 8px; }
+.ask-section-head .act { margin-right: -9px; }
+.ask-section-title { color: var(--muted); font-size: 13px; font-weight: 600; }
+.ask-note { margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+.ask-empty { padding: 22px 18px; border: 1px dashed var(--border-strong); border-radius: 14px; color: var(--muted); font-size: 14px; }
+.ask-fallback { margin-top: 28px; color: var(--muted); text-align: center; }
+
+/* 建议问题：一张卡片一个问题，左上角是它出自哪个库、哪张表。 */
+.suggest-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.suggest { position: relative; display: flex; flex-direction: column; gap: 9px; min-height: 98px; padding: 13px 38px 14px 15px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); text-align: left; transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s; }
+.suggest:hover { border-color: var(--border-strong); box-shadow: var(--lift-sm); transform: translateY(-1px); }
+.suggest-src { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12.5px; }
+.suggest-text { color: var(--fg); font-size: 15px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.suggest-go { position: absolute; top: 12px; right: 12px; color: #a8a8a8; opacity: 0; transition: opacity 0.15s, transform 0.15s; }
+.suggest:hover .suggest-go, .suggest:focus-visible .suggest-go { opacity: 1; transform: translate(1px, -1px); }
+
+.recent-list { border: 1px solid var(--border); border-radius: 14px; background: var(--bg); overflow: hidden; }
+.recent-list > li + li { border-top: 1px solid var(--border); }
+.recent-item { display: grid; grid-template-columns: 18px minmax(0, 1fr) max-content; gap: 10px; align-items: center; width: 100%; min-height: 42px; padding: 8px 14px; border: 0; background: none; font-size: 14px; text-align: left; }
+.recent-item:hover { background: var(--surface-2); }
+.recent-item:focus-visible { outline-offset: -2px; }
+.recent-status { display: inline-grid; place-items: center; color: var(--muted); }
+.recent-status.tone-ok { color: var(--ok-fg); }
+.recent-status.tone-info { color: var(--info-fg); }
+.recent-status.tone-warn { color: var(--warn-fg); }
+.recent-status.tone-danger { color: var(--danger-fg); }
+.recent-q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-time { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+
+/* 对话：问题在右（气泡），答案在左（整栏宽），输入框停在底部。 */
 .conversation { display: flex; flex-direction: column; min-height: calc(100dvh - var(--topbar-h)); }
-.conversation .turns { flex: 1; padding: 20px 24px 28px; }
-.turns-inner { max-width: var(--reading-max); margin: 0 auto; }
-.turns-inner > * + * { margin-top: 36px; }
-.composer-dock { position: sticky; bottom: 0; padding: 10px 24px 16px; background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--bg) 22%); }
-.composer-dock-inner { max-width: var(--reading-max); margin: 0 auto; }
-.question { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.conversation .turns { flex: 1; padding: 26px 24px 20px; }
+.turns-inner { max-width: var(--ask-max); margin: 0 auto; }
+.turn { scroll-margin-top: calc(var(--topbar-h) + 16px); }
+.turn + .turn { margin-top: 40px; }
+/* 最新的一轮至少占满一屏：新问题发出去之后能顶到视口上方，上一轮的答案让到上面去 */
+.turn:last-child { min-height: calc(100dvh - var(--topbar-h) - 190px); }
+.turn-q { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.q-bubble { max-width: min(84%, 620px); padding: 10px 16px; border-radius: 18px 18px 5px 18px; background: var(--bubble); }
 .question-text { font-size: 18px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
-.question-meta { margin-top: 3px; font-size: 12.5px; color: var(--muted); }
-.answer { margin-top: 14px; }
-.answer > * + * { margin-top: 14px; }
+.q-bubble .question-text { font-size: 15.5px; font-weight: 500; line-height: 1.5; white-space: pre-wrap; }
+.q-meta { display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: 12px; }
+.turn-a { margin-top: 14px; }
+.turn-q.is-entering, .turn-a.is-entering { animation: rise 0.26s ease-out both; }
+.composer-dock { position: sticky; bottom: 0; z-index: 5; padding: 10px 24px 12px; background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--bg) 24%); }
+.composer-dock-inner { max-width: var(--ask-max); margin: 0 auto; }
+.composer.is-dock { padding: 11px 10px 8px 16px; border-radius: 18px; }
+.composer.is-dock textarea { font-size: 16px; }
+.composer.is-dock .act { margin-left: -8px; }
+.composer-dock .composer-caution { margin-top: 8px; }
 
-.status-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 答案。第一行是标记和状态，下面的内容缩进到和状态文字对齐。 */
+.answer-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 28px; }
+.agent-mark { display: grid; place-items: center; flex: none; width: 26px; height: 26px; border-radius: 8px; background: var(--accent); color: var(--on-accent); }
+.agent-mark .icon { width: 15px; height: 15px; }
+.agent-mark.is-busy { animation: breathe 1.5s ease-in-out infinite; }
+.status-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.answer-time { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pending-text { color: var(--fg-2); font-weight: 500; }
+.answer-body { padding: 10px 0 0 36px; }
+.answer-body > * + * { margin-top: 14px; }
 .conclusion { font-size: 17px; line-height: 1.5; overflow-wrap: anywhere; }
-.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 20px; }
-.fact .fact-label { font-size: 12.5px; color: var(--muted); }
-.fact .fact-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.fact .fact-unit { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 4px; }
-.rich-text { overflow-wrap: anywhere; }
+.conclusion .chip { margin-left: 4px; vertical-align: 2px; }
+.rich-text { max-width: 72ch; overflow-wrap: anywhere; }
 .rich-text > * + * { margin-top: 10px; }
 .rich-text code { padding: 1px 5px; border-radius: 4px; background: var(--surface); font-family: var(--mono); font-size: 0.9em; }
 .numbered { padding-left: 22px; list-style: decimal; }
 .numbered > li + li { margin-top: 8px; }
-.turn { scroll-margin-top: calc(var(--topbar-h) + 14px); }
-.result-meta { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; color: var(--muted); }
+
+/* 一步结果的面板：头上是来源和「怎么看」的开关，下面是数字、图或表。 */
+.result-panel { --hue: #8a8a8a; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); overflow: hidden; }
+.result-panel-head { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; min-height: 44px; padding: 5px 6px 5px 12px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.result-panel-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 13.5px; font-weight: 600; }
+.result-panel-count { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.result-panel-tools { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: #e9e9ea; }
+.seg button { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 2px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-2); font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.seg button:hover { color: var(--fg); }
+.seg button[aria-pressed="true"] { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14); }
+.result-panel .table-wrap { max-height: 440px; border: 0; border-radius: 0; }
+.result-panel .data-table thead th { background: var(--bg); box-shadow: inset 0 -1px 0 var(--border); }
+.result-panel .table-foot { margin: 0; padding: 8px 12px; border-top: 1px solid var(--border); }
+.result-panel details.disclosure { border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+.result-panel details.disclosure > summary { padding: 9px 12px; color: var(--fg-2); font-size: 13px; }
+
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; padding: 14px; }
+.stat-tile { padding: 12px 14px 13px; border-radius: 10px; background: var(--surface-2); }
+.stat-tile { background: color-mix(in oklab, var(--hue) 7%, white); }
+.stat-label { color: var(--fg-2); font-size: 12.5px; }
+/* 数字和单位各是一个整体：一行放不下时单位整个掉到下一行，不从中间断开 */
+.stat-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; margin-top: 3px; font-size: 26px; font-weight: 650; letter-spacing: -0.5px; line-height: 1.2; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat-value.is-text { font-size: 17px; letter-spacing: 0; line-height: 1.4; }
+.stat-value.is-empty { color: #9a9a9a; }
+.stat-unit { color: var(--muted); font-size: 13px; font-weight: 500; letter-spacing: 0; white-space: nowrap; }
+
+.answer-chart { padding: 14px 16px; }
+.chart-caption { margin-bottom: 10px; color: var(--muted); font-size: 12.5px; }
+.chart-note { margin-top: 8px; color: var(--muted); font-size: 12.5px; }
+.answer-chart .viz-list { margin-top: 0; }
+/* 每一行是自己的一个网格：名字、数字两列的宽度由脚本按最长的那个给（--name-ch / --value-ch），
+   各行的条才能从同一条竖线起头、到同一条竖线为止。名字太长时最多占四成，再长的截断（悬停看全） */
+.answer-chart .viz-list.has-bars .viz-row { grid-template-columns: minmax(0, min(calc(var(--name-ch, 12) * 1ch + 2px), 40%)) minmax(80px, 1fr) calc(var(--value-ch, 6) * 1ch + 4px); gap: 14px; width: 100%; margin: 0; padding: 5px 0; font-size: 14px; }
+.answer-chart.is-above-table { border-bottom: 1px solid var(--border); }
+.answer-chart .viz-track { height: 12px; border-radius: 4px; background: var(--surface); }
+.answer-chart .viz-track i { border-radius: 4px; }
+.answer-chart .viz-count { font-weight: 600; }
+.answer-chart .viz-cols { height: 150px; gap: 3px; }
+.answer-chart .viz-col { max-width: 44px; }
+.answer-chart .viz-col i { background: var(--hue, var(--series-1)); }
+
+.result-meta { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12.5px; color: var(--muted); }
 .result-meta strong { font-weight: 500; color: var(--fg-2); }
-.answer-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.feedback { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
-.table-title { font-size: 14px; font-weight: 600; }
-.table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.answer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--border); }
+.answer-actions { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; margin-left: -9px; }
+.feedback { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.feedback.is-sent { color: var(--fg-2); }
+.vote { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 3px 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--fg-2); font-size: 12.5px; font-weight: 500; }
+.vote.is-icon { justify-content: center; width: 34px; padding: 0; }
+.vote:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-2); color: var(--fg); }
+
+/* 查询过程的折叠：平时只是一行不起眼的字，展开才有边框。 */
+details.disclosure.is-quiet { border: 0; }
+details.disclosure.is-quiet > summary { display: inline-flex; margin-left: -9px; padding: 5px 10px 5px 9px; border-radius: 8px; color: var(--muted); font-size: 13px; }
+details.disclosure.is-quiet > summary:hover, details.disclosure.is-quiet[open] > summary { color: var(--fg); }
+details.disclosure.is-quiet > summary:hover { background: var(--surface); }
+details.disclosure.is-quiet > .disclosure-body { margin-top: 8px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; }
+
+/* 等待中：六段进度（有阶段事件时）或一条不表示进度的动效，下面几条占位。 */
+.stage-track { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+.stage { overflow: hidden; color: #767676; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.stage::before { content: ""; display: block; height: 4px; margin-bottom: 6px; border-radius: 2px; background: #e6e6e6; }
+.stage.is-done { color: var(--fg-2); }
+.stage.is-done::before { background: var(--fg); }
+.stage.is-now { color: var(--fg); font-weight: 600; }
+.stage.is-now::before { background: linear-gradient(90deg, var(--fg) 0%, var(--fg) 35%, #b9b9b9 50%, var(--fg) 65%, var(--fg) 100%); background-size: 220% 100%; animation: sweep 1.2s linear infinite; }
+.progress-indet { position: relative; height: 4px; border-radius: 2px; background: #ececec; overflow: hidden; }
+.progress-indet::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 32%; border-radius: 2px; background: var(--fg); animation: slide 1.3s ease-in-out infinite; }
+.skeleton { display: grid; gap: 10px; }
+.skeleton i { display: block; height: 12px; border-radius: 6px; }
+.skeleton i:nth-child(1) { width: 62%; }
+.skeleton i:nth-child(2) { width: 86%; }
+.skeleton i:nth-child(3) { width: 44%; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes slide { from { transform: translateX(-110%); } to { transform: translateX(330%); } }
+@keyframes sweep { from { background-position: 100% 0; } to { background-position: -120% 0; } }
+@keyframes breathe { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(0.86); opacity: 0.55; } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ─── query process & learning mode ────────────────────────────── */
 .step-card { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; }
@@ -543,6 +709,8 @@ button.viz-col.tip-end::after { right: 0; left: auto; transform: none; }
 .history-q { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 500; overflow-wrap: anywhere; }
 .history-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; font-size: 12.5px; color: var(--muted); }
 /* 详情跟着视口走；比视口还高时在自己里面滚——否则下半截要等左边整个列表滚完才看得到 */
+.detail-panel .answer-body { padding-left: 0; }
+.detail-panel .agent-mark { display: none; }
 .detail-panel { position: sticky; top: calc(var(--topbar-h) + 20px); max-height: calc(100dvh - var(--topbar-h) - 40px); overflow: auto; }
 
 /* ─── dialog, toast ────────────────────────────────────────────── */
@@ -592,9 +760,25 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.32); }
   /* 小于 16px 的输入框，iOS 一聚焦就把整页放大 */
   .input, .select, .textarea, .composer textarea { font-size: 16px; }
   .page { padding: 20px 16px 56px; }
-  .conversation .turns { padding: 16px 16px 20px; }
-  .composer-dock { padding: 8px 12px max(12px, env(safe-area-inset-bottom)); }
-  .example { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .ask-home { padding: 28px 16px 56px; }
+  .suggest-grid { grid-template-columns: minmax(0, 1fr); }
+  .suggest { min-height: 0; }
+  .composer-keys, .result-panel .act-label { display: none; }
+  .conversation .turns { padding: 18px 16px 16px; }
+  .turn:last-child { min-height: calc(100dvh - var(--topbar-h) - 44px - 190px); }
+  .q-bubble { max-width: 92%; }
+  .answer-body { padding-left: 0; }
+  /* 六段进度只留那条线：字挤不下，当前阶段在上面那句话里已经说了 */
+  .stage { font-size: 0; }
+  .stage::before { margin-bottom: 0; }
+  /* 横条图：名字单独占一行写全，条和数字在它下面——窄屏上截断了没有悬停可看 */
+  .answer-chart .viz-list.has-bars .viz-row { grid-template-columns: minmax(60px, 1fr) calc(var(--value-ch, 6) * 1ch + 4px); gap: 2px 12px; padding: 6px 0; }
+  .answer-chart .viz-list.has-bars .viz-name { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
+  .composer-dock { padding: 8px 12px max(10px, env(safe-area-inset-bottom)); }
+  /* 手指点的东西再高一点 */
+  .seg button { min-height: 32px; }
+  .vote { min-height: 34px; }
+  .vote.is-icon { width: 38px; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .kv { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
   .kv dd { margin-bottom: 8px; }
@@ -602,4 +786,8 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.32); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+  /* 一直循环的动效缩到 1ms 一圈就成了闪烁：等待态的那几样直接停掉。
+     那条来回滑的进度条停下来会像「进度到了三分之一」，所以换成一整条浅色的 */
+  .agent-mark.is-busy, .skeleton i, .scope-chip.is-ghost, .suggest.is-ghost, .stage.is-now::before, .progress-indet::after { animation: none !important; }
+  .progress-indet::after { width: 100%; background: #cfcfcf; }
 }

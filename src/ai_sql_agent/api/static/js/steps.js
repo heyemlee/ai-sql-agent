@@ -49,6 +49,20 @@ export function failureReason(error) {
   return { key: 'fail.generic', detail: '' };
 }
 
+/* 历史记录的一种状态配什么色调和图标：[标签的样式, 图标名]。
+   历史页的列表和提问页的「最近问过」共用，免得同一条记录在两处长得不一样。 */
+const HISTORY_TONES = {
+  success: ['chip-ok', 'check'],
+  completed: ['', 'check'],
+  no_data: ['chip-info', 'empty'],
+  review: ['chip-warn', 'warn'],
+  partial: ['chip-warn', 'warn'],
+  degraded: ['chip-warn', 'info'],
+  failed: ['chip-danger', 'error'],
+  conversation: ['', 'ask'],
+};
+export const historyTone = (status) => HISTORY_TONES[status] || HISTORY_TONES.completed;
+
 /* 提示块。role 一律是 note：内容区整块重绘，role="alert" 的话每重画一次，
    页面上每一条旧的失败提示都会被读屏再念一遍。新出现的结果由 announce() 播报一次。 */
 export function notice(tone, glyph, title, body) {

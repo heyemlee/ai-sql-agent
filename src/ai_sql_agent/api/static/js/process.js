@@ -36,6 +36,30 @@ const STAGE_TO_STEP = {
   execution: 'execute', repair: 'execute', validation: 'check',
 };
 
+const STEP_ORDER = ['understand', 'retrieve', 'plan', 'generate', 'execute', 'check'];
+
+/* 等结果时的六段进度：每一步现在是 done / now / todo。
+
+   只看服务端真实发来的阶段事件。最后一条事件所在的那一步是「正在做」；排在它前面的是
+   「过去了」——服务端按顺序一个阶段一个阶段地走，后面的阶段开始了，前面的就已经结束。
+   前面某一步没收到事件不代表它被跳过：进度事件在队列满的时候会被丢掉（终态不会），
+   而规划这一步服务端每次都会报（简单问题只是带一个 short_path 标记）。
+   没有阶段事件（POST /query 这条路径）就画不出这条进度，调用方不该调它。 */
+export function stageProgress(stages) {
+  const steps = (stages || []).map((stage) => STAGE_TO_STEP[stage.stage]).filter(Boolean);
+  const current = steps.length ? STEP_ORDER.indexOf(steps[steps.length - 1]) : -1;
+  return STEP_ORDER.map((id, index) => ({
+    id,
+    state: index === current ? 'now' : index < current ? 'done' : 'todo',
+  }));
+}
+
+/* 进度条本身不念给读屏：当前阶段已经由旁边那句状态文字（role="status"）说了。 */
+export function renderStageTrack(stages) {
+  return html`<ol class="stage-track" aria-hidden="true">${stageProgress(stages).map((step) => html`<li
+    class="stage is-${step.state}">${t('step.' + step.id)}</li>`)}</ol>`;
+}
+
 const routeLabel = (route) => (has('route.' + route) ? `${t('route.' + route)} (${route})` : route || '—');
 const transportLabel = (transport) => t(transport === 'a2a-stream' ? 'process.transport.stream' : 'process.transport.query');
 const offset = (stage) => (stage.offsetMs == null ? '' : `+${(stage.offsetMs / 1000).toFixed(2)}s`);
@@ -137,7 +161,7 @@ export function renderProcess(turn) {
   if (!result) return '';
   const { intermediate } = splitSteps(result, turn.question);
   const intermediateSet = new Set(intermediate.map((step) => step.index));
-  return html`<details class="disclosure" data-detail="process" ${turn.ui.open.process ? 'open' : ''}>
+  return html`<details class="disclosure is-quiet" data-detail="process" ${turn.ui.open.process ? 'open' : ''}>
     <summary>${t('process.title')}</summary>
     <div class="disclosure-body">
       ${overview(turn)}

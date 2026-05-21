@@ -1,35 +1,42 @@
-/* 业务查数：一个输入框，问完看结论与表格，接着追问。
+/* 业务查数：问一句，看结论、数字和表格，接着追问。
 
-   一轮问答是一个 turn 对象；界面状态（哪个折叠打开、表格翻到第几页、反馈草稿）
-   都记在 turn.ui 上，重绘只是把 turn 再画一遍——所以切语言、切学习模式、
+   没问过的时候是首页：一个输入框，下面是「能问哪些数据」「可以这样问」「最近问过」——
+   三样都来自服务端（目录、历史），页面自己不写任何一句业务问题（见 suggest.js）。
+   问了之后是对话：问题在右、答案在左，输入框停在底部。
+
+   一轮问答是一个 turn 对象；界面状态（哪个折叠打开、表格翻到第几页、看图还是看表、
+   反馈草稿）都记在 turn.ui 上，重绘只是把 turn 再画一遍——所以切语言、切学习模式、
    回填耗时都不会把用户展开的东西收回去。 */
 
 import { api } from '../api.js';
-import { catalog, ensureIdentity, hasKinds } from '../catalog.js';
+import { catalog, domainTitle, domains, ensureIdentity, findTable } from '../catalog.js';
+import { dataHref } from '../dataRoute.js';
 import { $, announce, delegate, html, icon, setHtml } from '../dom.js';
-import { formatDateTime } from '../format.js';
-import { findHistory, loadHistory } from '../historyStore.js';
+import { formatRelative, formatTime, labelOf } from '../format.js';
+import { findHistory, history, loadHistory } from '../historyStore.js';
 import { t } from '../i18n.js';
-import { normalizeResult } from '../model.js';
+import { historyStatus, normalizeResult } from '../model.js';
+import { renderLearning, renderStageTrack } from '../process.js';
 import {
-  announcement, renderPending, renderResult, renderServiceError, renderStopped,
+  announcement, pendingStage, renderPending, renderResult, renderServiceError, renderStopped,
 } from '../result.js';
 import { emit, newSessionId, on, resultCache, save, state, uid } from '../state.js';
+import { historyTone, notice } from '../steps.js';
+import { buildSuggestions, pageCount, pageOf } from '../suggest.js';
 import { bindTurnActions, newTurnUi } from '../turnActions.js';
+import { databaseSlot, dbTile } from './exploreParts.js';
 
-/* 示例问题。只写问法，不写答案；每条标了它需要哪一类业务域，
-   当前权限下看不到那个域的示例不显示——点了问不出结果的示例比没有示例更糟。 */
-const EXAMPLES = [
-  { id: 'supplier', kinds: ['erp'] },
-  { id: 'budget', kinds: ['pm'] },
-  { id: 'payment', kinds: ['erp'] },
-  { id: 'production', kinds: ['erp', 'mes'] },
-  { id: 'inventory', kinds: ['wms'] },
-];
+const MAX_INPUT_HEIGHT = 180;
+const RECENT_MAX = 4;
+const RELATIVE_REFRESH_MS = 60000;   // 「5 分钟前」这类字样多久重算一次
+// 发送键在发出问题后原地变成「停止」。连点两下的第二下不该把刚发出去的问题停掉
+const STOP_GUARD_MS = 600;
 
 const turns = [];
 let busy = null;              // 正在等结果的那一轮
 let streamUnsupported = false;
+let suggestScope = '';        // 建议问题只看哪个库的；空着 = 全部
+let suggestPage = 0;          // 「换一批」翻到了第几页
 let root;
 
 const newTurn = (question, extra = {}) => ({
@@ -46,7 +53,7 @@ const newTurn = (question, extra = {}) => ({
   controller: null,
   rerunOf: null,
   cached: false,
-  ui: newTurnUi(),
+  ui: { ...newTurnUi(), phase: '' },   // phase：上一次画出来时的状态，进场动效据此只放一次
   ...extra,
 });
 
@@ -58,34 +65,186 @@ function chooseTransport() {
   return state.learning ? 'a2a-stream' : 'query';
 }
 
-/* ─── 绘制 ─────────────────────────────────────────────────────── */
+/* ─── 输入框 ───────────────────────────────────────────────────── */
 
-function composer(placeholderKey) {
-  return html`<form class="composer" data-form="ask">
-    <label class="sr-only" for="askInput">${t('ask.inputLabel')}</label>
-    <textarea id="askInput" rows="1" placeholder="${t(placeholderKey)}" autocomplete="off"></textarea>
-    <button class="send-btn" type="submit" aria-label="${t('action.send')}" title="${t('action.send')}">${icon('send')}</button>
-  </form>
-  <p class="composer-hint">${t('ask.hint')}</p>`;
+/* 发送键。等结果的时候它是「停止等待」：一个点不了的灰色按钮什么也没告诉人。 */
+function sendButton() {
+  if (busy) {
+    return html`<button class="send-btn is-stop" id="askSend" type="button" data-action="stop-current"
+      aria-label="${t('action.stop')}" title="${t('action.stop')}">${icon('stop')}</button>`;
+  }
+  return html`<button class="send-btn" id="askSend" type="submit" aria-label="${t('action.send')}"
+    title="${t('action.send')}">${icon('send')}</button>`;
 }
 
-function examples() {
-  const usable = catalog.status === 'ready'
-    ? EXAMPLES.filter((example) => hasKinds(example.kinds))
-    : catalog.status === 'loading' || catalog.status === 'idle' ? [] : EXAMPLES;
-  if (!usable.length) {
-    return catalog.status === 'ready'
-      ? html`<p class="muted">${t('ask.noExamples')} <a href="#/data">${t('ask.browseData')}</a></p>`
-      : '';
+function composer(docked) {
+  // 「重要的数字先核对」那句提醒跟着答案走：对话里一直在输入框下面，首页上没有答案，不放
+  return html`<form class="composer${docked ? ' is-dock' : ''}" data-form="ask">
+    <label class="sr-only" for="askInput">${t('ask.inputLabel')}</label>
+    <textarea id="askInput" rows="${docked ? 1 : 2}" autocomplete="off"
+      placeholder="${t(docked ? 'ask.followUpPlaceholder' : 'ask.placeholder')}"></textarea>
+    <div class="composer-bar">
+      ${docked
+        ? html`<button type="button" class="act" data-action="new" title="${t('ask.newHint')}">${icon('plus', 'icon-sm')}${t('ask.new')}</button>`
+        : html`<span class="composer-meta" title="${t('ask.readOnlyHint')}">${icon('lock', 'icon-sm')}${t('ask.readOnly')}</span>`}
+      <span class="composer-keys" aria-hidden="true">${t('ask.keys')}</span>
+      <span class="composer-send" data-role="send-slot" data-mode="${busy ? 'stop' : 'send'}">${sendButton()}</span>
+    </div>
+  </form>
+  ${docked ? html`<p class="composer-caution">${t('ask.caution')}</p>` : ''}`;
+}
+
+function syncComposer() {
+  const input = $('askInput');
+  if (!input) return;
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, MAX_INPUT_HEIGHT) + 'px';
+  // 没到高度上限时不留滚动条：自动长高的输入框旁边多一截滚动条只会让人以为还有内容
+  input.style.overflowY = input.scrollHeight > MAX_INPUT_HEIGHT ? 'auto' : 'hidden';
+
+  const slot = root.querySelector('[data-role="send-slot"]');
+  const mode = busy ? 'stop' : 'send';
+  if (slot && slot.dataset.mode !== mode) {
+    slot.dataset.mode = mode;
+    setHtml(slot, sendButton());
   }
-  return html`<section aria-labelledby="examplesTitle" class="stack">
-    <h2 class="section-title" id="examplesTitle">${t('ask.examplesTitle')}</h2>
-    <div class="examples">${usable.map((example) => html`<button type="button" class="example"
-      data-action="example" data-example="${example.id}">
-      <span class="topic">${t(`example.${example.id}.topic`)}</span>
-      <span>${t(`example.${example.id}.question`)}</span></button>`)}</div>
-    <p class="muted">${t('ask.examplesNote')} <a href="#/data">${t('ask.browseData')}</a></p>
+  const send = $('askSend');
+  if (send && !busy) send.disabled = !input.value.trim();
+  const fresh = root.querySelector('[data-action="new"]');
+  if (fresh) fresh.disabled = Boolean(busy);
+}
+
+/* ─── 首页 ─────────────────────────────────────────────────────── */
+
+const catalogPending = () => catalog.status === 'idle' || catalog.status === 'loading';
+
+/* 服务连不上时在输入框下面说一声。顶栏右上角那个小圆点太容易看漏，
+   而这时候发问只会等来一条「请求没成功」。 */
+function offline() {
+  if (state.live !== false) return '';
+  return html`<div class="ask-offline">${notice('danger', 'error', t('conn.down'), html`<p>${t('error.network')}</p>
+    <p><button type="button" class="link-btn" data-action="open-settings">${t('action.checkSettings')}</button></p>`)}</div>`;
+}
+
+/* 当前身份看得到、此刻读得到的业务域：能问的就是这些。 */
+const askable = () => (catalog.status === 'ready' ? domains().filter((domain) => domain.status === 'available') : []);
+
+/* 正在显示的那一组建议：全部，或者只看某一个库的。everything 是已经拼好的全部建议，不给就现拼。 */
+function suggestionList(everything = catalog.status === 'ready' ? buildSuggestions(domains()) : []) {
+  return suggestScope ? everything.filter((item) => item.database === suggestScope) : everything;
+}
+
+/* 可以这样问。上面一排是能问的业务域（点一个只看它的问法），下面是拼出来的问题。
+   目录还没到时先占着位置，到了再换成真的——免得下面的内容跳一下。 */
+function suggestions() {
+  if (catalogPending()) {
+    return html`<div class="ask-section" aria-hidden="true">
+      <div class="ask-section-head"><span class="ask-section-title">&nbsp;</span></div>
+      <div class="scope-row"><span class="scope-chip is-ghost"></span><span class="scope-chip is-ghost"></span><span class="scope-chip is-ghost"></span></div>
+      <div class="suggest-grid">${[0, 1, 2, 3].map(() => html`<span class="suggest is-ghost"></span>`)}</div>
+    </div>`;
+  }
+  const available = askable();
+  // 换了身份或目录之后，之前选的那个库可能已经不在了
+  if (suggestScope && !available.some((domain) => domain.database === suggestScope)) suggestScope = '';
+  const everything = catalog.status === 'ready' ? buildSuggestions(domains()) : [];
+  if (!everything.length) {
+    return html`<p class="ask-fallback">${t('ask.noSuggest')} <a href="#/data">${t('ask.browseData')}</a></p>`;
+  }
+  const list = suggestionList(everything);
+  return html`<section class="ask-section" aria-labelledby="suggestTitle">
+    <div class="ask-section-head">
+      <h2 class="ask-section-title" id="suggestTitle">${t('ask.suggestTitle')}</h2>
+      ${pageCount(list) > 1 ? html`<button type="button" class="act" data-action="shuffle">${icon('refresh', 'icon-sm')}${t('ask.shuffle')}</button>` : ''}
+    </div>
+    ${available.length > 1 ? html`<div class="scope-row" role="group" aria-label="${t('ask.scope')}">
+      <button type="button" class="scope-chip is-all" data-action="scope" data-name="" aria-pressed="${String(!suggestScope)}">${t('ask.scopeAll')}</button>
+      ${available.map((domain) => html`<button type="button" class="scope-chip" data-action="scope" data-name="${domain.database}"
+        aria-pressed="${String(suggestScope === domain.database)}">${dbTile(domain.database, 'is-xs')}<span>${domainTitle(domain)}</span></button>`)}
+    </div>` : ''}
+    ${list.length ? html`<div class="suggest-grid">${pageOf(list, suggestPage).map((item, index) => {
+      const table = findTable(item.database, item.table);
+      return html`<button type="button" class="suggest db-c${databaseSlot(item.database)}" data-action="suggest" data-index="${index}">
+        <span class="suggest-src">${dbTile(item.database, 'is-xs')}<span>${table ? labelOf(table) : item.table}</span></span>
+        <span class="suggest-text">${item.text}</span>
+        <span class="suggest-go" aria-hidden="true">${icon('arrowUpRight', 'icon-sm')}</span>
+      </button>`;
+    })}</div>` : html`<p class="ask-empty">${t('ask.scopeEmpty')}</p>`}
+    <p class="ask-note">${t('ask.suggestNote')} <a href="${suggestScope ? dataHref(suggestScope) : '#/data'}">${t('ask.browseData')}</a></p>
   </section>`;
+}
+
+/* 最近问过的几个问题（同一句话只留最近的一次）。
+   认的是「这个身份的历史取成过」，不是「此刻状态正常」：之后某一次刷新失败了，手里那份照样是
+   真的，不让整段跟着消失。换了身份时这份会被清空（见 historyStore 的 resetHistory）。 */
+function recentItems() {
+  if (!history.loadedAt) return [];
+  const seen = new Set();
+  const items = [];
+  for (const item of history.items) {
+    const text = String(item.query || '').trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    items.push(item);
+    if (items.length === RECENT_MAX) break;
+  }
+  return items;
+}
+
+function recent() {
+  const items = recentItems();
+  if (!items.length) return '';
+  return html`<section class="ask-section" aria-labelledby="recentTitle">
+    <div class="ask-section-head">
+      <h2 class="ask-section-title" id="recentTitle">${t('ask.recentTitle')}</h2>
+      <a class="act" href="#/history">${t('ask.recentAll')}${icon('chevronRight', 'icon-sm')}</a>
+    </div>
+    <ul class="recent-list">${items.map((item, index) => {
+      const status = historyStatus(item);
+      const [tone, glyph] = historyTone(status);
+      return html`<li><button type="button" class="recent-item" data-action="recent" data-index="${index}">
+        <span class="recent-status tone-${tone.replace('chip-', '') || 'plain'}" title="${t('hstatus.' + status)}">${icon(glyph, 'icon-sm')}<span
+          class="sr-only">${t('hstatus.' + status)}</span></span>
+        <span class="recent-q">${item.query}</span>
+        <span class="recent-time" data-at="${item.created_at}">${formatRelative(item.created_at)}</span>
+      </button></li>`;
+    })}</ul>
+  </section>`;
+}
+
+function home() {
+  return html`<div class="ask-home">
+    <div class="ask-hero">
+      <span class="ask-mark" aria-hidden="true">${icon('logo')}</span>
+      <h1 tabindex="-1" data-role="view-title">${t('ask.title')}</h1>
+      <p class="lead">${t('ask.lead')}</p>
+    </div>
+    ${composer(false)}
+    <div data-role="offline">${offline()}</div>
+    <div data-role="suggest">${suggestions()}</div>
+    <div data-role="recent">${recent()}</div>
+  </div>`;
+}
+
+/* 首页上的某一块单独重画（目录、历史各自回来的时候），不动输入框。 */
+function drawSlot(name, content) {
+  const slot = root.querySelector(`.ask-home [data-role="${name}"]`);
+  if (slot) setHtml(slot, content());
+}
+
+/* ─── 对话 ─────────────────────────────────────────────────────── */
+
+function conversation() {
+  return html`<div class="conversation">
+    <div class="turns"><div class="turns-inner">
+      <h1 class="sr-only" tabindex="-1" data-role="view-title">${t('ask.conversation')}</h1>
+      ${turns.map((turn) => html`<article class="turn" id="${turn.id}" data-turn="${turn.id}">
+        <div class="turn-q" data-role="question"></div>
+        <div class="turn-a" data-role="answer"></div>
+      </article>`)}
+    </div></div>
+    <div class="composer-dock"><div class="composer-dock-inner">${composer(true)}</div></div>
+  </div>`;
 }
 
 function shell() {
@@ -93,33 +252,25 @@ function shell() {
   const draft = previous ? previous.value : '';
   // 用键盘回车发的问题，发完光标留在输入框；点按钮发的（多半是手机）不抢焦点，免得键盘弹回来
   const refocus = Boolean(previous) && document.activeElement === previous;
-  if (!turns.length) {
-    setHtml(root, html`<div class="page page-narrow ask-home stack-lg">
-      <div><h1 tabindex="-1" data-role="view-title">${t('ask.title')}</h1><p class="lead">${t('ask.lead')}</p></div>
-      <div>${composer('ask.placeholder')}</div>
-      <div data-role="examples">${examples()}</div>
-    </div>`);
-  } else {
-    setHtml(root, html`<div class="conversation">
-      <div class="turns"><div class="turns-inner">
-        <div class="row-between">
-          <h1 class="section-title" tabindex="-1" data-role="view-title">${t('ask.conversation')}</h1>
-          <button type="button" class="btn btn-sm" data-action="new">${icon('plus', 'icon-sm')}${t('ask.new')}</button>
-        </div>
-        ${turns.map((turn) => html`<article class="turn" id="${turn.id}" data-turn="${turn.id}"></article>`)}
-      </div></div>
-      <div class="composer-dock"><div class="composer-dock-inner">${composer('ask.followUpPlaceholder')}</div></div>
-    </div>`);
-    turns.forEach(drawTurn);
-  }
+  setHtml(root, turns.length ? conversation() : home());
+  turns.forEach(drawTurn);
   if (draft) $('askInput').value = draft;
   if (refocus) $('askInput').focus();
   syncComposer();
 }
 
+/* 进场动效：去掉类名、强制回流、再加回去，动画才会从头放一遍。 */
+function replay(element) {
+  element.classList.remove('is-entering');
+  void element.offsetWidth;
+  element.classList.add('is-entering');
+}
+
 function drawTurn(turn) {
   const element = $(turn.id);
   if (!element) return;
+  const question = element.querySelector('[data-role="question"]');
+  const answer = element.querySelector('[data-role="answer"]');
   const elapsed = Math.floor((performance.now() - turn.startedAt) / 1000);
   let body;
   if (turn.status === 'pending') body = renderPending(turn, elapsed);
@@ -127,26 +278,32 @@ function drawTurn(turn) {
   else if (turn.status === 'error') body = renderServiceError(turn);
   else body = renderResult(turn);
 
-  setHtml(element, html`<div class="question">
-      <div>
-        <h2 class="question-text">${turn.question}</h2>
-        <p class="question-meta">${t(turn.rerunOf ? 'ask.askedRerun' : 'ask.asked', { time: formatDateTime(turn.askedAt) })}</p>
-      </div>
-      <button type="button" class="icon-btn" data-action="copy-question" aria-label="${t('action.copyQuestion')}"
-        title="${t('action.copyQuestion')}">${icon('copy')}</button>
-    </div>
-    <div>${body}</div>`);
+  setHtml(question, html`<div class="q-bubble"><h2 class="question-text">${turn.question}</h2></div>
+    <div class="q-meta">
+      <span>${t(turn.rerunOf ? 'ask.askedRerun' : 'ask.asked', { time: formatTime(turn.askedAt) })}</span>
+      <button type="button" class="icon-btn icon-btn-sm" data-action="copy-question" aria-label="${t('action.copyQuestion')}"
+        title="${t('action.copyQuestion')}">${icon('copy', 'icon-sm')}</button>
+    </div>`);
+  setHtml(answer, body);
+
+  // 只在这一轮第一次画出来、以及它的状态变了（等待 → 有结果）时各放一次；
+  // 排序、翻页、回填耗时引起的重画不带动效，否则每点一下表头整块答案都闪一下
+  if (!turn.ui.phase) replay(question);
+  if (turn.ui.phase !== turn.status) replay(answer);
+  turn.ui.phase = turn.status;
 }
 
-function syncComposer() {
-  const input = $('askInput');
-  if (!input) return;
-  input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
-  // 没到高度上限时不留滚动条：自动长高的输入框旁边多一截滚动条只会让人以为还有内容
-  input.style.overflowY = input.scrollHeight > 180 ? 'auto' : 'hidden';
-  const send = root.querySelector('.send-btn');
-  if (send) send.disabled = Boolean(busy) || !input.value.trim();
+/* 等待中来了一条阶段事件：只改那句状态、进度条和学习模式的时间线，不整块重画——
+   整块重画会把正在转的动效一次次打回起点。 */
+function drawStage(turn) {
+  const element = $(turn.id);
+  const text = element && element.querySelector('[data-role="stage-text"]');
+  if (!text) { drawTurn(turn); return; }
+  text.textContent = pendingStage(turn);
+  const track = element.querySelector('[data-role="stage-track"]');
+  if (track) setHtml(track, renderStageTrack(turn.stages));
+  const learn = element.querySelector('[data-role="learn-slot"]');
+  if (learn) setHtml(learn, renderLearning(turn));
 }
 
 /* ─── 提问 ─────────────────────────────────────────────────────── */
@@ -176,7 +333,8 @@ async function ask(question, extra = {}) {
     return;
   }
   turn.transport = chooseTransport();
-  drawTurn(turn);
+  // 走流式才需要重画（换成分段进度）；走 /query 的话等待态已经是对的
+  if (turn.transport === 'a2a-stream') drawTurn(turn);
 
   const timer = setInterval(() => {
     const slot = $(turn.id) && $(turn.id).querySelector('[data-role="elapsed"]');
@@ -190,7 +348,7 @@ async function ask(question, extra = {}) {
       try {
         const streamed = await api.stream(text, {
           signal: turn.controller.signal,
-          onStage: (stage) => { turn.stages.push(stage); turn.stageNow = stage; drawTurn(turn); },
+          onStage: (stage) => { turn.stages.push(stage); turn.stageNow = stage; drawStage(turn); },
         });
         payload = streamed.payload;
       } catch (error) {
@@ -242,7 +400,7 @@ async function ask(question, extra = {}) {
   else if (turn.status === 'stopped') loadHistory();
 }
 
-/* 答案回来时把这一轮顶到视口上方。等待态只有一行，答案比它长得多，
+/* 答案回来时把这一轮顶到视口上方。等待态只有几行，答案比它长得多，
    不动的话结论常常落在底部输入框后面。用户已经滚到别处去看东西了就不打扰。 */
 function revealAnswer(turn) {
   const element = $(turn.id);
@@ -280,7 +438,8 @@ export function rerun(question, originalTime) {
   return ask(question, { rerunOf: originalTime || '' });
 }
 
-/* 数据浏览页的「就这张表提问」：只把话头填进输入框，问什么由人写。 */
+/* 把一句话放进输入框，光标停在末尾：建议问题、最近问过、数据页的「就这张表提问」都走这里。
+   只填不发——问什么、怎么改，由人定。 */
 export function prefill(text) {
   const input = $('askInput');
   if (!input) return;
@@ -293,6 +452,19 @@ export function prefill(text) {
 export function focusComposer() {
   const input = $('askInput');
   if (input) input.focus();
+}
+
+/* 切到提问页时调（刚打开页面、从别的页回来、在设置里换了连接之后）。只管首页：
+
+   - 「最近问过」要用历史。还没取过、或者上一次没取成，就取一次；取成过的不重复取，
+     每问完一轮它会自己刷新。
+   - 建议和「多久以前」可能已经过期：在数据页上逛的时候目录可能多取到了几张表的字段，
+     时间也过去了一会儿。趁回来的时候重画一遍。 */
+export function showAsk() {
+  if (turns.length) return;
+  if (history.status === 'idle' || history.status === 'error') loadHistory();
+  drawSlot('suggest', suggestions);
+  drawSlot('recent', recent);
 }
 
 const turnOf = (target) => {
@@ -318,9 +490,17 @@ export function initAsk() {
   });
 
   root.addEventListener('keydown', (event) => {
-    // Enter 发送，Shift+Enter 换行；输入法正在组字时的回车不算
-    if (event.target.id !== 'askInput' || event.key !== 'Enter') return;
-    if (event.shiftKey || event.isComposing || event.keyCode === 229) return;
+    if (event.target.id !== 'askInput') return;
+    // 输入法正在组字时的按键不算（回车是在选字，方向键是在挑候选）
+    if (event.isComposing || event.keyCode === 229) return;
+    // 输入框空着时按 ↑：把上一个问题取回来，改一改再发
+    if (event.key === 'ArrowUp' && !event.target.value && turns.length) {
+      event.preventDefault();
+      prefill(turns[turns.length - 1].question);
+      return;
+    }
+    // Enter 发送，Shift+Enter 换行
+    if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
     event.target.form.requestSubmit();
   });
@@ -328,7 +508,27 @@ export function initAsk() {
   bindTurnActions(root, { turnOf, redraw: drawTurn });
 
   delegate(root, 'click', {
-    example: (target) => prefill(t(`example.${target.dataset.example}.question`)),
+    // 填进去的就是卡片上写着的那句话。不拿序号去重新拼出来的清单里找：目录在这期间可能
+    // 多取到了几张表的字段，清单变了，序号对上的就成了另一句
+    suggest: (target) => {
+      const text = target.querySelector('.suggest-text');
+      if (text) prefill(text.textContent);
+    },
+    scope: (target) => {
+      suggestScope = target.dataset.name || '';
+      suggestPage = 0;
+      drawSlot('suggest', suggestions);
+    },
+    shuffle: () => {
+      const pages = pageCount(suggestionList());
+      suggestPage = (suggestPage + 1) % pages;
+      drawSlot('suggest', suggestions);
+      announce(`${t('ask.suggestTitle')} ${suggestPage + 1} / ${pages}`);
+    },
+    recent: (target) => {
+      const text = target.querySelector('.recent-q');
+      if (text) prefill(text.textContent.trim());
+    },
     new: () => {
       if (busy) return;
       turns.length = 0;
@@ -340,6 +540,9 @@ export function initAsk() {
     stop: (target) => {
       const turn = turnOf(target);
       if (turn && turn.controller) turn.controller.abort();
+    },
+    'stop-current': () => {
+      if (busy && busy.controller && performance.now() - busy.startedAt > STOP_GUARD_MS) busy.controller.abort();
     },
     'ask-again': (target) => {
       const turn = turnOf(target);
@@ -355,12 +558,22 @@ export function initAsk() {
   on('reconnect', () => { streamUnsupported = false; });
   on('catalog', () => {
     if (!turns.length) {
-      const slot = root.querySelector('[data-role="examples"]');
-      if (slot) setHtml(slot, examples());
+      // 目录变了，建议跟着重拼。页码不用动：翻过了头会自己绕回第一页（见 pageOf）
+      drawSlot('suggest', suggestions);
     } else {
       turns.forEach((turn) => { if (turn.status === 'done') drawTurn(turn); });
     }
   });
+  on('history', () => drawSlot('recent', recent));
+  on('health', () => drawSlot('offline', offline));
+
+  // 页面一直开着的话，「刚刚」不能一直是「刚刚」。只改那几个字，不重画列表——
+  // 整段重画赶上鼠标正按在某一行上，那一下点击就丢了
+  setInterval(() => {
+    root.querySelectorAll('.recent-time[data-at]').forEach((element) => {
+      element.textContent = formatRelative(element.dataset.at);
+    });
+  }, RELATIVE_REFRESH_MS);
 
   shell();
 }

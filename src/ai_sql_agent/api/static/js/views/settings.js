@@ -124,6 +124,7 @@ function draw({ fresh = false } = {}) {
         <dt>${t('keys.send')}</dt><dd>Enter</dd>
         <dt>${t('keys.newline')}</dt><dd>Shift + Enter</dd>
         <dt>${t('keys.focus')}</dt><dd>/</dd>
+        <dt>${t('keys.recall')}</dt><dd>↑</dd>
         <dt>${t('keys.close')}</dt><dd>Esc</dd>
       </dl>
     </section>

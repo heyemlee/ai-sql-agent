@@ -1,7 +1,10 @@
-/* 一轮问答的结果卡片。
+/* 一轮问答里「答案」那一块。
 
-   从上到下：结论 → 需要人注意的提示 → 表格 → 来源与数据日期 → 操作与反馈 →
-   查询过程（普通模式默认收起；学习模式换成逐步讲解）。
+   从上到下：状态（一行）→ 结论 → 需要人注意的提示 → 每一步结果一块面板 →
+   数据日期 → 操作与反馈 → 查询过程（普通模式默认收起；学习模式换成逐步讲解）。
+
+   结果面板有三种看法，是同一批行的三种画法，互相切换不丢东西：
+   只有一行时是几个大数字；一列名字加一列数字时是一张图；任何时候都能看表格。
 
    页面不显示服务端 answer 字段里那串「已完成数据库查询。查询结果：[JSON]」——
    那是给下游程序留的文本。这里的结论由结构化字段（行数、列、单位）直接拼出来：
@@ -9,20 +12,27 @@
 
 import { domainTitleOf } from './catalog.js';
 import { html, icon } from './dom.js';
-import { descriptionOf, formatCell, formatRange, formatTime, recordDates, toTsv } from './format.js';
+import {
+  descriptionOf, formatCell, formatDuration, formatRange, formatTime, recordDates, toTsv,
+} from './format.js';
 import { has, t, tn } from './i18n.js';
+import { chartFor, stepViews } from './insight.js';
 import { classify, splitSteps } from './model.js';
-import { renderLearning, renderProcess } from './process.js';
+import { renderLearning, renderProcess, renderStageTrack } from './process.js';
 import { renderRichText } from './richtext.js';
 import { state } from './state.js';
 import {
   anomalyHelp, anomalyLabel, failureReason, notice, sourceLabel, stepColumns, stepMatrix,
 } from './steps.js';
 import { renderPager, renderTable, sortRows } from './table.js';
+import { databaseSlot, dbTile } from './views/exploreParts.js';
 
 const PAGE_SIZE = 25;
 const MAX_FACTS = 8;
 const MAX_NAMES = 5;
+const VIEW_ICONS = { figures: 'hash', chart: 'chart', table: 'table' };
+// 「对 / 不对」只画拇指（名字在 aria-label 和悬停提示里），「不确定」没有公认的图标，写出字来
+const VERDICTS = [['correct', 'thumbUp', false], ['wrong', 'thumbDown', false], ['unsure', 'help', true]];
 
 function tableState(turn, step) {
   turn.ui.tables[step.index] = turn.ui.tables[step.index] || { page: 1, sort: null };
@@ -126,6 +136,15 @@ export function tableText(turn, stepIndex) {
   );
 }
 
+/* 答案最上面那一行：标记 + 状态，右边是耗时（或者等待时的计时与停止）。 */
+function answerHead(status, aside = '') {
+  return html`<div class="answer-head">
+    <span class="agent-mark" aria-hidden="true">${icon('logo')}</span>
+    <div class="status-line">${status}</div>
+    ${aside}
+  </div>`;
+}
+
 /* 状态标签。每种状态都是「图标 + 文字」，颜色只是第三重提示。 */
 function statusChips(view) {
   const map = {
@@ -136,12 +155,18 @@ function statusChips(view) {
     conversation: ['', 'ask', 'status.conversation'],
   };
   const [tone, glyph, key] = map[view.kind];
-  return html`<div class="status-line">
-    <span class="chip ${tone}">${icon(glyph, 'icon-sm')}${t(key)}</span>
+  return html`<span class="chip ${tone}">${icon(glyph, 'icon-sm')}${t(key)}</span>
     ${view.needsReview ? html`<span class="chip chip-warn">${icon('warn', 'icon-sm')}${t('status.review')}</span>` : ''}
     ${view.truncated ? html`<span class="chip chip-warn">${t('status.truncated')}</span>` : ''}
-    ${view.degraded ? html`<span class="chip chip-warn">${t('status.degraded')}</span>` : ''}
-  </div>`;
+    ${view.degraded ? html`<span class="chip chip-warn">${t('status.degraded')}</span>` : ''}`;
+}
+
+/* 这一轮花了多久。显示的是页面等到结果的时间；服务端自己记的那一段在悬停提示里。 */
+function elapsed(result) {
+  if (result.clientMs == null) return '';
+  const hint = t('process.clientTime', { time: formatDuration(result.clientMs) })
+    + (result.serverMs != null ? ` · ${t('process.serverTime', { time: formatDuration(result.serverMs) })}` : '');
+  return html`<span class="answer-time" title="${hint}">${icon('clock', 'icon-sm')}${formatDuration(result.clientMs)}</span>`;
 }
 
 function notices(result, view) {
@@ -195,8 +220,63 @@ function notices(result, view) {
   return out;
 }
 
-function answerTable(turn, step, multiple) {
-  const columns = stepColumns(step);
+/* ─── 结果面板的三种看法 ────────────────────────────────────────── */
+
+/* 只有一行：每一列一个大数字。文字列（名字、状态）字号小一档，免得一长串字撑满一行。 */
+function figuresView(step, columns) {
+  const row = step.rows[0];
+  return html`<dl class="stat-tiles">${columns.map((column) => {
+    const cell = formatCell(row[column.key], { unit: column.unit, plain: column.plain });
+    return html`<div class="stat-tile">
+      <dt class="stat-label" ${column.hint ? html`title="${column.hint}"` : ''}>${column.label}</dt>
+      <dd class="stat-value${cell.numeric ? '' : ' is-text'}${cell.empty ? ' is-empty' : ''}">${cell.text}${column.unit && !cell.empty
+        ? html`<span class="stat-unit">${column.unit}</span>` : ''}</dd>
+    </div>`;
+  })}</dl>`;
+}
+
+/* 一段文字大概占几个字符宽：中日韩文字算两个。只用来给图里的名字列留宽度。 */
+const textWidth = (text) => [...text].reduce((sum, char) => sum + (/[\u2e80-\u9fff\uac00-\ud7af\uff00-\uffef]/.test(char) ? 2 : 1), 0);
+
+/* 一列名字加一列数字：横条，或者（连着的年月）一排柱子。画的就是返回的那几行，
+   条的颜色跟着来源库的标识色走。
+
+   横条把每一行的名字和数字都写在条的旁边，单独看不缺东西。柱子上写不下数字（悬停提示
+   在手机上、用键盘时都看不到），所以柱子只放在表格上面，不单独当一种看法。 */
+function chartView(chart) {
+  const peak = Math.max(...chart.items.map((item) => item.value));
+  const show = (amount) => formatCell(amount, { unit: chart.value.unit }).text;
+  const title = t('chart.caption', { value: chart.value.label, label: chart.label.label })
+    + (chart.value.unit ? ` (${chart.value.unit})` : '');
+
+  if (chart.kind === 'columns') {
+    // 最高的可能不止一个：并列的都写出来，太多就不写这句（下面的表格里都有）
+    const tops = chart.items.filter((item) => item.value === peak);
+    const first = chart.items[0];
+    const last = chart.items[chart.items.length - 1];
+    return html`<div class="answer-chart is-above-table">
+      <p class="chart-caption">${title}</p>
+      <div class="viz-cols is-static" role="img" aria-label="${title}: ${first.text} – ${last.text}">${chart.items.map((item) => html`<span
+        class="viz-col" title="${item.text} · ${show(item.value)}"><i style="height:${item.value ? Math.max(3, (item.value / peak) * 100) : 0}%"></i></span>`)}</div>
+      <div class="viz-axis" aria-hidden="true"><span>${first.text}</span><span>${last.text}</span></div>
+      ${tops.length <= 3 ? html`<p class="chart-note">${t('chart.peak', { label: tops.map((item) => item.text).join(', '), value: show(peak) })}</p>` : ''}
+    </div>`;
+  }
+
+  // 名字、数字这两列各行一样宽，条才对得齐：宽度按最长的那个名字、那个数字算
+  const nameWidth = Math.min(30, Math.max(6, ...chart.items.map((item) => textWidth(item.text))));
+  const valueWidth = Math.max(...chart.items.map((item) => show(item.value).length));
+  return html`<div class="answer-chart">
+    <p class="chart-caption">${title}</p>
+    <ul class="viz-list has-bars" style="--name-ch:${nameWidth};--value-ch:${valueWidth}">${chart.items.map((item) => html`<li><span class="viz-row is-static">
+      <span class="viz-name" title="${item.text}">${item.text}</span>
+      <span class="viz-track" aria-hidden="true"><i style="width:${item.value ? Math.max(1.5, (item.value / peak) * 100) : 0}%"></i></span>
+      <span class="viz-count">${show(item.value)}</span>
+    </span></li>`)}</ul>
+  </div>`;
+}
+
+function tableView(turn, step, columns, label) {
   const ui = tableState(turn, step);
   let rows = stepMatrix(step, columns);
   if (ui.sort) {
@@ -207,37 +287,67 @@ function answerTable(turn, step, multiple) {
   const page = Math.min(Math.max(1, ui.page), pageCount);
   const from = (page - 1) * PAGE_SIZE;
   const shown = rows.slice(from, from + PAGE_SIZE);
-  const documented = columns.filter((column) => column.entry);
-  const title = `${sourceLabel(step.database)} — ${tn('result.rows', step.rowCount)}`;
 
-  return html`<div class="answer-table" data-step="${step.index}">
-    <div class="table-toolbar">
-      <span class="table-title">${multiple ? `${t('process.step', { n: step.index + 1 })} · ` : ''}${title}</span>
-      <button type="button" class="btn btn-sm btn-ghost" data-action="copy-table" data-step="${step.index}">
-        ${icon('copy', 'icon-sm')}${t('action.copyTable')}</button>
-    </div>
-    ${renderTable({ columns, rows: shown, sort: ui.sort, sortAction: 'sort-table', scope: step.index, label: title })}
+  return html`${renderTable({ columns, rows: shown, sort: ui.sort, sortAction: 'sort-table', scope: step.index, label })}
     ${rows.length > PAGE_SIZE || step.truncated ? html`<div class="table-foot">
       <span>${rows.length > PAGE_SIZE
         ? t('table.range', { from: from + 1, to: from + shown.length, total: rows.length })
         : tn('result.rows', rows.length)}${step.truncated ? ` · ${t('table.truncatedRows')}` : ''}${ui.sort && step.truncated
         ? ` · ${t('table.sortedPartial')}` : ''}</span>
       ${renderPager({ page, pageCount, action: 'page-table', scope: step.index })}
-    </div>` : ''}
-    ${documented.length ? html`<details class="disclosure" data-detail="legend-${step.index}" ${turn.ui.open['legend-' + step.index] ? 'open' : ''}>
-      <summary>${t('result.legend')}</summary>
-      <div class="disclosure-body"><dl class="kv">${columns.map((column) => {
-        const description = column.entry ? descriptionOf(column.entry) : null;
-        return html`<dt>${column.label}${column.unit ? ` (${column.unit})` : ''}<br><span class="tech">${column.key}</span></dt>
-          <dd>${description && description.text
-            ? html`<span ${description.original ? html`lang="zh"` : ''}>${description.text}</span>`
-            : html`<span class="muted">${column.entry ? t('data.noDescription') : t('result.computedColumn')}</span>`}</dd>`;
-      })}</dl><p class="muted">${t('result.legendNote')}</p></div>
-    </details>` : ''}
-  </div>`;
+    </div>` : ''}`;
 }
 
-function metaLine(result, answers) {
+/* 这些列是什么意思（数据字典里的说明）。哪种看法下都在面板最下面：
+   看的是大数字或图的时候，同样需要知道那个数是怎么定义的。 */
+function legend(turn, step, columns) {
+  if (!columns.some((column) => column.entry)) return '';
+  return html`<details class="disclosure is-legend" data-detail="legend-${step.index}" ${turn.ui.open['legend-' + step.index] ? 'open' : ''}>
+    <summary>${t('result.legend')}</summary>
+    <div class="disclosure-body"><dl class="kv">${columns.map((column) => {
+      const description = column.entry ? descriptionOf(column.entry) : null;
+      return html`<dt>${column.label}${column.unit ? ` (${column.unit})` : ''}<br><span class="tech">${column.key}</span></dt>
+        <dd>${description && description.text
+          ? html`<span ${description.original ? html`lang="zh"` : ''}>${description.text}</span>`
+          : html`<span class="muted">${column.entry ? t('data.noDescription') : t('result.computedColumn')}</span>`}</dd>`;
+    })}</dl><p class="muted">${t('result.legendNote')}</p></div>
+  </details>`;
+}
+
+/* 一步结果的面板：来自哪个库、多少行，怎么看由面板头上的开关定（记在 turn.ui.views 上）。 */
+function stepPanel(turn, step, multiple) {
+  const columns = stepColumns(step);
+  const views = stepViews(step, columns, MAX_FACTS);
+  const chosen = turn.ui.views[step.index];
+  const view = views.includes(chosen) ? chosen : views[0];
+  const chart = chartFor(step, columns);
+  const title = domainTitleOf(step.database);
+  const label = `${sourceLabel(step.database)} — ${tn('result.rows', step.rowCount)}`;
+
+  return html`<section class="result-panel db-c${databaseSlot(step.database)}" aria-label="${label}">
+    <div class="result-panel-head">
+      <span class="result-panel-title">${dbTile(step.database, 'is-sm')}
+        <span>${multiple ? `${t('process.step', { n: step.index + 1 })} · ` : ''}${title}</span>
+        ${title !== step.database ? html`<span class="tech">${step.database}</span>` : ''}</span>
+      <span class="result-panel-count">${tn('result.rows', step.rowCount)}</span>
+      <span class="result-panel-tools">
+        ${views.length > 1 ? html`<span class="seg" role="group" aria-label="${t('view.switch')}">${views.map((name) => html`<button
+          type="button" data-action="step-view" data-step="${step.index}" data-which="${name}"
+          aria-pressed="${String(name === view)}">${icon(VIEW_ICONS[name], 'icon-sm')}${t('view.' + name)}</button>`)}</span>` : ''}
+        <button type="button" class="act" data-action="copy-table" data-step="${step.index}" title="${t('action.copyTable')}">
+          ${icon('copy', 'icon-sm')}<span class="act-label">${t('action.copyTable')}</span></button>
+      </span>
+    </div>
+    ${view === 'figures' ? figuresView(step, columns)
+      : view === 'chart' ? chartView(chart)
+        : html`${chart && chart.kind === 'columns' ? chartView(chart) : ''}${tableView(turn, step, columns, label)}`}
+    ${legend(turn, step, columns)}
+  </section>`;
+}
+
+/* 这批数据是什么时候的。来源库写在每块面板的头上；有哪一步没有面板（它没有返回行）时，
+   在这里把来源列全——查过的库不能因为没查到东西就从页面上消失。 */
+function metaLine(result, answers, withSources) {
   const sources = [...new Set(answers.map((step) => sourceLabel(step.database)))];
   const dates = answers.flatMap((step) => {
     const columns = stepColumns(step);
@@ -253,39 +363,47 @@ function metaLine(result, answers) {
         : t('meta.readUnknown');
 
   return html`<div class="result-meta">
-    ${sources.length ? html`<span><strong>${t('meta.source')}:</strong> ${sources.join(', ')}</span>` : ''}
+    ${withSources && sources.length ? html`<span><strong>${t('meta.source')}:</strong> ${sources.join(', ')}</span>` : ''}
     <span><strong>${t('meta.recordDates')}:</strong> ${dates.length ? dates.join('; ') : t('meta.noRecordDates')}</span>
     <span title="${t('meta.readHint')}">${read}</span>
   </div>`;
 }
 
+/* 反馈：{ inline, extra }。inline 和操作按钮排在同一行；补充说明的输入框与报错另起一行。 */
 function feedback(turn) {
   const traceId = turn.result.traceId;
-  if (!traceId || (state.service && state.service.feedback_enabled === false)) return '';
+  if (!traceId || (state.service && state.service.feedback_enabled === false)) return { inline: '', extra: '' };
   const sent = state.feedback[traceId];
   const ui = turn.ui.feedback;
   if (sent) {
-    return html`<div class="feedback" role="status">${icon('check', 'icon-sm')}<span>${t('feedback.sent.' + sent)}</span>
-      <button type="button" class="link-btn" data-action="feedback-reset">${t('feedback.change')}</button></div>`;
+    return {
+      inline: html`<div class="feedback is-sent" role="status">${icon('check', 'icon-sm')}<span>${t('feedback.sent.' + sent)}</span>
+        <button type="button" class="link-btn" data-action="feedback-reset">${t('feedback.change')}</button></div>`,
+      extra: '',
+    };
   }
-  return html`<div class="feedback">
-    <span>${t('feedback.ask')}</span>
-    ${['correct', 'wrong', 'unsure'].map((verdict) => html`<button type="button" class="btn btn-sm"
-      data-action="feedback" data-verdict="${verdict}" ${ui.sending ? 'disabled' : ''}>${t('feedback.' + verdict)}</button>`)}
-    <button type="button" class="link-btn" data-action="feedback-comment" aria-expanded="${ui.open ? 'true' : 'false'}">${t('feedback.addComment')}</button>
-    ${ui.open ? html`<textarea class="textarea" rows="2" data-input="feedback-comment" maxlength="2000"
-      aria-label="${t('feedback.commentLabel')}" placeholder="${t('feedback.commentPlaceholder')}">${ui.comment}</textarea>` : ''}
-    ${ui.error ? html`<span class="chip chip-danger chip-wrap" role="alert">${t('feedback.failed')}: ${ui.error}</span>` : ''}
-  </div>`;
+  return {
+    inline: html`<div class="feedback">
+      <span>${t('feedback.ask')}</span>
+      ${VERDICTS.map(([verdict, glyph, labelled]) => html`<button type="button" class="vote${labelled ? '' : ' is-icon'}"
+        data-action="feedback" data-verdict="${verdict}" title="${t('feedback.' + verdict)}"
+        ${labelled ? '' : html`aria-label="${t('feedback.' + verdict)}"`} ${ui.sending ? 'disabled' : ''}>${labelled
+        ? html`${icon(glyph, 'icon-sm')}${t('feedback.' + verdict)}` : icon(glyph)}</button>`)}
+      <button type="button" class="link-btn" data-action="feedback-comment" aria-expanded="${ui.open ? 'true' : 'false'}">${t('feedback.addComment')}</button>
+    </div>`,
+    extra: html`${ui.open ? html`<textarea class="textarea" rows="2" data-input="feedback-comment" maxlength="2000"
+        aria-label="${t('feedback.commentLabel')}" placeholder="${t('feedback.commentPlaceholder')}">${ui.comment}</textarea>` : ''}
+      ${ui.error ? html`<span class="chip chip-danger chip-wrap" role="alert">${t('feedback.failed')}: ${ui.error}</span>` : ''}`,
+  };
 }
 
 function actions(view, turn) {
   // 历史页回看缓存结果时不放「再问一次 / 追问」：那一页有自己的「作为新查询重新执行」，
   // 两个长得像的按钮放在一起，人分不清哪个会去读最新数据。
   return html`<div class="answer-actions">
-    <button type="button" class="btn btn-sm" data-action="copy-summary">${icon('copy', 'icon-sm')}${t('action.copyAnswer')}</button>
-    ${turn.cached ? '' : html`<button type="button" class="btn btn-sm" data-action="ask-again">${icon('refresh', 'icon-sm')}${t('action.askAgain')}</button>`}
-    ${!turn.cached && view.kind !== 'failed' ? html`<button type="button" class="btn btn-sm btn-ghost" data-action="follow-up">${t('action.followUp')}</button>` : ''}
+    <button type="button" class="act" data-action="copy-summary">${icon('copy', 'icon-sm')}${t('action.copyAnswer')}</button>
+    ${turn.cached ? '' : html`<button type="button" class="act" data-action="ask-again">${icon('refresh', 'icon-sm')}${t('action.askAgain')}</button>`}
+    ${!turn.cached && view.kind !== 'failed' ? html`<button type="button" class="act" data-action="follow-up">${icon('reply', 'icon-sm')}${t('action.followUp')}</button>` : ''}
   </div>`;
 }
 
@@ -304,26 +422,43 @@ function originNotice(turn) {
   return '';
 }
 
-export function renderPending(turn, elapsedSeconds) {
+/* 等结果时那句「现在在做什么」。有阶段事件就照事件说，没有就只说在处理。 */
+export function pendingStage(turn) {
   const stage = turn.stageNow;
-  const stageText = stage && has('stage.' + stage.stage)
+  return stage && has('stage.' + stage.stage)
     ? t('stage.' + stage.stage) + (stage.database ? ` (${domainTitleOf(stage.database)})` : '')
     : t('ask.working');
-  return html`<div class="answer">
-    <div class="loading"><span class="spinner"></span>
-      <span role="status">${stageText}</span>
-      <span class="muted" data-role="elapsed" aria-live="off">${elapsedSeconds >= 2 ? t('ask.elapsed', { n: elapsedSeconds }) : ''}</span>
-      <button type="button" class="btn btn-sm btn-ghost" data-action="stop">${icon('stop', 'icon-sm')}${t('action.stop')}</button>
+}
+
+/* 等待中。走流式时有六段进度（真实的阶段事件）；走 POST /query 时服务端什么都不回报，
+   只有一条不表示进度的动效——不拿定时器假装在一步步往前走。 */
+export function renderPending(turn, elapsedSeconds) {
+  const streamed = turn.transport === 'a2a-stream';
+  return html`<div class="answer is-pending">
+    <div class="answer-head">
+      <span class="agent-mark is-busy" aria-hidden="true">${icon('logo')}</span>
+      <span class="pending-text" role="status" data-role="stage-text">${pendingStage(turn)}</span>
+      <span class="answer-time" data-role="elapsed" aria-live="off">${elapsedSeconds >= 2 ? t('ask.elapsed', { n: elapsedSeconds }) : ''}</span>
+      <button type="button" class="act" data-action="stop">${icon('stop', 'icon-sm')}${t('action.stop')}</button>
     </div>
-    ${state.learning ? renderLearning(turn) : ''}
+    <div class="answer-body">
+      ${streamed
+        ? html`<div data-role="stage-track">${renderStageTrack(turn.stages)}</div>`
+        : html`<div class="progress-indet" aria-hidden="true"></div>`}
+      <div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+      ${state.learning ? html`<div data-role="learn-slot">${renderLearning(turn)}</div>` : ''}
+    </div>
   </div>`;
 }
 
 export function renderStopped() {
   return html`<div class="answer">
-    ${notice('info', 'info', t('notice.stopped.title'), html`<p>${t('notice.stopped.body')}</p>`)}
-    <div class="answer-actions"><button type="button" class="btn btn-sm" data-action="ask-again">
-      ${icon('refresh', 'icon-sm')}${t('action.askAgain')}</button></div>
+    ${answerHead(html`<span class="chip">${icon('stop', 'icon-sm')}${t('status.stopped')}</span>`)}
+    <div class="answer-body">
+      ${notice('info', 'info', t('notice.stopped.title'), html`<p>${t('notice.stopped.body')}</p>`)}
+      <div class="answer-foot"><div class="answer-actions"><button type="button" class="act" data-action="ask-again">
+        ${icon('refresh', 'icon-sm')}${t('action.askAgain')}</button></div></div>
+    </div>
   </div>`;
 }
 
@@ -343,15 +478,18 @@ export function renderServiceError(turn) {
   const needsSettings = status === 0 || status === 401 || status === 403;
 
   return html`<div class="answer">
-    ${notice('danger', 'error', t('notice.service.title'), html`
-      <p>${t(key)}</p>
-      <p class="original">${status ? `HTTP ${status}` : t('error.noResponse')}${error.serverMessage
-        ? html` · <span lang="zh">${error.serverMessage}</span>` : ''}</p>`)}
-    <div class="answer-actions">
-      <button type="button" class="btn btn-sm" data-action="ask-again">${icon('refresh', 'icon-sm')}${t('action.tryAgain')}</button>
-      ${needsSettings ? html`<button type="button" class="btn btn-sm btn-ghost" data-action="open-settings">${t('action.checkSettings')}</button>` : ''}
+    ${answerHead(html`<span class="chip chip-danger">${icon('error', 'icon-sm')}${t('status.error')}</span>`)}
+    <div class="answer-body">
+      ${notice('danger', 'error', t('notice.service.title'), html`
+        <p>${t(key)}</p>
+        <p class="original">${status ? `HTTP ${status}` : t('error.noResponse')}${error.serverMessage
+          ? html` · <span lang="zh">${error.serverMessage}</span>` : ''}</p>`)}
+      <div class="answer-foot"><div class="answer-actions">
+        <button type="button" class="act" data-action="ask-again">${icon('refresh', 'icon-sm')}${t('action.tryAgain')}</button>
+        ${needsSettings ? html`<button type="button" class="act" data-action="open-settings">${icon('settings', 'icon-sm')}${t('action.checkSettings')}</button>` : ''}
+      </div></div>
+      ${state.learning ? renderLearning(turn) : ''}
     </div>
-    ${state.learning ? renderLearning(turn) : ''}
   </div>`;
 }
 
@@ -359,38 +497,32 @@ export function renderResult(turn) {
   const result = turn.result;
   const view = classify(result);
   const { answers } = splitSteps(result, turn.question);
+  const vote = feedback(turn);
+  let content;
 
   if (view.kind === 'conversation') {
-    return html`<div class="answer">
-      ${originNotice(turn)}
-      ${statusChips(view)}
-      ${renderRichText(result.answer)}
+    content = html`${renderRichText(result.answer)}
       ${notice('info', 'info', t('notice.conversation.title'), html`<p>${t('notice.conversation.body')}</p>`)}
-      ${view.degraded ? notice('warn', 'info', t('notice.degraded.title'), html`<p>${t('notice.degradedChat.body')}</p>`) : ''}
-      ${actions(view, turn)}
-      ${feedback(turn)}
-      ${state.learning ? renderLearning(turn) : renderProcess(turn)}
-    </div>`;
+      ${view.degraded ? notice('warn', 'info', t('notice.degraded.title'), html`<p>${t('notice.degradedChat.body')}</p>`) : ''}`;
+  } else {
+    const summary = conclusion(result, view, answers);
+    const showTables = view.kind === 'success' || view.kind === 'partial';
+    const panels = showTables ? answers.filter((step) => step.rowCount > 0) : [];
+    content = html`<p class="conclusion">${summary.headline}${summary.names ? html`: <strong>${summary.names}</strong>` : ''}
+        ${result.currency && showTables ? html`<span class="chip" title="${t('meta.currencyHint')}">${t('meta.currency', { currency: result.currency })}</span>` : ''}</p>
+      ${notices(result, view)}
+      ${panels.map((step) => stepPanel(turn, step, panels.length > 1))}
+      ${view.kind !== 'failed' ? metaLine(result, answers, panels.length !== answers.length) : ''}`;
   }
 
-  const summary = conclusion(result, view, answers);
-  const showTables = view.kind === 'success' || view.kind === 'partial';
-  const tables = showTables ? answers.filter((step) => step.rowCount > 0) : [];
-
   return html`<div class="answer">
-    ${originNotice(turn)}
-    ${statusChips(view)}
-    <p class="conclusion">${summary.headline}${summary.names ? html`: <strong>${summary.names}</strong>` : ''}
-      ${result.currency && showTables ? html`<span class="chip" title="${t('meta.currencyHint')}">${t('meta.currency', { currency: result.currency })}</span>` : ''}</p>
-    ${summary.facts.length ? html`<div class="facts">${summary.facts.map((fact) => html`<div class="fact">
-      <div class="fact-label">${fact.label}</div>
-      <div class="fact-value">${fact.value}${fact.unit ? html`<span class="fact-unit">${fact.unit}</span>` : ''}</div>
-    </div>`)}</div>` : ''}
-    ${notices(result, view)}
-    ${tables.map((step) => answerTable(turn, step, tables.length > 1))}
-    ${view.kind !== 'failed' ? metaLine(result, answers) : ''}
-    ${actions(view, turn)}
-    ${feedback(turn)}
-    ${state.learning ? renderLearning(turn) : renderProcess(turn)}
+    ${answerHead(statusChips(view), elapsed(result))}
+    <div class="answer-body">
+      ${originNotice(turn)}
+      ${content}
+      <div class="answer-foot">${actions(view, turn)}${vote.inline}</div>
+      ${vote.extra}
+      ${state.learning ? renderLearning(turn) : renderProcess(turn)}
+    </div>
   </div>`;
 }

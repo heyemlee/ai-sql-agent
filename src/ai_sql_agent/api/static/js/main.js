@@ -7,10 +7,10 @@
 import { api } from './api.js';
 import { loadCatalog } from './catalog.js';
 import { $ } from './dom.js';
-import { loadHistory } from './historyStore.js';
+import { loadHistory, resetHistory } from './historyStore.js';
 import { applyStaticText, t } from './i18n.js';
 import { emit, on, save, state } from './state.js';
-import { focusComposer, initAsk, prefill } from './views/ask.js';
+import { focusComposer, initAsk, prefill, showAsk } from './views/ask.js';
 import { initExplore, showData, takePrefill } from './views/explore.js';
 import { initHistory, showHistory } from './views/history.js';
 import { initSettings, openSettings } from './views/settings.js';
@@ -64,6 +64,7 @@ function route({ initial = false } = {}) {
   if (target.view === 'data') showData(target.database, target.table, target.query || '');
   if (target.view === 'history') showHistory();
   if (target.view === 'ask') {
+    showAsk();
     const text = takePrefill();
     if (text) prefill(text);
   }
@@ -103,6 +104,8 @@ async function checkHealth() {
     state.live = false;
   }
   syncTopbar();
+  // 连上了、断开了：提问页首页据此显示或收起那条「服务连不上」的提示
+  if (was !== state.live) emit('health');
 
   clearTimeout(retryTimer);
   if (!state.live) {
@@ -162,7 +165,10 @@ function boot() {
     state.service = null;
     checkHealth();
     loadCatalog({ refresh: true });
+    // 换了 Key 或身份：手里那份历史是上一个身份的。清掉，正开着的那一页自己重新取
+    resetHistory();
     if (current === 'history') loadHistory();
+    if (current === 'ask') showAsk();
   });
 
   checkHealth();
