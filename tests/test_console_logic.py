@@ -8,7 +8,9 @@
 - 表格排序（数字以字符串到达页面时不能按字符比）；
 - 数字显示（一个不是零的数不能显示成 0）；
 - 路由（不认识的 hash 不该把人带去别的页面）；
-- 请求层（响应体读不出来不是「成功」）与目录加载的先后次序、身份的备用来源。
+- 请求层（响应体读不出来不是「成功」）与目录加载的先后次序、身份的备用来源；
+- 数据浏览：一张表「正在怎么看」和地址互转、表与表怎么连、时间轴怎么并、
+  取值怎么配色、概况什么时候取什么时候作废。
 
 没有装 Node 的环境整组跳过：页面本身不依赖 Node，这只是测试手段。
 """
@@ -149,8 +151,109 @@ const out = {};
   const source = readFileSync(new URL(`${JS}/main.js`), 'utf8');
   const body = source.match(/function parseRoute\(\) \{[\s\S]*?\n\}/)[0];
   const parse = (hash) => new Function('location', `${body}; return parseRoute();`)({ hash });
-  out.routes = Object.fromEntries(['', '#', '#/', '#/ask', '#/data', '#/data/erp_db/supplier', '#/history',
-    '#main', '#/nope', '#/data/%E0%A4%A'].map((hash) => [hash, parse(hash)]));
+  out.routes = Object.fromEntries(['', '#', '#/', '#/ask', '#/data', '#/data/erp_db', '#/data/erp_db/supplier', '#/history',
+    '#main', '#/nope', '#/data/%E0%A4%A', '#/data/erp_db/supplier?q=a/b&f=c%3Aeq%3A%253F', '#/data?tab=fields',
+    '#/data/erp_db/odd%3Fname'].map((hash) => [hash, parse(hash)]));
+}
+
+// ---- dataRoute.js：一张表「正在怎么看」和地址互转 -------------------------------
+{
+  const { dataHref, formatView, freshView, parseView } = await load('dataRoute.js');
+  const view = {
+    ...freshView(), search: 'a b&c', page: 3, pageSize: 50, tab: 'fields',
+    sort: { key: 'signed on', direction: 'desc' },
+    filters: [
+      { column: 'status', op: 'eq', value: '已取消' },
+      { column: 'odd:name?x/y', op: 'contains', value: 'a:b&c=d #1' },
+      { column: 'notes', op: 'is_empty', value: '' },
+    ],
+  };
+  out.viewRoute = {
+    roundTrip: JSON.stringify(parseView(formatView(view))) === JSON.stringify(view),
+    plain: formatView(freshView()),
+    href: dataHref('shop db', 'a/b?c', { filters: [{ column: 'k', op: 'eq', value: 'J-1' }] }),
+    home: [dataHref(), dataHref('x_db'), dataHref('', 'ignored')],
+    junk: parseView('q=x&f=broken&f=a:regexp:b&f=%E0%A4%A:eq:1&sort=nodirection&page=-2&size=7&tab=sql&f=ok:eq:1'),
+    tooMany: parseView(Array.from({ length: 9 }, (_, i) => `f=c${i}:eq:1`).join('&')).filters.length,
+  };
+}
+
+// ---- links.js：表与表怎么连 -----------------------------------------------------
+{
+  const { buildLinks, crossDatabaseLinks, relatedTables } = await load('links.js');
+  const column = (name, references = [], extra = {}) => ({ name, references, ...extra });
+  const ref = (relation, database, table, name) => ({ relation, database, table, column: name });
+  const domains = [
+    { database: 'a_db', tables: [
+      { name: 'orders', columns: [
+        column('order_no', [
+          ref('cross_database', 'b_db', 'work', 'order_no'),
+          ref('cross_database', 'c_db', 'ticket', 'ref_no'),
+          ref('cross_database', 'z_db', 'hidden', 'order_no'),      // 对端不在目录里（没权限）
+        ], { primary_key: true }),
+        column('customer'),
+      ] },
+      { name: 'items', columns: [column('order_no', [ref('foreign_key', 'a_db', 'orders', 'order_no')]), column('sku')] },
+    ] },
+    { database: 'b_db', tables: [
+      { name: 'work', columns: [column('order_no', [ref('cross_database', 'a_db', 'orders', 'order_no')])] },
+    ] },
+    { database: 'c_db', tables: [
+      { name: 'ticket', columns: [
+        column('ref_no', [ref('cross_database', 'a_db', 'orders', 'order_no')]),
+        column('part', [ref('cross_database', 'c_db', 'stock', 'name')]),
+      ] },
+      { name: 'stock', columns: [column('name', [ref('cross_database', 'c_db', 'ticket', 'part')], { primary_key: true })] },
+    ] },
+  ];
+  const links = buildLinks(domains);
+  const name = (member) => `${member.database}.${member.table}.${member.column}`;
+  const related = (database, table) => relatedTables(links, database, table).map((item) => [item.column, item.others.map(name)]);
+  out.links = {
+    groups: links.groups.map((group) => ({ hub: name(group.hub), members: group.members.map(name), databases: group.databases })),
+    edges: links.edges.length,
+    cached: buildLinks(domains) === links,
+    fromTicket: related('c_db', 'ticket'),
+    fromStock: related('c_db', 'stock'),
+    lonely: related('a_db', 'nothing'),
+    across: crossDatabaseLinks(links, 'a_db').map((group) => [group.domain.database, group.links.map((link) => `${name(link.mine)}>${name(link.other)}`)]),
+    empty: buildLinks(null).groups.length,
+  };
+}
+
+// ---- charts.js / format.js：时间轴怎么并、取值怎么配色、数量怎么写 ----------------
+{
+  const { rebucket, seriesSlots } = await load('charts.js');
+  const { formatCompact, formatCount, formatShare } = await load('format.js');
+  const { state } = await load('state.js');
+  state.lang = 'en';
+  const months = (from, count) => Array.from({ length: count }, (_, offset) => {
+    const index = from + offset;
+    return { period: `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, '0')}`, count: 1 };
+  });
+  const shape = (result) => ({ grain: result.grain, bars: result.bars.length, first: result.bars[0], last: result.bars[result.bars.length - 1] });
+  out.buckets = {
+    gaps: rebucket([{ period: '2025-11', count: 3 }, { period: '2026-02', count: 5 }, { period: 'junk', count: 9 }]),
+    quarters: shape(rebucket(months(2020 * 12 + 1, 40))),       // 2020-02 起 40 个月
+    years: shape(rebucket(months(2000 * 12, 200))),             // 2000-01 起 200 个月
+    none: rebucket([]),
+  };
+  const facet = (values, extra = {}) => ({
+    complete: true, ordered_by: 'count', values: values.map((value, index) => ({ value, count: 10 - index })), ...extra,
+  });
+  const slots = (item) => [...seriesSlots(item)];
+  out.slots = {
+    declared: slots(facet(['open', 'waiting', 'closed'], { ordered_by: 'declared' })),
+    byValue: slots(facet(['zeta', 'alpha', 10, 9])),
+    tooMany: slots(facet(['a', 'b', 'c', 'd', 'e', 'f', 'g'])),
+    incomplete: slots(facet(['a', 'b'], { complete: false })),
+    nothing: slots(null),
+  };
+  out.counts = {
+    count: formatCount(1200),
+    compact: [formatCompact(1200), formatCompact(47029260.75), formatCompact(2356.65, { unit: 'USD' }), formatCompact(39.5)],
+    share: [formatShare(1, 1200), formatShare(550, 1200), formatShare(60, 1200), formatShare(0, 10), formatShare(1, 0)],
+  };
 }
 
 // ---- api.js / catalog.js：假的 fetch -------------------------------------------
@@ -209,6 +312,46 @@ const out = {};
   const before = state.identity;
   const ensured = await ensureIdentity();
   out.lateIdentity = { before, ensured, identity: state.identity && state.identity.user_id, status: catalog.status };
+
+  // ---- profile.js：概况什么时候取、什么时候作废 ----
+  const { findProfile, knownRowCount, profileSupport, requestProfile } = await load('profile.js');
+  const profileCalls = () => calls.filter((url) => url.includes('/profile')).length;
+  const settle = async () => { for (let turn = 0; turn < 3; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0)); };
+  const serve = (service) => (url) => (url.includes('/profile')
+    ? json(200, { total_rows: 7, columns: [], facets: [], timelines: [] })
+    : json(200, { domains: [], identity: { user_id: 'u' }, service }));
+
+  // 没有概况接口的旧版本进程：一条请求都不发
+  handler = serve({ streaming: false });
+  await loadCatalog({ refresh: true });
+  calls.length = 0;
+  const unsupported = { support: profileSupport(), entry: requestProfile('a_db', 't'), calls: profileCalls() };
+  // 管理员关掉了
+  handler = serve({ profile: { enabled: false } });
+  await loadCatalog({ refresh: true });
+  const off = { support: profileSupport(), entry: requestProfile('a_db', 't') };
+
+  handler = serve({ profile: { enabled: true } });
+  await loadCatalog({ refresh: true });
+  calls.length = 0;
+  const asked = requestProfile('a_db', 't');
+  const askedAgain = requestProfile('a_db', 't');
+  const countOnly = requestProfile('a_db', 't', { breakdowns: false });
+  await settle();
+  const loaded = {
+    same: asked === askedAgain && countOnly === asked, status: asked.status, calls: profileCalls(),
+    count: knownRowCount('a_db', 't'), neverAsked: findProfile('a_db', 'other'),
+  };
+  requestProfile('a_db', 't', { filters: [{ column: 'c', op: 'eq', value: 'x' }] });
+  requestProfile('a_db', 't', { filters: [{ column: 'c', op: 'eq', value: 'x' }] });
+  await settle();
+  const filteredCalls = profileCalls();
+  // 目录刷新（换了身份、点了刷新）：上一份概况作废
+  await loadCatalog({ refresh: true });
+  out.profiles = {
+    unsupported, off, loaded, filteredCalls,
+    afterReload: { count: knownRowCount('a_db', 't'), found: findProfile('a_db', 't') },
+  };
 }
 
 console.log(JSON.stringify(out));
@@ -320,14 +463,136 @@ class ConsoleLogicTest(unittest.TestCase):
         routes = self.out["routes"]
         for home in ("", "#", "#/", "#/ask"):
             self.assertEqual(routes[home], {"view": "ask"}, home)
-        self.assertEqual(routes["#/data"], {"view": "data", "database": "", "table": ""})
+        self.assertEqual(routes["#/data"], {"view": "data", "database": "", "table": "", "query": ""})
         self.assertEqual(
-            routes["#/data/erp_db/supplier"], {"view": "data", "database": "erp_db", "table": "supplier"}
+            routes["#/data/erp_db"], {"view": "data", "database": "erp_db", "table": "", "query": ""}
+        )
+        self.assertEqual(
+            routes["#/data/erp_db/supplier"],
+            {"view": "data", "database": "erp_db", "table": "supplier", "query": ""},
         )
         self.assertEqual(routes["#/history"], {"view": "history"})
         # 页内锚点、不认识的路径、坏的转义：留在原地（null），不是跳去提问页
         for stray in ("#main", "#/nope", "#/data/%E0%A4%A"):
             self.assertIsNone(routes[stray], stray)
+
+    def test_the_query_part_of_a_data_address_is_not_split_into_path_segments(self):
+        routes = self.out["routes"]
+        # 问号后面是视图自己的状态：里面的斜杠不是路径分隔符
+        self.assertEqual(
+            routes["#/data/erp_db/supplier?q=a/b&f=c%3Aeq%3A%253F"],
+            {"view": "data", "database": "erp_db", "table": "supplier", "query": "q=a/b&f=c%3Aeq%3A%253F"},
+        )
+        self.assertEqual(
+            routes["#/data?tab=fields"], {"view": "data", "database": "", "table": "", "query": "tab=fields"}
+        )
+        # 表名里真有问号时，链接里它是转义过的，不会被当成查询串的开头
+        self.assertEqual(routes["#/data/erp_db/odd%3Fname"]["table"], "odd?name")
+
+    # ---- 数据浏览 ----
+
+    def test_a_table_view_survives_a_round_trip_through_the_address(self):
+        route = self.out["viewRoute"]
+        # 搜索词、筛选值、字段名里的冒号、问号、斜杠、中文都不影响拆分
+        self.assertTrue(route["roundTrip"])
+        # 默认的样子不往地址里写东西
+        self.assertEqual(route["plain"], "")
+        self.assertEqual(route["home"], ["#/data", "#/data/x_db", "#/data"])
+        self.assertEqual(route["href"], "#/data/shop%20db/a%2Fb%3Fc?f=k%3Aeq%3AJ-1")
+
+    def test_a_mangled_address_is_read_leniently_not_trusted(self):
+        junk = self.out["viewRoute"]["junk"]
+        # 认不出的部分丢掉：缺段的条件、不在闭集里的条件、坏的转义、不成立的排序页码页大小
+        self.assertEqual(junk["search"], "x")
+        self.assertEqual(junk["filters"], [{"column": "ok", "op": "eq", "value": "1"}])
+        self.assertIsNone(junk["sort"])
+        self.assertEqual((junk["page"], junk["pageSize"], junk["tab"]), (1, 25, "records"))
+        # 条数超过服务端的上限也不往下传
+        self.assertEqual(self.out["viewRoute"]["tooMany"], 5)
+
+    def test_tables_are_linked_only_by_what_the_catalog_declares(self):
+        links = self.out["links"]
+        self.assertEqual(links["edges"], 4)
+        self.assertEqual(links["groups"], [
+            {
+                # 连得最多的那个字段是这组键的本家
+                "hub": "a_db.orders.order_no",
+                "members": ["a_db.orders.order_no", "a_db.items.order_no", "b_db.work.order_no", "c_db.ticket.ref_no"],
+                "databases": ["a_db", "b_db", "c_db"],
+            },
+            {
+                # 一样多时取主键那一边
+                "hub": "c_db.stock.name",
+                "members": ["c_db.ticket.part", "c_db.stock.name"],
+                "databases": ["c_db"],
+            },
+        ])
+        # 对端不在目录里（没有权限）的那条线不画，名字也不出现
+        self.assertNotIn("z_db", str(links))
+        self.assertTrue(links["cached"])
+        self.assertEqual(links["empty"], 0)
+
+    def test_related_tables_follow_a_shared_key_transitively(self):
+        links = self.out["links"]
+        # 工单只登记了和订单的关联；同一个订单号也找得到订单明细和生产记录
+        self.assertEqual(links["fromTicket"], [
+            ["ref_no", ["a_db.orders.order_no", "a_db.items.order_no", "b_db.work.order_no"]],
+            ["part", ["c_db.stock.name"]],
+        ])
+        self.assertEqual(links["fromStock"], [["name", ["c_db.ticket.part"]]])
+        self.assertEqual(links["lonely"], [])
+        self.assertEqual(links["across"], [
+            ["b_db", ["a_db.orders.order_no>b_db.work.order_no"]],
+            ["c_db", ["a_db.orders.order_no>c_db.ticket.ref_no"]],
+        ])
+
+    def test_timeline_keeps_empty_months_and_merges_long_spans(self):
+        buckets = self.out["buckets"]
+        # 没有记录的月份也是一个月；认不出的月份不进时间轴
+        self.assertEqual(buckets["gaps"], {"grain": "month", "bars": [
+            {"label": "2025-11", "start": "2025-11-01", "end": "2025-12-01", "count": 3},
+            {"label": "2025-12", "start": "2025-12-01", "end": "2026-01-01", "count": 0},
+            {"label": "2026-01", "start": "2026-01-01", "end": "2026-02-01", "count": 0},
+            {"label": "2026-02", "start": "2026-02-01", "end": "2026-03-01", "count": 5},
+        ]})
+        # 季度按日历对齐：从 2 月开始的数据，第一根柱子仍然是一季度（只含 2、3 两个月）
+        quarters = buckets["quarters"]
+        self.assertEqual((quarters["grain"], quarters["bars"]), ("quarter", 14))
+        self.assertEqual(quarters["first"], {"label": "2020 Q1", "start": "2020-01-01", "end": "2020-04-01", "count": 2})
+        self.assertEqual(quarters["last"], {"label": "2023 Q2", "start": "2023-04-01", "end": "2023-07-01", "count": 2})
+        years = buckets["years"]
+        self.assertEqual((years["grain"], years["bars"]), ("year", 17))
+        self.assertEqual(years["first"], {"label": "2000", "start": "2000-01-01", "end": "2001-01-01", "count": 12})
+        self.assertEqual(years["last"], {"label": "2016", "start": "2016-01-01", "end": "2017-01-01", "count": 8})
+        self.assertEqual(buckets["none"], {"grain": "month", "bars": []})
+
+    def test_value_colours_follow_the_value_not_its_rank(self):
+        slots = self.out["slots"]
+        self.assertEqual(slots["declared"], [["open", 1], ["waiting", 2], ["closed", 3]])
+        # 没声明顺序的按取值本身排（数量会变，颜色不能跟着换）
+        self.assertEqual(slots["byValue"], [["9", 1], ["10", 2], ["alpha", 3], ["zeta", 4]])
+        # 超过六个取值、或者取值没取全：不上色，不凑第七个颜色
+        self.assertEqual((slots["tooMany"], slots["incomplete"], slots["nothing"]), ([], [], []))
+
+    def test_counts_and_shares_are_written_for_reading(self):
+        counts = self.out["counts"]
+        self.assertEqual(counts["count"], "1,200")
+        self.assertEqual(counts["compact"], ["1,200", "47M", "2,356.65", "39.5"])
+        # 不是零的一份不显示成 0%
+        self.assertEqual(counts["share"], ["<0.1%", "46%", "5%", "0%", ""])
+
+    def test_profiles_are_fetched_once_and_dropped_with_the_catalog(self):
+        profiles = self.out["profiles"]
+        self.assertEqual(profiles["unsupported"], {"support": "unsupported", "entry": None, "calls": 0})
+        self.assertEqual(profiles["off"], {"support": "off", "entry": None})
+        # 同一张表问三次（其中一次只要行数）只发一个请求
+        self.assertEqual(
+            profiles["loaded"],
+            {"same": True, "status": "ready", "calls": 1, "count": 7, "neverAsked": None},
+        )
+        # 换一组条件是另一份；同一组条件不重复取
+        self.assertEqual(profiles["filteredCalls"], 2)
+        self.assertEqual(profiles["afterReload"], {"count": None, "found": None})
 
     # ---- 请求层与目录 ----
 

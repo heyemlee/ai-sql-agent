@@ -205,7 +205,8 @@ class NoHardcodedBusinessDataTest(unittest.TestCase):
 class ContractWiringTest(unittest.TestCase):
     def test_page_talks_to_the_documented_endpoints(self):
         api = (JS_DIR / "api.js").read_text(encoding="utf-8")
-        for marker in ("/query", "/history", "/feedback", "/catalog", "/a2a", "/health", "X-API-Key", "message/stream"):
+        for marker in ("/query", "/history", "/feedback", "/catalog", "/rows", "/profile", "/a2a", "/health",
+                       "X-API-Key", "message/stream"):
             self.assertIn(marker, api, marker)
 
     def test_result_fields_are_read_by_their_contract_names(self):
@@ -238,6 +239,41 @@ class ContractWiringTest(unittest.TestCase):
         self.assertIsNotNone(match, "找不到 /feedback 的请求体")
         fields = {item.split(":")[0].strip() for item in match.group(1).split(",") if item.strip()}
         self.assertEqual(fields, {"trace_id", "verdict", "comment"})
+
+
+class ChartColourTest(unittest.TestCase):
+    """
+    统计图的配色不是随手挑的：分类色六个、库的标识色四个，顺序固定，对着白底跑过校验
+    （色弱视觉下相邻两色的区分度 ≥ 9、正常视觉下 ≥ 22；标识色是两两之间都算）。
+    这里把校验过的那一组钉住——要换颜色或调顺序，先重跑校验，再改这里。
+    """
+
+    SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#4a3aa7", "#e87ba4"]
+    DATABASES = ["#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7"]
+
+    def setUp(self):
+        self.css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+
+    def _tokens(self, prefix):
+        found = dict(re.findall(rf"--{prefix}-(\d):\s*(#[0-9a-f]{{6}});", self.css))
+        return [found[key] for key in sorted(found)]
+
+    def test_palettes_are_the_validated_sets_in_their_validated_order(self):
+        self.assertEqual(self._tokens("series"), self.SERIES)
+        self.assertEqual(self._tokens("db"), self.DATABASES)
+
+    def test_no_seventh_colour_is_ever_asked_for(self):
+        # 取值再多也只有六个分类色：样式表里没有第七个，脚本里的上限也是六
+        self.assertNotIn(".viz-s7", self.css)
+        self.assertNotIn(".db-c5", self.css)
+        charts = (JS_DIR / "charts.js").read_text(encoding="utf-8")
+        self.assertRegex(charts, r"export const MAX_SERIES = 6;")
+
+    def test_colours_live_in_the_stylesheet_only(self):
+        # 脚本里不写颜色值：图上的颜色全部来自样式表的那几个变量，改一处就全改了
+        for module in app_modules():
+            source = module.read_text(encoding="utf-8")
+            self.assertNotRegex(source, r"#[0-9a-fA-F]{6}\b", f"{module.name} 里写了颜色值")
 
 
 class LearningNotesTest(unittest.TestCase):
