@@ -1,5 +1,5 @@
 /* 设置。上半部分是每个人都可能用到的两项（语言、学习模式）；
-   连接配置、诊断、运维操作全部收在「高级设置」里——
+   连接配置、模型连接、诊断、运维操作全部收在「高级设置」里——
    查数的员工不需要知道服务地址和 trace 是什么，也不该被这些东西挡在问题前面。 */
 
 import { api } from '../api.js';
@@ -7,6 +7,16 @@ import { catalog } from '../catalog.js';
 import { $, delegate, html, icon, setHtml } from '../dom.js';
 import { t } from '../i18n.js';
 import { emit, on, save, state } from '../state.js';
+import {
+  captureModelForm,
+  ensureModelLoaded,
+  initModelSection,
+  modelActions,
+  modelAddressTyped,
+  modelProviderChanged,
+  modelSection,
+  resetModelSection,
+} from './settingsModel.js';
 
 let dialog;
 let advancedOpen = false;
@@ -36,7 +46,7 @@ function identityRows() {
   return rows;
 }
 
-function draw({ fresh = false } = {}) {
+function draw({ fresh = false, fromModel = false } = {}) {
   const isAdmin = Boolean(state.identity && state.identity.is_admin);
   // 重画时保住连接表单里还没保存的输入：拨一下别的开关不该把刚填的地址清掉。
   // 刚打开对话框时（fresh）不保：上次没保存就关掉的输入，再打开时不该看起来像已经生效了。
@@ -47,6 +57,9 @@ function draw({ fresh = false } = {}) {
     user: typed('setUser', state.userId),
     transport: typed('setTransport', state.transport),
   };
+  // 模型连接那一块自己要求重画时，它已经把该留的值理好了（换协议、保存成功都要换掉表单里的值）
+  if (fresh) resetModelSection();
+  else if (!fromModel) captureModelForm();
   setHtml(dialog, html`<div class="sheet" role="document">
     <div class="row-between">
       <h2 id="settingsTitle">${t('settings.title')}</h2>
@@ -92,6 +105,8 @@ function draw({ fresh = false } = {}) {
           </div>
           <div><button type="submit" class="btn btn-primary">${t('settings.save')}</button></div>
         </form>
+
+        ${modelSection()}
 
         <section class="stack">
           <h3>${t('settings.diagnostics')}</h3>
@@ -176,12 +191,19 @@ async function operate(name) {
 export function openSettings() {
   draw({ fresh: !dialog.open });
   if (!dialog.open) dialog.showModal();
+  if (advancedOpen) ensureModelLoaded();
 }
 
 export function initSettings() {
   dialog = $('dlgSettings');
+  initModelSection(() => { if (dialog.open) draw({ fromModel: true }); });
 
   dialog.addEventListener('submit', (event) => {
+    if (event.target.dataset.form === 'model') {
+      event.preventDefault();
+      modelActions['model-save']();
+      return;
+    }
     if (event.target.dataset.form !== 'connection') return;
     event.preventDefault();
     state.base = $('setBase').value.trim();
@@ -190,13 +212,24 @@ export function initSettings() {
     state.transport = $('setTransport').value;
     save();
     diagnostics = null;
+    // 换了 Key 或身份，模型连接那一块能不能看、能不能改都得重新问
+    resetModelSection();
     emit('reconnect');
     draw();
   });
 
   dialog.addEventListener('toggle', (event) => {
-    if (event.target.dataset && event.target.dataset.detail === 'advanced') advancedOpen = event.target.open;
+    if (!event.target.dataset || event.target.dataset.detail !== 'advanced') return;
+    advancedOpen = event.target.open;
+    if (advancedOpen) ensureModelLoaded();
   }, true);
+
+  dialog.addEventListener('change', (event) => {
+    if (event.target.id === 'modelProvider') modelProviderChanged(event.target.value);
+  });
+  dialog.addEventListener('input', (event) => {
+    if (event.target.id === 'modelBase') modelAddressTyped();
+  });
 
   // 点到对话框外面的遮罩（事件目标是 dialog 本身）也算关闭
   dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
@@ -221,10 +254,16 @@ export function initSettings() {
     },
     diagnose: () => diagnose(),
     operate: (target) => operate(target.dataset.op),
+    ...modelActions,
   });
 
   on('open-settings', openSettings);
   on('lang', () => { if (dialog.open) draw(); });
   on('learning', () => { if (dialog.open) draw(); });
-  on('catalog', () => { if (dialog.open) draw(); });
+  // 身份是跟着目录一起回来的：高级设置开着的话，这时候才知道能不能去取模型连接
+  on('catalog', () => {
+    if (!dialog.open) return;
+    draw();
+    if (advancedOpen) ensureModelLoaded();
+  });
 }

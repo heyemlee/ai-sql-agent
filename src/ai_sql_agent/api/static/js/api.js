@@ -122,6 +122,12 @@ export const api = {
   resetCircuits: () => request('POST', '/admin/circuit/reset'),
   feedbackStats: () => request('GET', '/feedback/stats'),
 
+  // 模型连接（管理员）。Key 只往服务端送，这几个接口都不把它带回来
+  modelStatus: () => request('GET', '/admin/model'),
+  testModel: (body) => request('POST', '/admin/model/test', { body }),
+  saveModel: (body) => request('PUT', '/admin/model', { body }),
+  clearModel: () => request('DELETE', '/admin/model'),
+
   stream: streamQuery,
 };
 
