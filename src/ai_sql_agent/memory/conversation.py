@@ -74,6 +74,7 @@ class ConversationMemoryService:
     ):
         self.config = config or MemoryServiceConfig()
         self.store = store or SQLiteMemoryStore(self.config.db_path)
+        self._owns_summarizer = summarizer is None
         self.summarizer = summarizer or self._build_default_summarizer()
         resolved_embedding = embedding_client or LocalMemoryEmbeddingClient(
             dimensions=self.config.embedding_dimensions
@@ -241,6 +242,19 @@ class ConversationMemoryService:
 
     def close(self, wait: bool = True) -> None:
         self.short_term.close(wait=wait)
+
+    def refresh_summarizer(self) -> None:
+        """
+        模型连接换过之后调：摘要用模型还是用抽取，按现在有没有凭证重新选一次。
+
+        这个选择以前只在构造时做一次——启动时没有凭证，之后在页面上配了 Key，
+        摘要也会一直停在抽取版。调用方自己传进来的摘要器不动。
+        """
+        if not self._owns_summarizer:
+            return
+        self.summarizer = self._build_default_summarizer()
+        self.short_term.summarizer = self.summarizer
+        self.long_term.summarizer = self.summarizer
 
     def _build_default_summarizer(self) -> MemorySummarizer:
         if (

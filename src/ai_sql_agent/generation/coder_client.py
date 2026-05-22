@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from ai_sql_agent.core import ModelTransport, get_settings
+from ai_sql_agent.core.model_client import FollowsModelSettings
 
 
 @dataclass
@@ -13,7 +13,8 @@ class CoderModelConfig:
     Coder 模型配置。
 
     协议由 provider 决定：openai（OpenAI 兼容）或 anthropic（Messages）。
-    留空的字段在构造 Client 时从全局 Settings 补齐（见 ai_sql_agent.core.settings）。
+    留空的字段在构造 Client 时从全局 Settings 补齐（见 ai_sql_agent.core.settings），
+    之后跟着页面保存的模型连接走。
     没有 API Key 时默认走 Mock，方便先跑通流程。
     """
 
@@ -26,7 +27,7 @@ class CoderModelConfig:
     use_mock_when_no_api_key: bool = True
 
 
-class CoderModelClient:
+class CoderModelClient(FollowsModelSettings):
     """
     Coder 模型 Client。
 
@@ -35,50 +36,29 @@ class CoderModelClient:
     """
 
     COMPONENT = "coder"
+    MODEL_SETTING = "coder_model"
 
     def __init__(self, config: CoderModelConfig | None = None):
-        self.config = config or CoderModelConfig()
-        settings = get_settings()
-
-        if not self.config.api_key:
-            self.config.api_key = settings.resolved_chat_api_key()
-        if not self.config.base_url:
-            self.config.base_url = settings.chat_url
-        if not self.config.model:
-            self.config.model = settings.coder_model
-        if not self.config.provider:
-            self.config.provider = settings.model_provider
-
-        self.transport = ModelTransport(
-            self.COMPONENT,
-            api_key=self.config.api_key,
-            timeout=self.config.timeout,
-            provider=self.config.provider,
-        )
+        self._bind_connection(config or CoderModelConfig())
 
     def generate_sql(self, prompt: str) -> str:
         """
         生成 SQL。
         """
-        if self.config.api_key:
-            return self._call_model(prompt)
+        connection = self._connection()
+        if connection.has_key:
+            return connection.transport.chat(
+                connection.url,
+                [{"role": "user", "content": prompt}],
+                model=connection.model,
+                temperature=self.config.temperature,
+            )
 
         if self.config.use_mock_when_no_api_key:
             return self._mock_generate(prompt)
 
         raise ValueError(
             "缺少模型 API Key（OPENAI_API_KEY / ANTHROPIC_API_KEY），无法调用 Coder 模型。"
-        )
-
-    def _call_model(self, prompt: str) -> str:
-        """
-        调用 Coder 模型。
-        """
-        return self.transport.chat(
-            self.config.base_url,
-            [{"role": "user", "content": prompt}],
-            model=self.config.model,
-            temperature=self.config.temperature,
         )
 
     def _mock_generate(self, prompt: str) -> str:

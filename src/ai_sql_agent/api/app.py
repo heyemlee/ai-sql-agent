@@ -221,12 +221,24 @@ async def lifespan(app: FastAPI):
         chat_model=settings.chat_model,
         coder_model=settings.coder_model,
         model_credentials=settings.has_model_credentials,
+        # page = 模型连接是管理员在页面上保存的那一份，压过了环境变量和 .env
+        model_settings="page" if settings.page_store.get("values") else "server",
         audit=settings.audit_enabled,
         schema_refresh_seconds=settings.schema_refresh_seconds,
         rate_limit_per_minute=settings.default_rate_limit_per_minute,
         max_rows=pipeline_config.max_rows,
         max_execution_seconds=pipeline_config.max_execution_seconds,
     )
+
+    if settings.page_store.get("problem"):
+        # 页面保存过模型连接，但那个文件现在用不了：服务照常起，用的是环境变量和 .env 里的那一份
+        log_event(
+            _logger,
+            logging.WARNING,
+            "model_settings.unusable",
+            path=settings.model_settings_file,
+            problem=settings.page_store["problem"],
+        )
 
     # 记忆库的位置取配置（AI_SQL_MEMORY_DB_PATH）：两个实例各用各的库，对话历史才不会串
     memory = create_memory_service()
@@ -614,6 +626,11 @@ from .catalog import router as _catalog_router  # noqa: E402
 
 app.include_router(_catalog_router)
 
+# 模型连接：管理员在页面上查看 / 测试 / 保存 / 恢复（/admin/model …）。
+from .model_admin import router as _model_admin_router  # noqa: E402
+
+app.include_router(_model_admin_router)
+
 
 class _ConsoleStaticFiles(StaticFiles):
     """
@@ -777,6 +794,11 @@ def readyz() -> Dict[str, Any]:
         if settings.app_env == "production":
             ready = False
     checks["model_provider"] = f"{settings.model_provider} ({settings.chat_model})"
+    if settings.page_store.get("values"):
+        # 模型连接来自页面保存的那一份，不是环境变量——排查「配置明明改了却没生效」时先看这里
+        checks["model_settings"] = f"saved from the console at {settings.page_store.get('saved_at', '')}"
+    elif settings.page_store.get("problem"):
+        checks["model_settings"] = f"saved file is unusable: {settings.page_store['problem']}"
     checks["auth_mode"] = settings.auth_mode
 
     # 熔断状态只做展示：模型挂了会走降级链路，服务本身仍然可用，
@@ -830,6 +852,7 @@ def reset_circuits(principal=Depends(require_admin)) -> Dict[str, Any]:
     手动复位模型熔断器，并清掉已记下的模型访问故障（凭证被拒 / 额度耗尽 / 模型无权限）。
 
     模型侧确认恢复后不想等冷却、或者凭证 / 额度在服务端修好了又不想重启时用。
+    （换一把 Key 不用来这里：在页面上保存模型连接时会自动清一遍，见 `/admin/model`。）
     这里**不验证**凭证是不是真的好了：清掉之后，下一个真实请求会再去试一次，
     还是被拒就重新记下。需要管理员身份；没有、也不打算有匿名的复位入口。
     """

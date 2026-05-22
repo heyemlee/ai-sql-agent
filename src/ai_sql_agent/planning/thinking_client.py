@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Iterator, Optional
 
-from ai_sql_agent.core import ModelTransport, get_settings
+from ai_sql_agent.core.model_client import FollowsModelSettings
 
 
 @dataclass
@@ -14,7 +14,7 @@ class ThinkingModelConfig:
     思考模型配置。
 
     协议由 provider 决定：openai（OpenAI 兼容）或 anthropic（Messages）。
-    留空字段在构造 Client 时从全局 Settings 补齐。
+    留空字段在构造 Client 时从全局 Settings 补齐，之后跟着页面保存的模型连接走。
     没有 API Key 时默认走 Mock，方便先跑通流程。
     """
 
@@ -28,7 +28,7 @@ class ThinkingModelConfig:
     mock_stream_delay: float = 0.02
 
 
-class ThinkingModelClient:
+class ThinkingModelClient(FollowsModelSettings):
     """
     思考模型 Client。
 
@@ -39,31 +39,20 @@ class ThinkingModelClient:
     COMPONENT = "thinking"
 
     def __init__(self, config: ThinkingModelConfig | None = None):
-        self.config = config or ThinkingModelConfig()
-        settings = get_settings()
-
-        if not self.config.api_key:
-            self.config.api_key = settings.resolved_chat_api_key()
-        if not self.config.base_url:
-            self.config.base_url = settings.chat_url
-        if not self.config.model:
-            self.config.model = settings.chat_model
-        if not self.config.provider:
-            self.config.provider = settings.model_provider
-
-        self.transport = ModelTransport(
-            self.COMPONENT,
-            api_key=self.config.api_key,
-            timeout=self.config.timeout,
-            provider=self.config.provider,
-        )
+        self._bind_connection(config or ThinkingModelConfig())
 
     def generate(self, prompt: str) -> str:
         """
         非流式生成规划结果。
         """
-        if self.config.api_key:
-            return self._call_model(prompt)
+        connection = self._connection()
+        if connection.has_key:
+            return connection.transport.chat(
+                connection.url,
+                self._messages(prompt),
+                model=connection.model,
+                temperature=self.config.temperature,
+            )
 
         if self.config.use_mock_when_no_api_key:
             return self._mock_generate(prompt)
@@ -79,8 +68,15 @@ class ThinkingModelClient:
         返回一个迭代器，每次 yield 一小段文本。
         Demo 中可以边生成边 print。
         """
-        if self.config.api_key:
-            yield from self._call_model_stream(prompt)
+        connection = self._connection()
+        if connection.has_key:
+            # 流式（SSE，OpenAI / Anthropic 两种事件格式都能解析）
+            yield from connection.transport.chat_stream(
+                connection.url,
+                self._messages(prompt),
+                model=connection.model,
+                temperature=self.config.temperature,
+            )
             return
 
         if self.config.use_mock_when_no_api_key:
@@ -93,28 +89,6 @@ class ThinkingModelClient:
 
     def _messages(self, prompt: str) -> list:
         return [{"role": "user", "content": prompt}]
-
-    def _call_model(self, prompt: str) -> str:
-        """
-        调用大模型，非流式。
-        """
-        return self.transport.chat(
-            self.config.base_url,
-            self._messages(prompt),
-            model=self.config.model,
-            temperature=self.config.temperature,
-        )
-
-    def _call_model_stream(self, prompt: str) -> Iterator[str]:
-        """
-        调用大模型，流式（SSE，OpenAI / Anthropic 两种事件格式都能解析）。
-        """
-        yield from self.transport.chat_stream(
-            self.config.base_url,
-            self._messages(prompt),
-            model=self.config.model,
-            temperature=self.config.temperature,
-        )
 
     @staticmethod
     def _extract_query(prompt: str) -> str:

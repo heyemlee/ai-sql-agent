@@ -213,6 +213,32 @@ def _mentions(text: str, markers) -> bool:
     return any(marker in text for marker in markers)
 
 
+def upstream_error_message(text: str, limit: int = 300) -> str:
+    """
+    服务端错误响应里那句给人看的话。
+
+    OpenAI 兼容与 Anthropic 的错误体都是 `{"error": {"message": …}}`，中转站常见的还有
+    `{"error": "…"}` 和 `{"message": "…"}`。认不出结构就返回空：整个响应体不拿去给人看——
+    它可能是网关的一整页 HTML，也可能根本不是模型服务回的。
+    """
+    try:
+        document = json.loads(text)
+    except ValueError:
+        return ""
+    if not isinstance(document, dict):
+        return ""
+    error = document.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+    elif isinstance(error, str):
+        message = error
+    else:
+        message = document.get("message")
+    if not isinstance(message, str):
+        return ""
+    return " ".join(message.split())[:limit]
+
+
 def _classify_status(
     response: httpx.Response,
     *,
@@ -236,7 +262,12 @@ def _classify_status(
     text = scrub_secrets(response.text, api_key)
     body = text[:500]
     lowered = text[:4000].lower()
-    kwargs = {"component": component, "model": model, "status_code": status}
+    kwargs = {
+        "component": component,
+        "model": model,
+        "status_code": status,
+        "upstream_message": upstream_error_message(text),
+    }
 
     if status == 402 or (
         status in (400, 401, 403, 429) and _mentions(lowered, _QUOTA_MARKERS)

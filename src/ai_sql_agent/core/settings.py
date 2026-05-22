@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from functools import lru_cache
-from typing import Literal
+import threading
+from typing import Any, Dict, Literal, Optional
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .model_settings import OVERRIDABLE, key_field, load_store, url_field
 
 Provider = Literal["openai", "anthropic"]
 
@@ -18,6 +20,12 @@ DEFAULT_CHAT_MODEL = {
 DEFAULT_CODER_MODEL = {
     "openai": "gpt-5.6-luna",
     "anthropic": "claude-sonnet-5",
+}
+
+
+CHAT_PATH = {
+    "openai": "chat/completions",
+    "anthropic": "messages",
 }
 
 
@@ -162,6 +170,26 @@ class SqlAgentSettings(BaseSettings):
     embedding_model: str = "text-embedding-v4"
     embedding_dimensions: int = 1024
     rerank_model: str = "qwen3-rerank"
+
+    # ---- 从页面配置模型连接 ----
+    model_settings_enabled: bool = True
+    """
+    允许管理员在页面的「设置 → 高级设置 → 模型连接」里换模型连接（协议、接口地址、Key、
+    两个模型名），保存后立刻生效，不用重启。
+
+    页面保存的那一份压过这里的环境变量和 `.env`，直到有人在页面上点「恢复为服务端配置」。
+    关掉之后：已经保存的那份不再读，页面只显示当前用的是什么，`/admin/model` 的修改接口返回 403。
+
+    谁能改：开了鉴权的实例要管理员 Key；没开鉴权的实例只接受本机直接发来的请求
+    （见 `ai_sql_agent.api.model_admin`）。多副本部署各自的文件互不相通，应当关掉它，
+    继续用环境变量或密钥管理来配。
+    """
+
+    model_settings_path: str = "runtime_data/model_settings.json"
+    """
+    页面保存的模型连接放在哪个文件里。里面有明文的 Key（和 `.env` 一样），权限是 0600。
+    相对路径按进程的工作目录算；留空等于关掉 `model_settings_enabled`。
+    """
 
     # ---- HTTP 调用治理 ----
     http_timeout_seconds: float = 60.0
@@ -389,16 +417,18 @@ class SqlAgentSettings(BaseSettings):
     log_level: str = "INFO"
     log_format: Literal["text", "json"] = "text"
 
+    # 页面保存的模型连接生效时，这两项记着「被压过之前」的配置和页面存的那一份。
+    # 都不是配置项：不从环境变量读，也不出现在 model_dump 里。
+    _server_side: Optional["SqlAgentSettings"] = PrivateAttr(default=None)
+    _page_store: Dict[str, Any] = PrivateAttr(default_factory=dict)
+
     @model_validator(mode="after")
     def _fill_provider_defaults(self) -> "SqlAgentSettings":
         """按选中的厂商补齐端点与模型名，显式配置永远优先。"""
         if not self.chat_url:
-            if self.model_provider == "anthropic":
-                self.chat_url = build_endpoint(self.anthropic_base_url, "messages")
-            else:
-                self.chat_url = build_endpoint(
-                    self.openai_base_url, "chat/completions"
-                )
+            self.chat_url = build_endpoint(
+                self.base_url_of(self.model_provider), CHAT_PATH[self.model_provider]
+            )
         if not self.embedding_url:
             self.embedding_url = build_endpoint(self.openai_base_url, "embeddings")
         if not self.chat_model:
@@ -407,19 +437,51 @@ class SqlAgentSettings(BaseSettings):
             self.coder_model = DEFAULT_CODER_MODEL[self.model_provider]
         return self
 
+    def api_key_of(self, provider: str) -> str:
+        """某一家协议当前配的 Key（没配是空串）。"""
+        return str(getattr(self, key_field(provider), ""))
+
+    def base_url_of(self, provider: str) -> str:
+        """某一家协议当前配的接口地址。"""
+        return str(getattr(self, url_field(provider), ""))
+
     def resolved_chat_api_key(self) -> str:
         """主链路凭证：按选中的厂商取对应的 Key。"""
-        if self.model_provider == "anthropic":
-            return self.anthropic_api_key
-        return self.openai_api_key
+        return self.api_key_of(self.model_provider)
+
+    @property
+    def server_side(self) -> "SqlAgentSettings":
+        """
+        环境变量和 `.env` 给出的那份配置。页面没有保存过模型连接时就是它自己。
+
+        页面上「恢复为服务端配置」会回到它；Embedding / Rerank 的凭证也始终从它取。
+        """
+        return self._server_side or self
+
+    @property
+    def page_store(self) -> Dict[str, Any]:
+        """页面保存的模型连接（`values` / `saved_at` / `saved_by`）；没有在用时是空的。"""
+        return self._page_store
+
+    @property
+    def model_settings_file(self) -> str:
+        """页面保存的模型连接读写哪个文件；这个功能关着时是空串。"""
+        return self.model_settings_path.strip() if self.model_settings_enabled else ""
 
     def resolved_embedding_api_key(self) -> str:
-        """Embedding 凭证：单独配了就用单独的，否则回落到 OpenAI 兼容通道。"""
-        return self.embedding_api_key or self.openai_api_key
+        """
+        Embedding 凭证：单独配了就用单独的，否则回落到 OpenAI 兼容通道。
+
+        回落取的是**服务端配置**里的那一把：页面换主链路的 Key 不该顺带把它发给
+        Embedding 的地址（那个地址页面改不了，多半是另一台主机）。
+        """
+        source = self.server_side
+        return source.embedding_api_key or source.openai_api_key
 
     def resolved_rerank_api_key(self) -> str:
-        """Rerank 凭证：单独配了就用单独的，否则回落到 OpenAI 兼容通道。"""
-        return self.rerank_api_key or self.openai_api_key
+        """Rerank 凭证：单独配了就用单独的，否则回落到 OpenAI 兼容通道（同样取服务端配置）。"""
+        source = self.server_side
+        return source.rerank_api_key or source.openai_api_key
 
     @property
     def has_model_credentials(self) -> bool:
@@ -437,12 +499,76 @@ class SqlAgentSettings(BaseSettings):
         return ""
 
 
-@lru_cache(maxsize=1)
+def apply_model_overrides(base: SqlAgentSettings, store: Dict[str, Any]) -> SqlAgentSettings:
+    """
+    在服务端配置上叠一份页面保存的模型连接，返回新的配置对象（`base` 不动）。
+
+    只换主链路的这几项：协议、这家协议的接口地址与 Key、两个模型名。Chat 端点一律由页面的
+    接口地址重新拼——服务端显式配过 `AI_SQL_CHAT_URL` 也不沿用，否则页面的 Key 会被发到
+    那个地址去。Embedding 的端点在 `base` 里已经解析好了，原样带过来，不跟着页面变。
+    """
+    values = store.get("values") or {}
+    provider = values["model_provider"]
+    merged = base.model_copy(
+        update={name: values[name] for name in OVERRIDABLE if values.get(name)}
+    )
+    merged.chat_url = build_endpoint(merged.base_url_of(provider), CHAT_PATH[provider])
+    merged.chat_model = values.get("chat_model") or DEFAULT_CHAT_MODEL[provider]
+    merged.coder_model = values.get("coder_model") or DEFAULT_CODER_MODEL[provider]
+    merged._server_side = base
+    merged._page_store = dict(store)
+    return merged
+
+
+def _with_page_store(base: SqlAgentSettings) -> SqlAgentSettings:
+    """
+    服务端配置 → 当前生效的配置：页面保存过模型连接就叠上去。
+
+    那个文件读不了、不完整时照常返回服务端配置——服务必须起得来；
+    问题记在 `page_store["problem"]` 上，启动日志和 `/admin/model` 会说出来。
+    """
+    path = base.model_settings_file
+    store = load_store(path) if path else {}
+    if store.get("values"):
+        return apply_model_overrides(base, store)
+    base._page_store = {"problem": store["problem"]} if store.get("problem") else {}
+    return base
+
+
+_current: Optional[SqlAgentSettings] = None
+_current_lock = threading.Lock()
+
+
 def get_settings() -> SqlAgentSettings:
-    return SqlAgentSettings()
+    """当前生效的配置（进程内只建一次）：环境变量和 `.env`，再叠上页面保存的模型连接。"""
+    global _current
+    settings = _current
+    if settings is None:
+        with _current_lock:
+            if _current is None:
+                _current = _with_page_store(SqlAgentSettings())
+            settings = _current
+    return settings
 
 
 def reload_settings() -> SqlAgentSettings:
-    """清掉缓存重新读取环境变量，供测试与运行期改配置使用。"""
-    get_settings.cache_clear()
+    """丢掉已经建好的配置，重新读环境变量、`.env` 和页面保存的模型连接。供测试使用。"""
+    global _current
+    with _current_lock:
+        _current = None
     return get_settings()
+
+
+def reload_model_settings() -> SqlAgentSettings:
+    """
+    只重读页面保存的模型连接；环境变量和 `.env` 那一半沿用进程里已经读到的。
+
+    页面保存之后用它，而不是 `reload_settings()`：后者会把 `.env` 整个重读一遍。
+    服务启动之后有人改过 `.env` 里别的配置的话，那些改动会被「半生效」——
+    有的组件每次请求都读配置，有的启动时就把值抄走了。
+    """
+    global _current
+    with _current_lock:
+        base = (_current or SqlAgentSettings()).server_side
+        _current = _with_page_store(base)
+        return _current

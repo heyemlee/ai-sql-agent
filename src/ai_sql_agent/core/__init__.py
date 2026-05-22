@@ -24,7 +24,12 @@ from .errors import (
 from .logging_setup import configure_logging, get_logger, log_event
 from .model_access import MODEL_ACCESS, ModelAccessRegistry
 from .metrics import REGISTRY, render_metrics
-from .settings import SqlAgentSettings, get_settings, reload_settings
+from .settings import (
+    SqlAgentSettings,
+    get_settings,
+    reload_model_settings,
+    reload_settings,
+)
 from .trace import (
     get_trace_id,
     new_trace_id,
@@ -74,6 +79,7 @@ __all__ = [
     "new_trace_id",
     "record_usage",
     "render_metrics",
+    "reload_model_settings",
     "reload_settings",
     "stage",
     "usage_scope",

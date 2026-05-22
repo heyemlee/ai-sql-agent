@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
-from ai_sql_agent.core import ModelTransport, get_settings
+from ai_sql_agent.core.model_client import FollowsModelSettings
 
 
 @dataclass
@@ -31,7 +31,7 @@ class AliyunKeywordExtractorConfig:
     """HTTP 请求超时时间（秒），None 时取 Settings。"""
 
 
-class AliyunKeywordExtractor:
+class AliyunKeywordExtractor(FollowsModelSettings):
     """
     基于大模型的核心检索词抽取器。
 
@@ -92,32 +92,17 @@ class AliyunKeywordExtractor:
 """
 
     COMPONENT = "keyword_extractor"
+    URL_FIELD = "chat_url"
+
+    MISSING_KEY = (
+        "缺少模型 API Key。请在 .env 里配置 OPENAI_API_KEY 或 ANTHROPIC_API_KEY，"
+        "或在 AliyunKeywordExtractorConfig(api_key='...') 中传入。"
+    )
 
     def __init__(self, config: AliyunKeywordExtractorConfig | None = None):
-        self.config = config or AliyunKeywordExtractorConfig()
-        settings = get_settings()
-
+        self._bind_connection(config or AliyunKeywordExtractorConfig())
         if not self.config.api_key:
-            self.config.api_key = settings.resolved_chat_api_key()
-        if not self.config.chat_url:
-            self.config.chat_url = settings.chat_url
-        if not self.config.model:
-            self.config.model = settings.chat_model
-        if not self.config.provider:
-            self.config.provider = settings.model_provider
-
-        if not self.config.api_key:
-            raise ValueError(
-                "缺少模型 API Key。请在 .env 里配置 OPENAI_API_KEY 或 ANTHROPIC_API_KEY，"
-                "或在 AliyunKeywordExtractorConfig(api_key='...') 中传入。"
-            )
-
-        self.transport = ModelTransport(
-            self.COMPONENT,
-            api_key=self.config.api_key,
-            timeout=self.config.timeout,
-            provider=self.config.provider,
-        )
+            raise ValueError(self.MISSING_KEY)
 
     def extract(self, query: str, glossary: str = "") -> List[str]:
         """
@@ -153,13 +138,17 @@ class AliyunKeywordExtractor:
             if glossary.strip()
             else self.SYSTEM_PROMPT
         )
-        return self.transport.chat(
-            self.config.chat_url,
+        connection = self._connection()
+        if not connection.has_key:
+            # 构造之后 Key 被撤掉了（页面恢复成了没有 Key 的服务端配置）：不拿空 Key 去撞
+            raise ValueError(self.MISSING_KEY)
+        return connection.transport.chat(
+            connection.url,
             [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"用户Query：{query}"},
             ],
-            model=self.config.model,
+            model=connection.model,
             temperature=0.0,
         )
 

@@ -29,8 +29,11 @@ class ModelCallError(SqlAgentError):
         block_scope: str = "",
         block_reason: str = "",
         block_permanent: bool = False,
+        upstream_message: str = "",
     ):
         super().__init__(message)
+        self.upstream_message = upstream_message
+        """服务端错误响应里那句给人看的话（`error.message`），凭证已去掉；认不出来就是空。"""
         self.component = component
         self.model = model
         self.status_code = status_code
