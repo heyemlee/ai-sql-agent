@@ -11,6 +11,10 @@
 
 需要真实 HTTP 行为的测试（如 OpenAI 兼容端点测试）会在用例内部自行设置
 指向本地 mock 服务的凭证，优先级高于这里。
+
+第三件是同一类事：管理员在页面上保存过的模型连接（`runtime_data/model_settings.json`）
+比环境变量的优先级还高。从仓库根目录跑测试时会读到本机服务用的那一份，所以整个关掉；
+测它的用例（`test_model_settings.py`）自己指到临时文件上。
 """
 
 import os
@@ -23,6 +27,7 @@ _CREDENTIAL_VARS = (
     "AI_SQL_ANTHROPIC_API_KEY",
     "ANTHROPIC_API_KEY",
 )
+_PAGE_STORE_SWITCH = "AI_SQL_MODEL_SETTINGS_ENABLED"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -33,9 +38,10 @@ def isolate_from_local_config():
     saved_env_file = SqlAgentSettings.model_config.get("env_file")
     SqlAgentSettings.model_config["env_file"] = None
 
-    saved = {key: os.environ.get(key) for key in _CREDENTIAL_VARS}
+    saved = {key: os.environ.get(key) for key in (*_CREDENTIAL_VARS, _PAGE_STORE_SWITCH)}
     for key in _CREDENTIAL_VARS:
         os.environ[key] = ""
+    os.environ[_PAGE_STORE_SWITCH] = "false"
 
     reload_settings()
     yield
