@@ -130,7 +130,9 @@ class TranslationTest(unittest.TestCase):
         服务端加了一个取值而字典没跟上，页面上显示的就是一个光秃秃的英文标识符。
         """
         from ai_sql_agent.a2a.server import _STAGE_MAP
+        from ai_sql_agent.api.model_admin import DENIED, PROBE_OUTCOMES
         from ai_sql_agent.catalog.preview import OPERATORS
+        from ai_sql_agent.core.model_settings import PROVIDERS, WARNINGS
         from ai_sql_agent.semantic.validator import SEMANTIC_ROLES
         from ai_sql_agent.validation.objects import AnomalyType
 
@@ -144,6 +146,16 @@ class TranslationTest(unittest.TestCase):
             f"data.reason.{reason}"
             for reason in ("not_configured", "file_not_found", "driver_missing", "connection_failed")
         }
+        # 设置里的「模型连接」：协议、连接测试的结果、只读的原因、地址的提醒
+        expected |= {f"settings.model.provider.{provider}" for provider in PROVIDERS}
+        expected |= {f"settings.model.outcome.{outcome}" for outcome in PROBE_OUTCOMES}
+        expected |= {f"settings.model.note.{warning}" for warning in WARNINGS}
+        expected |= {f"settings.model.role.{role}" for role in ("chat", "coder")}
+        expected |= {f"settings.model.busy.{task}" for task in ("test", "save", "restore")}
+        for reason in DENIED:
+            expected |= {f"settings.model.reason.{reason}", f"settings.model.reason.{reason}.body"}
+        for warning in ("insecurePage", "storeProblem", "customEndpoint"):
+            expected |= {f"settings.model.warn.{warning}", f"settings.model.warn.{warning}.body"}
         self.assertEqual(sorted(expected - defined), [])
 
 
@@ -208,6 +220,37 @@ class ContractWiringTest(unittest.TestCase):
         for marker in ("/query", "/history", "/feedback", "/catalog", "/rows", "/profile", "/a2a", "/health",
                        "X-API-Key", "message/stream"):
             self.assertIn(marker, api, marker)
+
+    def test_the_model_connection_goes_through_the_admin_endpoints(self):
+        api = (JS_DIR / "api.js").read_text(encoding="utf-8")
+        for call in (
+            "request('GET', '/admin/model')",
+            "request('POST', '/admin/model/test', { body })",
+            "request('PUT', '/admin/model', { body })",
+            "request('DELETE', '/admin/model')",
+        ):
+            self.assertIn(call, api, call)
+
+    def test_the_model_key_is_sent_to_the_service_and_kept_nowhere_else(self):
+        """
+        模型的 Key 只能从输入框去到服务端。页面不把它写进浏览器的任何存储，
+        状态模块里那份会被持久化的设置也不该碰到它。
+        """
+        view = (JS_DIR / "views" / "settingsModel.js").read_text(encoding="utf-8")
+        form = (JS_DIR / "modelForm.js").read_text(encoding="utf-8")
+        for source in (view, form):
+            for sink in ("localStorage", "sessionStorage", "document.cookie", "indexedDB"):
+                self.assertNotIn(sink, source, sink)
+        # 从状态模块只拿只读的 state：不拿 save（它会把 state 写进浏览器存储）
+        (names,) = re.findall(r"import\s*\{([^}]*)\}\s*from\s*'\.\./state\.js'", view)
+        self.assertEqual({name.strip() for name in names.split(",")}, {"state"})
+        self.assertNotRegex(view, r"state\.\w+\s*=[^=]")
+        self.assertNotIn("state.js", form)
+        # 输入框是密码框，不让浏览器记，也从不拿服务端的值来填
+        self.assertRegex(view, r'id="modelKey" type="password" value="\$\{typedKey\}"')
+        self.assertRegex(view, r'id="modelKey"[^>]*autocomplete="off"')
+        persisted = (JS_DIR / "state.js").read_text(encoding="utf-8")
+        self.assertNotRegex(persisted, r"(?i)model.?key")
 
     def test_result_fields_are_read_by_their_contract_names(self):
         model = (JS_DIR / "model.js").read_text(encoding="utf-8")

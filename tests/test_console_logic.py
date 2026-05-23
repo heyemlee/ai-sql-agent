@@ -10,7 +10,8 @@
 - 路由（不认识的 hash 不该把人带去别的页面）；
 - 请求层（响应体读不出来不是「成功」）与目录加载的先后次序、身份的备用来源；
 - 数据浏览：一张表「正在怎么看」和地址互转、表与表怎么连、时间轴怎么并、
-  取值怎么配色、概况什么时候取什么时候作废。
+  取值怎么配色、概况什么时候取什么时候作废；
+- 模型连接的表单：现有的 Key 什么时候可以不重填、哪种页面不适合填 Key。
 
 没有装 Node 的环境整组跳过：页面本身不依赖 Node，这只是测试手段。
 """
@@ -354,6 +355,64 @@ const out = {};
   };
 }
 
+// ---- modelForm.js：模型连接表单里的几个判断 ----------------------------------
+{
+  const { canKeepKey, insecurePage, knownRejection, originOf, prefill, requestBody } = await load('modelForm.js');
+  const status = {
+    provider: 'anthropic',
+    providers: {
+      anthropic: {
+        base_url: 'https://relay.example.com', official_base_url: 'https://api.anthropic.com',
+        chat_model: 'claude-sonnet-5', coder_model: 'claude-opus-5-5',
+        key_configured: true, key_address: 'https://relay.example.com',
+      },
+      openai: {
+        base_url: 'https://api.openai.com/v1', official_base_url: 'https://api.openai.com/v1',
+        chat_model: 'gpt-5.6-luna', coder_model: 'gpt-5.6-luna',
+        key_configured: false, key_address: 'https://api.openai.com',
+      },
+    },
+  };
+  const keep = (provider, baseUrl) => canKeepKey(status, { provider, baseUrl });
+  out.modelForm = {
+    origins: [
+      'https://Relay.Example.com:443/v1/messages', 'http://localhost:11434/v1', 'http://[::1]:9000',
+      'relay.example.com', 'ftp://relay.example.com', '',
+    ].map(originOf),
+    prefill: [prefill(status, 'anthropic'), prefill(status, 'openai'), prefill(null, 'openai')],
+    keep: {
+      sameHost: keep('anthropic', 'https://relay.example.com/v1'),
+      samePadded: keep('anthropic', '  https://RELAY.example.com  '),
+      otherHost: keep('anthropic', 'https://other.example.com'),
+      lookalike: keep('anthropic', 'https://relay.example.com.evil.example'),
+      otherScheme: keep('anthropic', 'http://relay.example.com'),
+      otherPort: keep('anthropic', 'https://relay.example.com:8443'),
+      blankMeansOfficial: keep('anthropic', ''),
+      notAnAddress: keep('anthropic', 'relay'),
+      noKeyYet: keep('openai', 'https://api.openai.com/v1'),
+      unknownStatus: canKeepKey(null, { provider: 'anthropic', baseUrl: 'https://relay.example.com' }),
+    },
+    insecure: [
+      { protocol: 'http:', hostname: 'localhost' }, { protocol: 'http:', hostname: '127.0.0.1' },
+      { protocol: 'http:', hostname: '[::1]' }, { protocol: 'http:', hostname: 'console.localhost' },
+      { protocol: 'https:', hostname: 'sql.example.com' },
+      { protocol: 'http:', hostname: 'sql.example.com' }, { protocol: 'http:', hostname: '192.168.1.20' },
+      { protocol: 'http:', hostname: '127.evil.example' }, { protocol: 'http:', hostname: 'localhost.evil.example' },
+    ].map(insecurePage),
+    body: requestBody(
+      { provider: 'openai', baseUrl: ' https://relay.example.com/v1 ', chatModel: ' some-model ', coderModel: '' },
+      '  sk-typed  ',
+    ),
+    rejection: [
+      knownRejection({ access_faults: [
+        { permanent: false, scope: 'model' }, { permanent: true, scope: 'credential', status_code: 401 },
+      ] }),
+      knownRejection({ access_faults: [{ permanent: true, scope: 'model' }, { permanent: false, scope: 'credential' }] }),
+      knownRejection({}),
+    ],
+  };
+}
+
 console.log(JSON.stringify(out));
 """
 
@@ -613,6 +672,38 @@ class ConsoleLogicTest(unittest.TestCase):
         late = self.out["lateIdentity"]
         self.assertIsNone(late["before"])
         self.assertEqual((late["ensured"], late["identity"], late["status"]), (True, "late", "error"))
+
+    # ---- 模型连接的表单 ----
+
+    def test_the_current_model_key_can_be_kept_only_on_the_same_host(self):
+        keep = self.out["modelForm"]["keep"]
+        self.assertEqual({name for name, value in keep.items() if value}, {"sameHost", "samePadded"})
+        self.assertEqual(self.out["modelForm"]["origins"], [
+            "https://relay.example.com", "http://localhost:11434", "http://::1:9000", "", "", "",
+        ])
+
+    def test_switching_protocol_fills_in_that_protocols_address_and_models(self):
+        anthropic, openai, unknown = self.out["modelForm"]["prefill"]
+        self.assertEqual(anthropic, {"provider": "anthropic", "baseUrl": "https://relay.example.com",
+                                     "chatModel": "claude-sonnet-5", "coderModel": "claude-opus-5-5"})
+        self.assertEqual((openai["baseUrl"], openai["chatModel"]), ("https://api.openai.com/v1", "gpt-5.6-luna"))
+        self.assertEqual(unknown, {"provider": "openai", "baseUrl": "", "chatModel": "", "coderModel": ""})
+
+    def test_only_a_page_opened_over_plain_http_from_elsewhere_is_called_insecure(self):
+        self.assertEqual(self.out["modelForm"]["insecure"],
+                         [False, False, False, False, False, True, True, True, True])
+
+    def test_the_request_carries_trimmed_fields_and_a_blank_key_means_keep(self):
+        self.assertEqual(self.out["modelForm"]["body"], {
+            "provider": "openai", "base_url": "https://relay.example.com/v1", "api_key": "sk-typed",
+            "chat_model": "some-model", "coder_model": "",
+        })
+
+    def test_only_a_permanent_rejection_of_the_credential_is_shown_on_the_key(self):
+        rejected, model_only, nothing = self.out["modelForm"]["rejection"]
+        self.assertEqual(rejected["status_code"], 401)
+        self.assertIsNone(model_only)
+        self.assertIsNone(nothing)
 
 
 if __name__ == "__main__":
