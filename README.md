@@ -106,7 +106,9 @@ AI_SQL_CHAT_MODEL=your-chat-model
 AI_SQL_CODER_MODEL=your-coder-model
 ```
 
-For Anthropic, use `AI_SQL_MODEL_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Embedding and reranking have separate credential/endpoint settings; see [.env.example](.env.example) and the [deployment guide](docs/deployment.md). Restart after configuration changes.
+For Anthropic, use `AI_SQL_MODEL_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Embedding and reranking have separate credential/endpoint settings; see [.env.example](.env.example) and the [deployment guide](docs/deployment.md). Restart after editing `.env`.
+
+The connection can also be changed in the console without a restart: **Settings → Advanced settings → Model connection** (admin key required; on an instance without sign-in, only from the machine it runs on). Test it there, save, and it applies to the next question. A connection saved this way outranks `.env` until you restore the server configuration — see [Changing the model connection from the console](docs/deployment.md#changing-the-model-connection-from-the-console).
 
 ### Connect your databases
 

@@ -106,7 +106,9 @@ AI_SQL_CHAT_MODEL=your-chat-model
 AI_SQL_CODER_MODEL=your-coder-model
 ```
 
-Anthropic 使用 `AI_SQL_MODEL_PROVIDER=anthropic` 与 `ANTHROPIC_API_KEY`。Embedding 与 Rerank 的凭证和端点独立配置，详见 [.env.example](.env.example) 与 [部署指南](docs/deployment.zh-CN.md)。修改后重启服务。
+Anthropic 使用 `AI_SQL_MODEL_PROVIDER=anthropic` 与 `ANTHROPIC_API_KEY`。Embedding 与 Rerank 的凭证和端点独立配置，详见 [.env.example](.env.example) 与 [部署指南](docs/deployment.zh-CN.md)。改了 `.env` 要重启服务。
+
+也可以不重启、直接在页面上换：**设置 → 高级设置 → 模型连接**（需要管理员 Key；没开鉴权的实例只能在服务所在的那台机器上改）。在那里先测试、再保存，下一个问题就用上新的连接。页面保存的连接优先于 `.env`，直到在页面上恢复为服务端配置——详见部署指南的[从页面修改模型连接](docs/deployment.zh-CN.md#从页面修改模型连接)。
 
 ### 接入自己的数据库
 

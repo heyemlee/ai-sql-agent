@@ -40,6 +40,8 @@ curl -s localhost:8000/readyz | python -m json.tool
 | `AI_SQL_MODEL_PROVIDER` | `openai` | `openai`=OpenAI 兼容协议，`anthropic`=Messages 协议 |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 按厂商填 | provider=openai 时的凭证与端点 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | 按厂商填 | provider=anthropic 时的凭证与端点 |
+| `AI_SQL_MODEL_SETTINGS_ENABLED` | 单实例 `true`，多副本 `false` | 允许管理员在页面上修改模型连接，见 §八之二「从页面修改模型连接」 |
+| `AI_SQL_MODEL_SETTINGS_PATH` | `runtime_data/model_settings.json` | 页面保存的模型连接放在哪里。文件里有明文 Key，权限 0600 |
 | `AI_SQL_AUTH_MODE` | `api_key` | `disabled` 会放行所有请求，只允许本地开发 |
 | `AI_SQL_API_KEYS_FILE` | `/run/secrets/api_keys.json` | Key 与数据权限策略 |
 | `AI_SQL_SEMANTIC_DIR` | `semantic/` | 业务语义元数据目录。**接真实库必配**，见 §二·六 |
@@ -479,10 +481,39 @@ Key 被确认拒绝之后，一个问题不再产生任何模型调用（以前�
 `GET /readyz` 在 `model_access` 下列出已知故障，`model_credentials` 不再写 ok；
 它不会为此去探测模型。恢复方式：修好 Key 或额度后重启；不想重启时调用已有的管理员接口
 `POST /admin/circuit/reset`（需要管理员 Key），它会一并清掉这些状态。不会自动重试；
-复位也不验证 Key 是否真的好了——下一个真实请求自己去试。
+复位也不验证 Key 是否真的好了——下一个真实请求自己去试。在页面上换一把 Key（见下一节）
+也会清掉这些状态。
 
 它做不到的事：第一个拒绝回来之前已经发出去的请求收不回来。N 个并发请求时，
 最多会有 N 次被拒的调用发出，之后才全部停住。
+
+### 从页面修改模型连接
+
+管理员可以在 **设置 → 高级设置 → 模型连接** 里换掉主链路的模型连接——协议、接口地址、Key、
+规划模型、SQL 模型——不用重启。接口：`GET /admin/model`（现状，永远不含 Key）、
+`POST /admin/model/test`、`PUT /admin/model`、`DELETE /admin/model`（恢复）。
+
+- **谁能改。** `AI_SQL_AUTH_MODE=api_key` 时要管理员 Key，和其他 `/admin` 接口一样。
+  没开鉴权时只接受**本机直接发来**的请求：对端是回环地址、`Host` 是本机名字、没有代理转发的头、
+  浏览器请求必须同源；其他人只看得到一份只读的摘要。同一台机器上的反向代理如果把 `Host`
+  改写成回环地址、又不加任何转发头，这里分辨不出来：要把实例暴露出去，先开鉴权，或者关掉这个功能。
+  跑在容器里时，宿主机浏览器的请求来自容器网桥而不是回环地址——这种部署用管理员 Key。
+- **改的是什么。** 页面保存的连接压过环境变量和 `.env`，直到有人点「恢复为服务端配置」。
+  Chat 端点一律按「保存的接口地址 + 标准路径」重新拼，服务端配的 `AI_SQL_CHAT_URL` 不沿用。
+  Embedding 与 Rerank 继续用服务端的凭证和端点。
+- **Key 只进不出。** 任何响应、日志、报错里都不带它；状态里只有「配没配」和末四位。
+  一把 Key 只发给它被填进来时对应的那台主机——接口地址换到别的主机就要重新填 Key（两种协议各用各的 Key）。
+  它和 `.env` 一样以明文存在 `AI_SQL_MODEL_SETTINGS_PATH` 指的文件里（权限 0600；
+  compose 部署时这个文件在 `ai_sql_runtime` 卷上）。
+- **测试连接**会真的调用模型：每个模型名一条极短的请求。它什么都不保存，也不会把正在用的连接
+  记成「已被拒绝」。保存本身不做测试；页面会在保存后自动测一次。
+- **生效时**清掉熔断器和已记下的拒绝，并重建启动时按「有没有凭证」选过一次的部分
+  （意图路由、数据问答、对话摘要、关键词抽取）。已经在处理的问题用旧连接跑完。
+- **留痕。** 每次修改记一条 `model_settings.saved` / `model_settings.cleared`（谁、协议、
+  接口主机、模型名、Key 有没有换——不记 Key 本身）。用着页面保存的连接时，`/readyz` 里有
+  `model_settings`，启动日志写 `model_settings=page`。保存的文件读不出来时也在这两处说明，并按没有处理。
+- **多副本**各自有一份文件，一次保存只到得了其中一个。这种部署请设
+  `AI_SQL_MODEL_SETTINGS_ENABLED=false`，继续用环境变量配置。
 
 ## 八之三、业务库只读账号
 

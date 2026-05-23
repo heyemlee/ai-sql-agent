@@ -42,6 +42,8 @@ it is mounted read-only instead. Rotating a key means editing the file and runni
 | `AI_SQL_MODEL_PROVIDER` | `openai` | `openai` = OpenAI-compatible protocol, `anthropic` = Messages protocol |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | per vendor | Credentials and endpoint when provider=openai |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | per vendor | Credentials and endpoint when provider=anthropic |
+| `AI_SQL_MODEL_SETTINGS_ENABLED` | `true` for one instance, `false` for several replicas | Lets an admin change the model connection from the console; see "Changing the model connection from the console" in §8.2 |
+| `AI_SQL_MODEL_SETTINGS_PATH` | `runtime_data/model_settings.json` | Where a connection saved from the console is kept. Contains the key in plain text, mode 0600 |
 | `AI_SQL_AUTH_MODE` | `api_key` | `disabled` lets every request through — local development only |
 | `AI_SQL_API_KEYS_FILE` | `/run/secrets/api_keys.json` | Keys and data-permission policies |
 | `AI_SQL_SEMANTIC_DIR` | `semantic/` | Business metadata for your databases. **Required for real deployments** — see §2.6 |
@@ -538,11 +540,50 @@ under `model_access` and stops reporting `model_credentials: ok`; it never probe
 model to find out. To recover, fix the key or quota and restart — or, without a restart,
 call the existing admin endpoint `POST /admin/circuit/reset` (admin key required), which
 also clears these. Nothing is retried automatically, and the reset does not verify the
-key: the next real request does.
+key: the next real request does. Replacing the key from the console (next section) clears
+them as well.
 
 What this cannot do: requests already in flight when the first rejection arrives have
 been sent. With N concurrent requests, up to N rejected calls go out before the rest
 are stopped.
+
+### Changing the model connection from the console
+
+An administrator can replace the main model connection — protocol, endpoint address, key,
+planning model and SQL model — under **Settings → Advanced settings → Model connection**,
+without a restart. Endpoints: `GET /admin/model` (status, never the key),
+`POST /admin/model/test`, `PUT /admin/model`, `DELETE /admin/model` (restore).
+
+- **Who.** With `AI_SQL_AUTH_MODE=api_key`: an admin key, like every other `/admin`
+  endpoint. With sign-in disabled: only requests made directly on the machine the service
+  runs on — a loopback peer, a loopback `Host`, no proxy-forwarding headers, and a
+  same-origin `Origin` for browser requests. Everyone else gets a read-only summary.
+  A reverse proxy on the same machine that rewrites `Host` to a loopback name and adds no
+  forwarding header cannot be told apart from a local client: enable sign-in before
+  exposing an instance, or switch the feature off. Inside a container, requests from the
+  host's browser arrive from the bridge network, not loopback — use an admin key there.
+- **What it changes.** The saved connection outranks the environment and `.env` until
+  someone uses *Restore server configuration*. The chat endpoint is always rebuilt from the
+  saved address plus the standard path; an `AI_SQL_CHAT_URL` set on the server is not
+  reused. Embedding and rerank keep the server's credentials and endpoints.
+- **The key** is write-only: no response, log line or error message contains it; the
+  status shows whether one is set and its last four characters. A key is only sent to the
+  host it was entered for — moving the address to another host requires entering the key
+  again (each protocol keeps its own key). It is stored in plain text, like `.env`, in
+  `AI_SQL_MODEL_SETTINGS_PATH` (mode 0600; in the compose stack that file lives on the
+  `ai_sql_runtime` volume).
+- **Test connection** really calls the model: one very short request per model name. It
+  saves nothing and does not touch the rejection state of the connection in use. Saving
+  does not test by itself; the console runs one test right after a save.
+- **Applying** clears the circuit breakers and recorded rejections and rebuilds the parts
+  that picked "model or rules" at startup (intent routing, data Q&A, conversation
+  summaries, keyword extraction). Questions already in flight finish on the old connection.
+- **Trace.** Each change logs `model_settings.saved` / `model_settings.cleared` (who,
+  protocol, endpoint host, models, whether the key changed — never the key). While a saved
+  connection is in use, `/readyz` shows `model_settings` and the startup line says
+  `model_settings=page`. A saved file that cannot be read is reported there and ignored.
+- **Several replicas** each keep their own file, so a save reaches only one of them. Set
+  `AI_SQL_MODEL_SETTINGS_ENABLED=false` and keep configuring through the environment.
 
 ## 8.3. Read-only accounts on the business databases
 
