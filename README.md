@@ -110,6 +110,8 @@ For Anthropic, use `AI_SQL_MODEL_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Em
 
 The connection can also be changed in the console without a restart: **Settings → Advanced settings → Model connection** (admin key required; on an instance without sign-in, only from the machine it runs on). Test it there, save, and it applies to the next question. A connection saved this way outranks `.env` until you restore the server configuration — see [Changing the model connection from the console](docs/deployment.md#changing-the-model-connection-from-the-console).
 
+Schema retrieval uses local hash vectors unless you configure a real embedding model, either with `AI_SQL_EMBEDDING_BACKEND=remote` in `.env` or under **Settings → Advanced settings → Embedding**. Saving there tests the endpoint, rebuilds the retrieval index with the new model and only then switches to it. With OpenAI reasoning models (gpt-5 and later) requests carry `reasoning_effort` (`AI_SQL_REASONING_EFFORT`, default `low`) and `max_completion_tokens` instead of a temperature, and intent routing uses a strict JSON schema.
+
 ### Connect your databases
 
 ```bash

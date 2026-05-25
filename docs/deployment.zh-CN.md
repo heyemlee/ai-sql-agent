@@ -500,7 +500,7 @@ Key 被确认拒绝之后，一个问题不再产生任何模型调用（以前�
   跑在容器里时，宿主机浏览器的请求来自容器网桥而不是回环地址——这种部署用管理员 Key。
 - **改的是什么。** 页面保存的连接压过环境变量和 `.env`，直到有人点「恢复为服务端配置」。
   Chat 端点一律按「保存的接口地址 + 标准路径」重新拼，服务端配的 `AI_SQL_CHAT_URL` 不沿用。
-  Embedding 与 Rerank 继续用服务端的凭证和端点。
+  Rerank 继续用服务端的凭证和端点；Embedding 单独一节（见下文）。
 - **Key 只进不出。** 任何响应、日志、报错里都不带它；状态里只有「配没配」和末四位。
   一把 Key 只发给它被填进来时对应的那台主机——接口地址换到别的主机就要重新填 Key（两种协议各用各的 Key）。
   它和 `.env` 一样以明文存在 `AI_SQL_MODEL_SETTINGS_PATH` 指的文件里（权限 0600；
@@ -514,6 +514,35 @@ Key 被确认拒绝之后，一个问题不再产生任何模型调用（以前�
   `model_settings`，启动日志写 `model_settings=page`。保存的文件读不出来时也在这两处说明，并按没有处理。
 - **多副本**各自有一份文件，一次保存只到得了其中一个。这种部署请设
   `AI_SQL_MODEL_SETTINGS_ENABLED=false`，继续用环境变量配置。
+
+#### 表结构检索用的 Embedding
+
+表结构检索按关键词和向量两路召回库、表、字段。向量默认是本地哈希（`AI_SQL_EMBEDDING_BACKEND=local`）：
+不调任何服务，但没有语义，口语问法要靠关键词和抽词时的术语映射。设成 `remote` 就改用 OpenAI 兼容的
+`/embeddings`（`AI_SQL_EMBEDDING_URL`、`_MODEL`、`_DIMENSIONS`、`_API_KEY`，Key 没配时回落到
+`OPENAI_API_KEY`）。也可以在 **设置 → 高级设置 → Embedding** 里配，对应
+`POST /admin/model/embedding/test`、`PUT /admin/model/embedding`、`DELETE /admin/model/embedding`。
+
+- **保存时先重建。** 用新模型把所有表和字段的说明算一遍向量，整个索引建成了才换上、才写文件。
+  测试没通过（HTTP 422）、重建失败（HTTP 502）、文件写不了，正在用的索引和保存的文件都不动。
+  恢复为服务端配置时同样按服务端配置重建一遍。
+- **维度**默认 1024：OpenAI 的 `text-embedding-3-*` 和百炼的 `text-embedding-v4` 都能按请求输出这个维度，
+  也和已有的 pgvector 表一致。服务按别的维度返回时测试不通过（`dimension_mismatch`）。
+- **Key。** Embedding 这一节存自己的 Key。留空时沿用同一台主机上已经配好的那把——Embedding 现在用的，
+  或者两边都指向同一个 OpenAI 主机时对话模型那把；换了主机必须重填。
+- **服务出问题时。** 启动或重建 Schema 时远端 Embedding 建不起索引，就退回本地向量，服务照常起，
+  `/admin/model` 的 `embedding.fallback` 和日志 `schema.embedding_fallback` 说明原因。答题过程中，
+  一个问题的全部关键词合成一次请求并缓存；这次请求失败时，这个问题只走关键词召回，
+  之后 30 秒内不再去调这个服务（`retrieval.embedding_unavailable`）。
+- **哪些内容会发出去。** 建索引时是表和字段的说明（不含样例值），答题时是每个问题的关键词。
+
+#### OpenAI 的推理模型
+
+gpt-5 起和 o 系列的模型，请求不带温度（这些模型只认默认值），输出上限用 `max_completion_tokens`
+（`AI_SQL_MAX_COMPLETION_TOKENS`，默认 8192，推理过程也算在里面），并带 `reasoning_effort`
+（`AI_SQL_REASONING_EFFORT`，默认 `low`；留空则不传）。服务端点名拒绝其中某个参数时，去掉它重发一次，
+并记住这个端点上的这个模型。在 OpenAI 兼容端点上，意图路由要求按严格的 JSON Schema 输出。
+输出到了长度上限（`finish_reason=length`）按调用失败处理，不当成完整的规划或 SQL 去解析。
 
 ## 八之三、业务库只读账号
 

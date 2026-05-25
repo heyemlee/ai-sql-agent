@@ -565,7 +565,8 @@ without a restart. Endpoints: `GET /admin/model` (status, never the key),
 - **What it changes.** The saved connection outranks the environment and `.env` until
   someone uses *Restore server configuration*. The chat endpoint is always rebuilt from the
   saved address plus the standard path; an `AI_SQL_CHAT_URL` set on the server is not
-  reused. Embedding and rerank keep the server's credentials and endpoints.
+  reused. Rerank keeps the server's credentials and endpoint; embedding has its own
+  section (below).
 - **The key** is write-only: no response, log line or error message contains it; the
   status shows whether one is set and its last four characters. A key is only sent to the
   host it was entered for — moving the address to another host requires entering the key
@@ -584,6 +585,48 @@ without a restart. Endpoints: `GET /admin/model` (status, never the key),
   `model_settings=page`. A saved file that cannot be read is reported there and ignored.
 - **Several replicas** each keep their own file, so a save reaches only one of them. Set
   `AI_SQL_MODEL_SETTINGS_ENABLED=false` and keep configuring through the environment.
+
+#### Embedding for schema retrieval
+
+Schema retrieval recalls databases, tables and columns by keyword and by vector. The
+vectors are local hashes by default (`AI_SQL_EMBEDDING_BACKEND=local`): no service call,
+but no semantics either, so everyday phrasing depends on keywords and on the glossary
+mapping done during keyword extraction. `AI_SQL_EMBEDDING_BACKEND=remote` switches to an
+OpenAI-compatible `/embeddings` endpoint (`AI_SQL_EMBEDDING_URL`, `_MODEL`, `_DIMENSIONS`,
+`_API_KEY`, which falls back to `OPENAI_API_KEY`). The same can be set under
+**Settings → Advanced settings → Embedding**, backed by `POST /admin/model/embedding/test`,
+`PUT /admin/model/embedding` and `DELETE /admin/model/embedding`.
+
+- **Saving rebuilds first.** Every table and column description is embedded with the new
+  model before anything is saved; the new index replaces the old one only once it is
+  complete. A failed test (HTTP 422), a failed rebuild (HTTP 502) or an unwritable file
+  leaves the index in use and the saved file untouched. Restoring rebuilds the index with
+  the server configuration.
+- **Dimensions** default to 1024, which OpenAI `text-embedding-3-*` and DashScope
+  `text-embedding-v4` both produce on request and which matches existing pgvector tables.
+  A service that answers with another size fails the test (`dimension_mismatch`).
+- **Keys.** The embedding section stores its own key. Left blank, the key already
+  configured for the same host is reused — the embedding key in use, or the chat key when
+  both point at the same OpenAI host; a different host requires the key again.
+- **When the service fails.** At startup or on schema reload, a remote embedding that
+  cannot build the index falls back to local vectors; the service starts, and
+  `/admin/model` (`embedding.fallback`) and the log line `schema.embedding_fallback` say
+  why. During a question, all keywords are embedded in one request and cached; if that
+  request fails, the question continues on keyword recall alone and the client stops
+  calling the service for 30 seconds (`retrieval.embedding_unavailable`).
+- **What leaves the machine.** Table and column descriptions (not sample values) when the
+  index is built, and the keywords of every question.
+
+#### OpenAI reasoning models
+
+For gpt-5 and later and the o-series, requests carry no temperature (these models only
+accept the default), use `max_completion_tokens` (`AI_SQL_MAX_COMPLETION_TOKENS`, default
+8192, which also covers the reasoning) and `reasoning_effort` (`AI_SQL_REASONING_EFFORT`,
+default `low`; empty sends nothing). If an endpoint rejects one of these parameters by
+name, the request is sent again without it and the adjustment is remembered for that
+endpoint and model. Intent routing asks for a strict JSON schema on OpenAI-compatible
+endpoints. Output that hit the length limit (`finish_reason=length`) is treated as a
+failed call rather than parsed as a complete plan or SQL statement.
 
 ## 8.3. Read-only accounts on the business databases
 

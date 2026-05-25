@@ -110,6 +110,8 @@ Anthropic 使用 `AI_SQL_MODEL_PROVIDER=anthropic` 与 `ANTHROPIC_API_KEY`。Emb
 
 也可以不重启、直接在页面上换：**设置 → 高级设置 → 模型连接**（需要管理员 Key；没开鉴权的实例只能在服务所在的那台机器上改）。在那里先测试、再保存，下一个问题就用上新的连接。页面保存的连接优先于 `.env`，直到在页面上恢复为服务端配置——详见部署指南的[从页面修改模型连接](docs/deployment.zh-CN.md#从页面修改模型连接)。
 
+表结构检索默认用本地哈希向量；要用真正的 Embedding 模型，在 `.env` 里设 `AI_SQL_EMBEDDING_BACKEND=remote`，或者在 **设置 → 高级设置 → Embedding** 里配置。在页面上保存时会先测试，再用新模型把检索索引重建好，建成了才换上。用 OpenAI 的推理模型（gpt-5 起）时，请求不带温度，改带 `reasoning_effort`（`AI_SQL_REASONING_EFFORT`，默认 `low`）和 `max_completion_tokens`；意图路由用严格的 JSON Schema 输出。
+
 ### 接入自己的数据库
 
 ```bash
