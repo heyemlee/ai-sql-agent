@@ -1,10 +1,17 @@
 """
 模型连接的管理接口：看现在用的是哪一份、保存前先试一下、换一份、退回服务端配置。
 
-    GET    /admin/model        现在用的模型连接（不含 Key），以及这个请求能不能改
-    POST   /admin/model/test   拿提交的连接各发一条极短的请求，不保存
-    PUT    /admin/model        保存并立刻生效（不用重启）
-    DELETE /admin/model        丢掉页面保存的那一份，回到环境变量和 `.env`
+    GET    /admin/model                 现在用的模型连接（不含 Key），以及这个请求能不能改
+    POST   /admin/model/test            拿提交的连接各发一条极短的请求，不保存
+    PUT    /admin/model                 保存并立刻生效（不用重启）
+    DELETE /admin/model                 丢掉页面保存的那一份，回到环境变量和 `.env`
+    POST   /admin/model/embedding/test  拿提交的 Embedding 连接算一段文本的向量，不保存
+    PUT    /admin/model/embedding       先用它把 Schema 检索索引整个建好，再保存、换上
+    DELETE /admin/model/embedding       回到服务端配置的 Embedding（同样先建好索引再换）
+
+Embedding 和主链路分开存、分开恢复。换 Embedding 不是改个配置就完：新旧模型的向量不在
+一个空间里，检索索引要整个重算。所以保存前先测试，测试通过后用新模型把索引建出来，
+建成了才写文件、换上；中途任何一步失败，正在用的索引和保存的文件都不动。
 
 改模型连接等于决定「每一个问题、连同表结构和查出来的数据，发给谁」，所以门槛比别的
 运维接口高一档：
@@ -56,18 +63,22 @@ from ai_sql_agent.core import (
     reload_model_settings,
 )
 from ai_sql_agent.core.model_access import REASON_PERMISSION_DENIED, SCOPE_CREDENTIAL
+from ai_sql_agent.core.transport import forget_parameter_adaptations
 from ai_sql_agent.core.model_settings import (
     OFFICIAL_BASE_URL,
     PROVIDERS,
     ModelSettingsError,
     bump_connection_version,
     clean_api_key,
+    clean_dimensions,
     clean_model_name,
+    clear_embedding,
     clear_store,
     key_field,
     key_hint,
     origin_of,
     same_address,
+    save_embedding,
     save_store,
     url_field,
     validate_base_url,
@@ -106,9 +117,24 @@ PROBE_OUTCOMES = (
     "rejected",
     "server_error",
     "unexpected_response",
+    "dimension_mismatch",
     "failed",
 )
-"""连接测试里一个模型的结果只会是这几种。页面按它们配文案（`settings.model.outcome.*`）。"""
+"""连接测试里一个模型的结果只会是这几种。页面按它们配文案（`settings.model.outcome.*`）。
+`dimension_mismatch` 只出现在 Embedding 的测试里：服务返回的维度和填写的不一样。"""
+
+EMBEDDING_REQUEST_FIELDS = frozenset({"base_url", "api_key", "model", "dimensions"})
+EMBEDDING_PROBE_TEXT = "供应商准时交付率"
+
+DEFAULT_EMBEDDING = {
+    "base_url": OFFICIAL_BASE_URL["openai"],
+    "model": "text-embedding-3-small",
+    "dimensions": 1024,
+}
+"""
+页面上 Embedding 表单的默认值。维度默认 1024：OpenAI 的 text-embedding-3 和百炼的
+text-embedding-v4 都能按请求的维度输出，1024 也是本地哈希向量和 pgvector 表一直用的维度，
+不用为了换模型去改表。"""
 
 # 只有这几种说明「问题在这个模型名上」：第一个模型是因为别的原因没通的话，第二个不用再试。
 _MODEL_SPECIFIC = frozenset({"not_found", "model_denied", "forbidden", "rejected"})
@@ -376,12 +402,147 @@ def resolve_candidate(body: Dict[str, Any], settings: SqlAgentSettings) -> Candi
     )
 
 
+@dataclass
+class EmbeddingCandidate:
+    """一份校验过、Key 也已经确定下来的 Embedding 连接。"""
+
+    base_url: str
+    api_key: str
+    model: str
+    dimensions: int
+    key_changed: bool = False
+    warnings: List[str] = field(default_factory=list)
+
+    @property
+    def url(self) -> str:
+        return build_endpoint(self.base_url, "embeddings")
+
+    def values(self) -> Dict[str, Any]:
+        return {
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "model": self.model,
+            "dimensions": self.dimensions,
+        }
+
+
+def reusable_embedding_keys(settings: SqlAgentSettings) -> List[Tuple[str, str]]:
+    """
+    Key 留空时可以接着用的那几把，以及各自配给了哪台主机：`[(主机, Key)]`。
+
+    - 现在 Embedding 用的那把，配给的是 Embedding 端点那台主机；
+    - 主链路（对话模型）用的那把，配给的是对话端点那台主机。
+
+    两边都是 OpenAI 的话就不用把同一把 Key 填两遍；换了主机则必须重填。
+    """
+    pairs: List[Tuple[str, str]] = []
+    embedding_key = settings.resolved_embedding_api_key()
+    if embedding_key:
+        pairs.append((origin_of(settings.embedding_url), embedding_key))
+    chat_key = settings.resolved_chat_api_key()
+    if chat_key:
+        pairs.append((origin_of(settings.chat_url), chat_key))
+    return [(address, key) for address, key in pairs if address]
+
+
+def resolve_embedding_candidate(body: Dict[str, Any], settings: SqlAgentSettings) -> EmbeddingCandidate:
+    """请求体 → `EmbeddingCandidate`。不成立时抛 `ModelSettingsError`。规则和主链路一样。"""
+    if not set(body) <= EMBEDDING_REQUEST_FIELDS:
+        raise ModelSettingsError("invalid_request", "请求里有不认识的字段。")
+
+    base_url, warnings = validate_base_url(
+        _text(body, "base_url").strip() or DEFAULT_EMBEDDING["base_url"]
+    )
+    typed_key = clean_api_key(_text(body, "api_key"))
+    model = clean_model_name(_text(body, "model"), "Embedding 模型") or DEFAULT_EMBEDDING["model"]
+    raw_dimensions = body.get("dimensions")
+    dimensions = (
+        DEFAULT_EMBEDDING["dimensions"]
+        if raw_dimensions in (None, "", 0)
+        else clean_dimensions(raw_dimensions)
+    )
+
+    target = origin_of(base_url)
+    reusable = next((key for address, key in reusable_embedding_keys(settings) if address == target), "")
+    api_key = typed_key or reusable
+    if not api_key:
+        raise ModelSettingsError(
+            "key_required",
+            "请填写 API Key——这个地址上没有可以接着用的 Key，现有的 Key 不会被发到新的地址。",
+        )
+    return EmbeddingCandidate(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        dimensions=dimensions,
+        key_changed=bool(typed_key) and typed_key != settings.resolved_embedding_api_key(),
+        warnings=warnings,
+    )
+
+
 # ----------------------------------------------------------------------
 # 现在用的是哪一份
 # ----------------------------------------------------------------------
 
 
-def describe(settings: SqlAgentSettings, access: ModelAdminAccess) -> Dict[str, Any]:
+def _embedding_base(settings: SqlAgentSettings) -> str:
+    """Embedding 端点去掉末尾的 `/embeddings`，就是表单里填的那个接口地址。"""
+    url = settings.embedding_url.rstrip("/")
+    return url[: -len("/embeddings")] if url.endswith("/embeddings") else url
+
+
+def describe_embedding(
+    settings: SqlAgentSettings, access: ModelAdminAccess, pipeline: Any = None
+) -> Dict[str, Any]:
+    """
+    Embedding 的现状。不含 Key。
+
+    `backend` 是配置要的，`active` 是 Schema 检索索引实际在用的——配的是远端、启动时它
+    调不通，检索就会退回本地哈希向量，`fallback` 里是原因。
+    """
+    from ai_sql_agent.pipeline.embedding import LOCAL_DIMENSIONS
+
+    remote = settings.embedding_backend == "remote"
+    page = settings.page_store.get("embedding") or {}
+    active = dict(getattr(pipeline, "embedding_status", None) or {})
+    status: Dict[str, Any] = {
+        "source": "page" if page else "server",
+        "backend": settings.embedding_backend,
+        "model": settings.embedding_model if remote else "local_hash",
+        "dimensions": settings.embedding_dimensions if remote else LOCAL_DIMENSIONS,
+        "key_configured": remote and bool(settings.resolved_embedding_api_key()),
+        "active": {
+            name: active[name] for name in ("backend", "model", "dimensions") if name in active
+        },
+        "fallback": active.get("fallback", ""),
+    }
+    if not access.may_edit:
+        return status
+
+    server = settings.server_side
+    server_remote = server.embedding_backend == "remote"
+    status.update(
+        base_url=_embedding_base(settings) if remote else "",
+        endpoint=settings.embedding_url if remote else "",
+        key_hint=key_hint(settings.resolved_embedding_api_key()) if remote else "",
+        # 这几台主机上有现成的 Key：表单里填的地址落在其中之一，Key 就可以留空
+        reusable_key_addresses=sorted({address for address, _ in reusable_embedding_keys(settings)}),
+        saved_at=page.get("saved_at", ""),
+        saved_by=page.get("saved_by", ""),
+        store_problem=settings.page_store.get("embedding_problem", ""),
+        server={
+            "backend": server.embedding_backend,
+            "model": server.embedding_model if server_remote else "local_hash",
+            "dimensions": server.embedding_dimensions if server_remote else LOCAL_DIMENSIONS,
+        },
+        defaults=dict(DEFAULT_EMBEDDING),
+    )
+    return status
+
+
+def describe(
+    settings: SqlAgentSettings, access: ModelAdminAccess, pipeline: Any = None
+) -> Dict[str, Any]:
     """
     模型连接的现状。不含 Key。
 
@@ -398,6 +559,7 @@ def describe(settings: SqlAgentSettings, access: ModelAdminAccess) -> Dict[str, 
         "chat_model": settings.chat_model,
         "coder_model": settings.coder_model,
         "key_configured": settings.has_model_credentials,
+        "embedding": describe_embedding(settings, access, pipeline),
     }
     if not access.may_edit:
         return status
@@ -502,11 +664,13 @@ def probe(candidate: Candidate, *, client: Optional[httpx.Client] = None) -> Dic
             stream=False,
             provider=candidate.provider,
             max_tokens=PROBE_MAX_TOKENS,
+            # 和正式调用带一样的参数：模型不认的话在这里就按正式调用的办法改掉再试
+            reasoning_effort=get_settings().reasoning_effort,
         )
         entry: Dict[str, Any] = {"roles": roles, "model": model, "status_code": None, "message": ""}
         started = time.perf_counter()
         try:
-            reply = transport.post_json(candidate.chat_url, payload, model=model)
+            reply = transport.post_chat(candidate.chat_url, payload, model=model)
         except ModelCallError as exc:
             entry.update(
                 ok=False,
@@ -539,6 +703,81 @@ def probe(candidate: Candidate, *, client: Optional[httpx.Client] = None) -> Dic
     }
 
 
+def _first_vector(reply: Any) -> Optional[List[float]]:
+    """`/embeddings` 响应里的第一个向量；长得不像就返回 None。"""
+    try:
+        vector = reply["data"][0]["embedding"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not isinstance(vector, list) or not vector:
+        return None
+    return vector
+
+
+def probe_embedding(
+    candidate: EmbeddingCandidate, *, client: Optional[httpx.Client] = None
+) -> Dict[str, Any]:
+    """
+    拿这份 Embedding 连接真的算一段文本的向量。和主链路的连接测试一样：走正式调用的那个
+    `ModelTransport`、不重试、用自己的一张访问状态表，结果里不带整个响应体。
+
+    向量的维度必须和填写的一样：有的服务不认 `dimensions` 参数，照自己的默认维度返回——
+    那样建出来的索引和配置对不上，pgvector 表也建不起来。
+    """
+    transport = ModelTransport(
+        PROBE_COMPONENT,
+        api_key=candidate.api_key,
+        provider="openai",
+        timeout=PROBE_TIMEOUT_SECONDS,
+        retry_policy=RetryPolicy(max_retries=0),
+        access_registry=ModelAccessRegistry(),
+        client=client,
+    )
+    transport.circuit.reset()
+    entry: Dict[str, Any] = {
+        "roles": ["embedding"],
+        "model": candidate.model,
+        "status_code": None,
+        "message": "",
+        "dimensions": 0,
+    }
+    started = time.perf_counter()
+    try:
+        reply = transport.post_json(
+            candidate.url,
+            {
+                "model": candidate.model,
+                "input": [EMBEDDING_PROBE_TEXT],
+                "dimensions": candidate.dimensions,
+                "encoding_format": "float",
+            },
+            model=candidate.model,
+        )
+    except ModelCallError as exc:
+        entry.update(
+            ok=False,
+            outcome=_outcome_of(exc),
+            status_code=exc.status_code,
+            message=exc.upstream_message,
+        )
+    else:
+        vector = _first_vector(reply)
+        if vector is None:
+            entry.update(ok=False, outcome="unexpected_response", status_code=200)
+        elif len(vector) != candidate.dimensions:
+            entry.update(ok=False, outcome="dimension_mismatch", status_code=200, dimensions=len(vector))
+        else:
+            entry.update(ok=True, outcome="ok", status_code=200, dimensions=len(vector))
+    entry["duration_ms"] = round((time.perf_counter() - started) * 1000)
+    transport.circuit.reset()
+    return {
+        "ok": entry["ok"],
+        "endpoint": candidate.url,
+        "results": [entry],
+        "warnings": candidate.warnings,
+    }
+
+
 # ----------------------------------------------------------------------
 # 让它生效
 # ----------------------------------------------------------------------
@@ -557,6 +796,7 @@ def apply_model_connection(app: FastAPI) -> SqlAgentSettings:
     bump_connection_version()
     CIRCUIT_REGISTRY.reset_all()
     MODEL_ACCESS.reset_all()
+    forget_parameter_adaptations()
 
     pipeline = getattr(app.state, "pipeline", None)
     memory = getattr(app.state, "memory", None)
@@ -578,13 +818,17 @@ def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
 
 
+def _pipeline(request: Request) -> Any:
+    return getattr(request.app.state, "pipeline", None)
+
+
 @router.get("")
 def model_status(
-    response: Response, access: ModelAdminAccess = Depends(model_admin_access)
+    request: Request, response: Response, access: ModelAdminAccess = Depends(model_admin_access)
 ) -> Dict[str, Any]:
-    """现在用的模型连接，以及这个请求能不能改它。"""
+    """现在用的模型连接（主链路和 Embedding），以及这个请求能不能改它。"""
     _no_store(response)
-    return describe(get_settings(), access)
+    return describe(get_settings(), access, _pipeline(request))
 
 
 @router.post("/test")
@@ -671,7 +915,11 @@ def save_model(
         previous_provider=before.model_provider,
         previous_endpoint=origin_of(before.chat_url),
     )
-    return {"saved": True, "warnings": candidate.warnings, "status": describe(settings, access)}
+    return {
+        "saved": True,
+        "warnings": candidate.warnings,
+        "status": describe(settings, access, _pipeline(request)),
+    }
 
 
 @router.delete("")
@@ -710,4 +958,213 @@ def clear_model(
         provider=settings.model_provider,
         endpoint=origin_of(settings.chat_url),
     )
-    return {"cleared": cleared, "status": describe(settings, access)}
+    return {"cleared": cleared, "status": describe(settings, access, _pipeline(request))}
+
+
+# ----------------------------------------------------------------------
+# Embedding
+# ----------------------------------------------------------------------
+
+
+def _require_pipeline(request: Request) -> Any:
+    pipeline = _pipeline(request)
+    if pipeline is None:
+        raise HTTPException(
+            status_code=503, detail={"code": "not_ready", "message": "服务还没有启动完。"}
+        )
+    return pipeline
+
+
+@router.post("/embedding/test")
+def test_embedding(
+    request: Request,
+    response: Response,
+    access: ModelAdminAccess = Depends(model_admin_access),
+    body: Dict[str, Any] = Depends(_json_object),
+) -> Dict[str, Any]:
+    """拿提交的 Embedding 连接算一段文本的向量，不保存。Key 留空的规则和保存时一样。"""
+    _no_store(response)
+    _require_edit(request, access)
+    try:
+        candidate = resolve_embedding_candidate(body, get_settings())
+    except ModelSettingsError as error:
+        raise _invalid(error) from None
+
+    report = probe_embedding(candidate)
+    log_event(
+        _logger,
+        logging.INFO,
+        "model_settings.embedding_tested",
+        caller=access.principal.caller,
+        endpoint=origin_of(candidate.url),
+        model=candidate.model,
+        dimensions=candidate.dimensions,
+        ok=report["ok"],
+        outcome=report["results"][0]["outcome"],
+    )
+    return report
+
+
+@router.put("/embedding")
+def save_embedding_model(
+    request: Request,
+    response: Response,
+    access: ModelAdminAccess = Depends(model_admin_access),
+    body: Dict[str, Any] = Depends(_json_object),
+) -> Dict[str, Any]:
+    """
+    换 Embedding：测试 → 用新模型把 Schema 检索索引整个建好 → 保存 → 换上。
+
+    要几秒到几十秒（Schema 里每张表、每个字段都要算一次向量）。测试没通过、索引建不出来、
+    文件写不了，都在换上之前停下：正在用的索引和保存的文件都不动。
+    """
+    from ai_sql_agent.pipeline.embedding import remote_embedding_client
+
+    _no_store(response)
+    _require_edit(request, access)
+    pipeline = _require_pipeline(request)
+    with _apply_lock:
+        before = get_settings()
+        try:
+            candidate = resolve_embedding_candidate(body, before)
+        except ModelSettingsError as error:
+            raise _invalid(error) from None
+
+        report = probe_embedding(candidate)
+        if not report["ok"]:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "test_failed",
+                    "message": "连接测试没有通过，没有保存。",
+                    "test": report,
+                },
+            )
+
+        client = remote_embedding_client(
+            url=candidate.url,
+            api_key=candidate.api_key,
+            model=candidate.model,
+            dimensions=candidate.dimensions,
+            settings=before,
+        )
+        started = time.perf_counter()
+        try:
+            service = pipeline.build_schema_retrieval_service(client)
+        except ModelCallError as error:
+            log_event(
+                _logger,
+                logging.ERROR,
+                "model_settings.embedding_index_failed",
+                endpoint=origin_of(candidate.url),
+                model=candidate.model,
+                error_category=error.category,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "index_failed",
+                    "message": (
+                        "用新模型重建检索索引时 Embedding 服务出错，没有保存，正在用的索引没有改动。"
+                        + (f" 服务端说：{error.upstream_message}" if error.upstream_message else "")
+                    ),
+                },
+            ) from None
+        rebuild = {
+            "texts": client.embedded_count,
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+        }
+
+        try:
+            save_embedding(
+                before.model_settings_file, candidate.values(), saved_by=access.principal.caller
+            )
+        except ModelSettingsError as error:
+            raise _invalid(error) from None
+        except OSError as error:
+            log_event(
+                _logger, logging.ERROR, "model_settings.store_failed", error=type(error).__name__
+            )
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "store_unwritable",
+                    "message": "写不了保存模型连接的文件（AI_SQL_MODEL_SETTINGS_PATH），没有改动。",
+                },
+            ) from None
+        settings = reload_model_settings()
+        pipeline.install_schema_retrieval_service(
+            service, reason=f"embedding:{access.principal.caller}"
+        )
+
+    log_event(
+        _logger,
+        logging.WARNING,
+        "model_settings.embedding_saved",
+        caller=access.principal.caller,
+        client=request.client.host if request.client else "",
+        endpoint=origin_of(candidate.url),
+        model=candidate.model,
+        dimensions=candidate.dimensions,
+        key_changed=candidate.key_changed,
+        previous_backend=before.embedding_backend,
+        previous_model=before.embedding_model,
+        rebuilt_texts=rebuild["texts"],
+        rebuild_ms=rebuild["duration_ms"],
+    )
+    return {
+        "saved": True,
+        "warnings": candidate.warnings,
+        "test": report,
+        "rebuild": rebuild,
+        "status": describe(settings, access, pipeline),
+    }
+
+
+@router.delete("/embedding")
+def clear_embedding_model(
+    request: Request,
+    response: Response,
+    access: ModelAdminAccess = Depends(model_admin_access),
+) -> Dict[str, Any]:
+    """
+    丢掉页面保存的 Embedding，回到服务端配置的那一种，并按它重建检索索引。
+
+    服务端配的是远端、而它调不通时，和启动时一样退回本地哈希向量（状态里的 `fallback`）。
+    """
+    _no_store(response)
+    _require_edit(request, access)
+    pipeline = _require_pipeline(request)
+    with _apply_lock:
+        before = get_settings()
+        try:
+            cleared = clear_embedding(before.model_settings_file)
+        except OSError as error:
+            log_event(
+                _logger, logging.ERROR, "model_settings.store_failed", error=type(error).__name__
+            )
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "store_unwritable",
+                    "message": "改不了保存模型连接的文件（AI_SQL_MODEL_SETTINGS_PATH），没有改动。",
+                },
+            ) from None
+        settings = reload_model_settings()
+        if cleared:
+            pipeline.install_schema_retrieval_service(
+                pipeline.build_schema_retrieval_service(None),
+                reason=f"embedding_restored:{access.principal.caller}",
+            )
+
+    log_event(
+        _logger,
+        logging.WARNING,
+        "model_settings.embedding_cleared",
+        caller=access.principal.caller,
+        client=request.client.host if request.client else "",
+        had_saved_settings=cleared,
+        backend=settings.embedding_backend,
+        **({"fallback": pipeline.embedding_status.get("fallback", "")} if cleared else {}),
+    )
+    return {"cleared": cleared, "status": describe(settings, access, pipeline)}

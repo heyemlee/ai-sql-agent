@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
@@ -20,7 +21,10 @@ from ai_sql_agent.retrieval.rrf_fusion_client import (
     RRFFusionConfig,
     RouteRecallResult,
 )
-from ai_sql_agent.retrieval.vector_backend import create_vector_index
+from ai_sql_agent.core import ModelCallError, get_logger, log_event
+from ai_sql_agent.retrieval.vector_backend import create_vector_index, search_or_skip
+
+_logger = get_logger("retrieval")
 
 
 @dataclass
@@ -352,6 +356,7 @@ class ThreeTierSchemaRetrievalService:
         """
         resolved_keywords = self._resolve_keywords(query, keywords)
         access = access or ALLOW_ALL
+        self._prefetch_vectors(resolved_keywords)
 
         # 第一层：库级
         database_hits = self._select_databases(resolved_keywords)
@@ -484,6 +489,28 @@ class ThreeTierSchemaRetrievalService:
             raise ValueError(f"关键词抽取结果为空，query={query}")
         return extracted
 
+    def _prefetch_vectors(self, keywords: Sequence[str]) -> None:
+        """
+        远端 Embedding：把这个问题的全部关键词一次算好。
+
+        三层召回都按关键词逐个做向量检索，同一个关键词要用好几次；先合成一次请求，
+        后面全从缓存里取。算不出来也不在这里报错——各层的向量召回会各自退成只走关键词。
+        """
+        prefetch = getattr(self.embedding_client, "prefetch", None)
+        if not callable(prefetch):
+            return
+        try:
+            prefetch(list(keywords))
+        except ModelCallError as exc:
+            # Client 进入冷却：这个问题的向量召回都会跳过，只走关键词召回
+            log_event(
+                _logger,
+                logging.WARNING,
+                "retrieval.embedding_unavailable",
+                error_category=exc.category,
+                keywords=len(keywords),
+            )
+
     def _tier_fuse(
         self,
         keywords: Sequence[str],
@@ -506,8 +533,8 @@ class ThreeTierSchemaRetrievalService:
                 )
             )
 
-            vector_hits = vector_index.search(
-                keyword, top_k=self.config.tier_per_keyword_top_k
+            vector_hits = search_or_skip(
+                vector_index, keyword, top_k=self.config.tier_per_keyword_top_k
             )
             route_results.append(
                 RouteRecallResult(

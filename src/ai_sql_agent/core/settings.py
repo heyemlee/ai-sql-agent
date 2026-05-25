@@ -106,6 +106,25 @@ class SqlAgentSettings(BaseSettings):
     max_output_tokens: int = 4096
     """Anthropic Messages 协议要求显式给 `max_tokens`，这里是默认值。"""
 
+    max_completion_tokens: int = 8192
+    """
+    OpenAI 推理模型（GPT-5 起、o 系列）一次调用的输出上限，**推理过程也算在里面**。
+
+    比 `max_output_tokens` 大一档：上限只够写回答的话，推理一长就一个字也剩不下，
+    表现为 `finish_reason=length`、正文为空。只是上限，用不到不花钱。
+    """
+
+    reasoning_effort: str = "low"
+    """
+    OpenAI 推理模型想多久（`reasoning_effort`）：minimal / low / medium / high，空串 = 不传、
+    用模型自己的默认档（通常是 medium）。
+
+    默认 low：一个问题要连着调五六次模型（抽词、路由、规划、生成、自检），每一次多想几秒，
+    整题就慢出几十秒，而调用方（ai-helpdesk）等的上限是 45 秒。这几步都是有明确格式、
+    有 Schema 可对照的任务，不靠长推理。中转站或模型不认这个参数时自动去掉。
+    对 Anthropic 和不是推理模型的不起作用。
+    """
+
     embedding_api_key: str = Field(
         default="",
         validation_alias=AliasChoices(
@@ -153,9 +172,28 @@ class SqlAgentSettings(BaseSettings):
     """
     Embedding 端点，留空时取 `{OPENAI_BASE_URL}/embeddings`。
 
-    只有 pgvector 向量索引这条路才会用到；主链路（检索→规划→生成）用的是
-    本地哈希向量，不调这个接口，因此只跑 benchmark 时无需配置。
+    `embedding_backend=remote` 时 Schema 检索用它；`local`（默认）时主链路用本地哈希向量，
+    不调这个接口。离线建 pgvector 索引的脚本（`ai_sql_agent.indexing`）一直用它。
     """
+
+    embedding_backend: Literal["local", "remote"] = "local"
+    """
+    Schema 检索（库 / 表 / 字段三层的向量召回）用哪种向量：
+
+    - `local`：本地哈希向量。不调任何服务，但没有语义——「多少钱」和「金额」对不上，
+      口语问法主要靠关键词召回和抽词时的术语映射；
+    - `remote`：调 `embedding_url`（OpenAI 兼容的 /embeddings），用 `embedding_model`、
+      `embedding_dimensions`。启动和 Schema 重建时把全部表、字段说明算一遍向量；
+      服务调不通时退回本地哈希向量，服务照常起，`/admin/model` 里能看到原因。
+
+    也可以在页面的「设置 → 高级设置 → Embedding」里配置，保存时会先用新模型把索引建好再换上。
+    """
+
+    embedding_batch_size: int = Field(default=10, ge=1, le=2048)
+    """一次 /embeddings 请求带几段文本。百炼最多 10；OpenAI 可以到 2048，调大建索引更快。"""
+
+    embedding_timeout_seconds: float = Field(default=15.0, gt=0)
+    """单次 Embedding 请求的超时。查询时每个问题要等它一次，比对话调用的超时短。"""
     rerank_url: str = Field(
         default="",
         validation_alias=AliasChoices("AI_SQL_RERANK_URL", "DASHSCOPE_RERANK_URL"),
@@ -470,11 +508,14 @@ class SqlAgentSettings(BaseSettings):
 
     def resolved_embedding_api_key(self) -> str:
         """
-        Embedding 凭证：单独配了就用单独的，否则回落到 OpenAI 兼容通道。
+        Embedding 凭证。页面保存过 Embedding 连接就是那一节里的 Key；否则单独配了就用单独的，
+        再否则回落到 OpenAI 兼容通道。
 
         回落取的是**服务端配置**里的那一把：页面换主链路的 Key 不该顺带把它发给
-        Embedding 的地址（那个地址页面改不了，多半是另一台主机）。
+        Embedding 的地址（那个地址可能是另一台主机）。
         """
+        if self._page_store.get("embedding"):
+            return self.embedding_api_key
         source = self.server_side
         return source.embedding_api_key or source.openai_api_key
 
@@ -520,19 +561,49 @@ def apply_model_overrides(base: SqlAgentSettings, store: Dict[str, Any]) -> SqlA
     return merged
 
 
+def apply_embedding_overrides(
+    current: SqlAgentSettings, entry: Dict[str, Any]
+) -> SqlAgentSettings:
+    """
+    在配置上叠一份页面保存的 Embedding 连接，返回新的配置对象（`current` 不动）。
+
+    页面保存的 Embedding 一律是远端的：地址拼成 `/embeddings` 端点，Key 用那一节自己的。
+    """
+    values = entry["values"]
+    return current.model_copy(
+        update={
+            "embedding_backend": "remote",
+            "embedding_url": build_endpoint(values["base_url"], "embeddings"),
+            "embedding_api_key": values["api_key"],
+            "embedding_model": values["model"],
+            "embedding_dimensions": int(values["dimensions"]),
+        }
+    )
+
+
 def _with_page_store(base: SqlAgentSettings) -> SqlAgentSettings:
     """
-    服务端配置 → 当前生效的配置：页面保存过模型连接就叠上去。
+    服务端配置 → 当前生效的配置：页面保存过模型连接（主链路 / Embedding）就叠上去。
 
-    那个文件读不了、不完整时照常返回服务端配置——服务必须起得来；
-    问题记在 `page_store["problem"]` 上，启动日志和 `/admin/model` 会说出来。
+    那个文件读不了、某一节不完整时照常返回服务端配置——服务必须起得来；
+    问题记在 `page_store["problem"]` / `page_store["embedding_problem"]` 上，
+    启动日志和 `/admin/model` 会说出来。
     """
     path = base.model_settings_file
     store = load_store(path) if path else {}
+    current = base
     if store.get("values"):
-        return apply_model_overrides(base, store)
-    base._page_store = {"problem": store["problem"]} if store.get("problem") else {}
-    return base
+        current = apply_model_overrides(current, store)
+    if store.get("embedding"):
+        current = apply_embedding_overrides(current, store["embedding"])
+    if current is base:
+        base._page_store = {
+            name: store[name] for name in ("problem", "embedding_problem") if store.get(name)
+        }
+        return base
+    current._server_side = base
+    current._page_store = dict(store)
+    return current
 
 
 _current: Optional[SqlAgentSettings] = None

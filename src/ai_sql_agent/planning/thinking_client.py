@@ -61,6 +61,25 @@ class ThinkingModelClient(FollowsModelSettings):
             "缺少模型 API Key（OPENAI_API_KEY / ANTHROPIC_API_KEY），无法调用思考模型。"
         )
 
+    def generate_structured(self, prompt: str, schema: dict, name: str) -> str:
+        """
+        要求按 JSON Schema 输出的一次生成，返回 JSON 文本。
+
+        OpenAI 兼容协议由服务端按 Schema 约束（strict）；Anthropic 和不支持的中转站
+        照常生成，靠提示词里写明的 JSON 格式。没有 Key 时走 Mock，和 `generate` 一样。
+        """
+        connection = self._connection()
+        if connection.has_key:
+            return connection.transport.chat(
+                connection.url,
+                self._messages(prompt),
+                model=connection.model,
+                temperature=self.config.temperature,
+                response_schema=schema,
+                schema_name=name,
+            )
+        return self.generate(prompt)
+
     def generate_stream(self, prompt: str) -> Iterator[str]:
         """
         流式生成规划结果。

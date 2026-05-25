@@ -27,7 +27,7 @@ from ai_sql_agent.retrieval.rrf_fusion_client import (
     RouteRecallResult,
 )
 from ai_sql_agent.retrieval.sqlite_loader import SQLiteSchemaLoader
-from ai_sql_agent.retrieval.vector_backend import create_vector_index
+from ai_sql_agent.retrieval.vector_backend import create_vector_index, search_or_skip
 from ai_sql_agent.retrieval.vector_index import VectorIndex
 
 
@@ -389,7 +389,8 @@ class HybridSchemaRetrievalService:
                 )
             )
 
-            vector_hits = self.vector_index.search(
+            vector_hits = search_or_skip(
+                self.vector_index,
                 keyword,
                 top_k=self.config.per_keyword_top_k,
             )

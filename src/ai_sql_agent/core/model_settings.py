@@ -16,6 +16,10 @@
    Key 交给一个新的主机——页面和接口都不允许（`same_address`），已经建好的 Client 换连接时
    也是整组一起换，不会出现「新地址 + 旧 Key」的中间状态（`SettingsBinding`）。
 
+Embedding 是另一节（`embedding`），和主链路的连接分开存、分开恢复：Schema 检索用它把
+表、字段说明变成向量。它不在 `OVERRIDABLE` 里——换 Embedding 要把检索索引整个重建一遍，
+由 `api.model_admin` 先建好新索引、再写这个文件、最后一次换上。
+
 这个文件只依赖标准库：`settings.py` 要在构造配置时读它，不能反过来再依赖配置或日志。
 """
 from __future__ import annotations
@@ -60,6 +64,11 @@ def url_field(provider: str) -> str:
     """这家协议的接口地址存在哪个配置项里。"""
     return f"{provider}_base_url"
 
+
+EMBEDDING_FIELDS = ("base_url", "api_key", "model", "dimensions")
+"""页面保存的 Embedding 那一节存哪几项。"""
+
+MAX_DIMENSIONS = 8192
 
 WARNINGS = ("plaintext_http",)
 """`validate_base_url` 会给出的提醒。页面按这些代号配文案。"""
@@ -114,6 +123,19 @@ def clean_model_name(value: Any, what: str) -> str:
     if len(name) > MAX_MODEL_LENGTH or not _MODEL_NAME.match(name):
         raise ModelSettingsError("invalid_model", f"{what}的写法不对：只能用字母、数字和 . _ - : / @。")
     return name
+
+
+def clean_dimensions(value: Any) -> int:
+    """向量维度：正整数，不超过 `MAX_DIMENSIONS`。"""
+    if isinstance(value, bool):
+        raise ModelSettingsError("invalid_dimensions", "向量维度要是一个正整数。")
+    try:
+        number = int(str(value).strip())
+    except ValueError:
+        raise ModelSettingsError("invalid_dimensions", "向量维度要是一个正整数。") from None
+    if not 0 < number <= MAX_DIMENSIONS:
+        raise ModelSettingsError("invalid_dimensions", f"向量维度要在 1 到 {MAX_DIMENSIONS} 之间。")
+    return number
 
 
 def _address(host: str) -> Optional[ipaddress._BaseAddress]:
@@ -224,27 +246,24 @@ def key_hint(api_key: str) -> str:
 # ----------------------------------------------------------------------
 
 
-def load_store(path: str) -> Dict[str, Any]:
+def _read_document(path: str) -> Dict[str, Any]:
     """
-    读页面保存的那份配置 → `{"values": {...}, "saved_at": ..., "saved_by": ...}`。
-
-    没配路径、文件不存在、文件坏了，都返回空——服务必须照常起得来，
-    用的就是环境变量和 `.env` 里的那一份。文件坏了时带一个 `problem` 说明，由调用方去记日志。
+    读整份文件（写回时要保留另一节）。没有文件是空的；读不了抛 OSError，
+    不是 JSON、或者不是一个 JSON 对象抛 ValueError。
     """
-    if not path:
-        return {}
-    target = Path(path)
     try:
-        raw = target.read_text(encoding="utf-8")
+        raw = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
-    except OSError as exc:
-        return {"problem": f"读不了：{type(exc).__name__}"}
-    try:
-        document = json.loads(raw)
-    except ValueError:
-        return {"problem": "不是合法的 JSON"}
-    values = document.get("values") if isinstance(document, dict) else None
+    document = json.loads(raw)
+    if not isinstance(document, dict):
+        raise ValueError("不是一个 JSON 对象")
+    return document
+
+
+def _chat_section(document: Dict[str, Any]) -> Dict[str, Any]:
+    """主链路那一节 → `{"values", "saved_at", "saved_by"}`，不成立时 `{"problem": ...}`。"""
+    values = document.get("values")
     if not isinstance(values, dict):
         return {"problem": "缺少 values"}
 
@@ -269,21 +288,76 @@ def load_store(path: str) -> Dict[str, Any]:
     }
 
 
-def save_store(path: str, values: Dict[str, str], *, saved_by: str = "") -> Dict[str, Any]:
+def _embedding_section(entry: Any) -> Dict[str, Any]:
+    """Embedding 那一节 → `{"values", "saved_at", "saved_by"}`，不成立时 `{"problem": ...}`。"""
+    values = entry.get("values") if isinstance(entry, dict) else None
+    if not isinstance(values, dict):
+        return {"problem": "缺少 values"}
+    try:
+        cleaned = {
+            "base_url": validate_base_url(values.get("base_url"))[0],
+            "api_key": clean_api_key(values.get("api_key")),
+            "model": clean_model_name(values.get("model"), "Embedding 模型"),
+            "dimensions": clean_dimensions(values.get("dimensions")),
+        }
+    except ModelSettingsError as error:
+        return {"problem": error.message}
+    if not cleaned["api_key"] or not cleaned["model"]:
+        return {"problem": "不完整：地址、Key、模型名都要有"}
+    return {
+        "values": cleaned,
+        "saved_at": str(entry.get("saved_at") or ""),
+        "saved_by": str(entry.get("saved_by") or ""),
+    }
+
+
+def load_store(path: str) -> Dict[str, Any]:
     """
-    把页面保存的配置写进文件：先写临时文件再改名，读的一方要么看到旧的、要么看到新的。
+    读页面保存的那份配置 → `{"values": {...}, "saved_at": ..., "saved_by": ...,
+    "embedding": {"values": {...}, "saved_at": ..., "saved_by": ...}}`。两节都可能没有。
+
+    没配路径、文件不存在、文件坏了，都返回空——服务必须照常起得来，
+    用的就是环境变量和 `.env` 里的那一份。某一节不成立时只丢那一节，
+    原因放在 `problem`（主链路）/ `embedding_problem` 里，由调用方去记日志。
+    """
+    if not path:
+        return {}
+    try:
+        document = _read_document(path)
+    except OSError as exc:
+        return {"problem": f"读不了：{type(exc).__name__}"}
+    except ValueError:
+        return {"problem": "不是合法的 JSON 对象"}
+    if not document:
+        return {}
+
+    store: Dict[str, Any] = {}
+    if "values" in document or "embedding" not in document:
+        chat = _chat_section(document)
+        if "problem" in chat:
+            store["problem"] = chat["problem"]
+        else:
+            store.update(chat)
+    if "embedding" in document:
+        embedding = _embedding_section(document["embedding"])
+        if "problem" in embedding:
+            store["embedding_problem"] = embedding["problem"]
+        else:
+            store["embedding"] = embedding
+    return store
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _write_document(path: str, document: Dict[str, Any]) -> None:
+    """
+    先写临时文件再改名，读的一方要么看到旧的、要么看到新的。
 
     文件里有明文 Key，权限收到只有服务自己的账号能读（0600）。
     """
-    if not path:
-        raise ModelSettingsError("disabled", "这台服务没有开启页面配置模型连接。")
     target = Path(path)
-    document = {
-        "version": STORE_VERSION,
-        "saved_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-        "saved_by": saved_by,
-        "values": {name: values[name] for name in OVERRIDABLE if values.get(name)},
-    }
     target.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=target.parent)
     try:
@@ -298,17 +372,84 @@ def save_store(path: str, values: Dict[str, str], *, saved_by: str = "") -> Dict
         except OSError:
             pass
         raise
+
+
+def _existing(path: str) -> Dict[str, Any]:
+    """写之前读一下现有的文件，好把另一节原样留下。文件坏了就当没有。"""
+    try:
+        return _read_document(path)
+    except (OSError, ValueError):
+        return {}
+
+
+def _keep_embedding(document: Dict[str, Any]) -> Dict[str, Any]:
+    return {"embedding": document["embedding"]} if "embedding" in document else {}
+
+
+def save_store(path: str, values: Dict[str, str], *, saved_by: str = "") -> Dict[str, Any]:
+    """把页面保存的主链路连接写进文件（Embedding 那一节原样保留）。"""
+    if not path:
+        raise ModelSettingsError("disabled", "这台服务没有开启页面配置模型连接。")
+    document = {
+        "version": STORE_VERSION,
+        "saved_at": _now(),
+        "saved_by": saved_by,
+        "values": {name: values[name] for name in OVERRIDABLE if values.get(name)},
+        **_keep_embedding(_existing(path)),
+    }
+    _write_document(path, document)
     return document
 
 
 def clear_store(path: str) -> bool:
-    """删掉页面保存的配置（回到环境变量和 `.env`）。本来就没有时返回 False。"""
+    """丢掉页面保存的主链路连接（回到环境变量和 `.env`）。本来就没有时返回 False。"""
     if not path:
         return False
-    try:
-        Path(path).unlink()
-    except FileNotFoundError:
+    document = _existing(path)
+    if not Path(path).exists():
         return False
+    had_chat = "values" in document or not document
+    remaining = _keep_embedding(document)
+    if remaining:
+        _write_document(path, {"version": STORE_VERSION, **remaining})
+    else:
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            return False
+    return had_chat
+
+
+def save_embedding(path: str, values: Dict[str, Any], *, saved_by: str = "") -> Dict[str, Any]:
+    """把页面保存的 Embedding 连接写进文件（主链路那一节原样保留）。"""
+    if not path:
+        raise ModelSettingsError("disabled", "这台服务没有开启页面配置模型连接。")
+    document = _existing(path)
+    document["version"] = STORE_VERSION
+    document["embedding"] = {
+        "saved_at": _now(),
+        "saved_by": saved_by,
+        "values": {name: values[name] for name in EMBEDDING_FIELDS if name in values},
+    }
+    _write_document(path, document)
+    return document["embedding"]
+
+
+def clear_embedding(path: str) -> bool:
+    """丢掉页面保存的 Embedding 连接。本来就没有时返回 False。"""
+    if not path:
+        return False
+    document = _existing(path)
+    if "embedding" not in document:
+        return False
+    document.pop("embedding")
+    if "values" in document:
+        _write_document(path, document)
+    else:
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            pass
     return True
 
 

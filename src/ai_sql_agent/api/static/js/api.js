@@ -127,6 +127,10 @@ export const api = {
   testModel: (body) => request('POST', '/admin/model/test', { body }),
   saveModel: (body) => request('PUT', '/admin/model', { body }),
   clearModel: () => request('DELETE', '/admin/model'),
+  // Embedding（Schema 检索用的向量模型）。保存会先用新模型把检索索引建好，要等几秒到几十秒
+  testEmbedding: (body) => request('POST', '/admin/model/embedding/test', { body }),
+  saveEmbedding: (body) => request('PUT', '/admin/model/embedding', { body }),
+  clearEmbedding: () => request('DELETE', '/admin/model/embedding'),
 
   stream: streamQuery,
 };

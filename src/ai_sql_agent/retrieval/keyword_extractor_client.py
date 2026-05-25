@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from ai_sql_agent.core.model_client import FollowsModelSettings
+from ai_sql_agent.core.model_text import plain_text
 
 
 @dataclass
@@ -162,6 +163,8 @@ class AliyunKeywordExtractor(FollowsModelSettings):
         Returns:
             List[str]: 去重后的关键词列表。
         """
+        # 「**解析结果**：」这类加了格式的写法，不去掉记号就按标签找不到，整段回答会被当成关键词
+        text = plain_text(text)
         segments = re.findall(r"(?:解析结果|映射术语)[:：]\s*(.+)", text)
         keyword_text = "，".join(segments) if segments else text.strip()
 

@@ -99,27 +99,23 @@ WHERE stock_snapshot.on_hand_qty < material.safety_stock;"""
 
     def clean_sql(self, text: str) -> str:
         """
-        清理模型输出，只保留 SQL。
+        清理模型输出，只保留一条 SQL。
 
         处理：
-        - 去掉 Markdown 代码块
-        - 去掉“输出SQL语句：”之类的前缀
-        - 提取 SELECT/WITH 开头的 SQL
+        - 有 Markdown 代码块就只取第一个代码块里的内容，块前块后的说明不要；
+        - 去掉“输出SQL语句：”之类的前缀；
+        - 从第一个 SELECT/WITH 开始，到第一个不在引号里的分号为止——每一步只允许一条
+          语句，分号后面多半是模型补的一句解释；没有分号时，空行之后以中文开头的段落
+          也是解释，不是 SQL。
         """
         text = text.strip()
 
-        text = re.sub(
-            r"^```(?:sql)?\s*",
-            "",
-            text,
-            flags=re.I,
-        )
-        text = re.sub(
-            r"\s*```$",
-            "",
-            text,
-            flags=re.I,
-        )
+        fenced = _FENCED_BLOCK.search(text)
+        if fenced and fenced.group(1).strip():
+            text = fenced.group(1).strip()
+        else:
+            text = re.sub(r"^```(?:sql)?\s*", "", text, flags=re.I)
+            text = re.sub(r"\s*```$", "", text, flags=re.I)
 
         text = re.sub(
             r"^(输出SQL语句|SQL语句|SQL)\s*[:：]\s*",
@@ -128,18 +124,43 @@ WHERE stock_snapshot.on_hand_qty < material.safety_stock;"""
             flags=re.I,
         ).strip()
 
-        match = re.search(
-            r"((?:SELECT|WITH)\b[\s\S]*?;?)\s*$",
-            text,
-            flags=re.I,
-        )
-
-        if match:
-            sql = match.group(1).strip()
-        else:
-            sql = text
+        match = re.search(r"\b(?:SELECT|WITH)\b", text, flags=re.I)
+        sql = _first_statement(text[match.start():] if match else text).strip()
 
         if sql and not sql.endswith(";"):
             sql += ";"
 
         return sql
+
+
+_FENCED_BLOCK = re.compile(
+    r"```[ \t]*(?:sql|sqlite|postgres|postgresql|pgsql)?[ \t]*\n(.*?)```", re.I | re.S
+)
+_PROSE_AFTER_BLANK_LINE = re.compile(r"\n[ \t]*\n[ \t]*[\u4e00-\u9fff]")
+
+
+def _first_statement(text: str) -> str:
+    """取到第一个不在引号、注释里的分号（含）为止；没有就取到第一段中文说明之前。"""
+    quote = ""
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                # 'it''s' 里连着的两个引号是转义，不是字符串结束
+                if index + 1 < len(text) and text[index + 1] == quote:
+                    index += 1
+                else:
+                    quote = ""
+        elif char in ("'", '"'):
+            quote = char
+        elif text.startswith("--", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline == -1 else newline
+            continue
+        elif char == ";":
+            return text[: index + 1]
+        index += 1
+
+    prose = _PROSE_AFTER_BLANK_LINE.search(text)
+    return text[: prose.start()] if prose else text

@@ -10,7 +10,15 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from ai_sql_agent.auth import authorization_scope, check_sql_access, extract_referenced_tables
 from ai_sql_agent.auth.identifiers import bind_dialect
 from ai_sql_agent.core.errors import ModelCallError
-from ai_sql_agent.core import get_logger, get_trace_id, log_event, stage, usage_scope, usage_summary
+from ai_sql_agent.core import (
+    get_logger,
+    get_settings,
+    get_trace_id,
+    log_event,
+    stage,
+    usage_scope,
+    usage_summary,
+)
 from ai_sql_agent.core.metrics import (
     ACCESS_DENIED,
     DEGRADED_RESPONSES,
@@ -60,10 +68,10 @@ from .demo_data import (
     create_pm_demo_database,
     create_wms_demo_database,
 )
+from .embedding import describe_embedding, local_embedding_client, schema_embedding_client
 from .local_clients import (
     HybridKeywordExtractor,
     build_schema_glossary,
-    LocalHashEmbeddingClient,
     SimpleKeywordExtractor,
 )
 from .objects import DatabaseConfig, PipelineConfig, PipelineResult, StepExecutionLog
@@ -1175,17 +1183,23 @@ class Text2SQLPipeline:
                 changed.append(name)
         return changed
 
-    def reload_schema(self, reason: str = "manual") -> List[str]:
+    def reload_schema(self, reason: str = "manual", *, force: Optional[bool] = None) -> List[str]:
         """
         重建三层检索索引并原子替换，返回发生变化的库名。
 
         重建在新对象上进行，构建完成后一次性替换引用——期间进来的请求
         继续用旧索引，不会读到半成品。配了 pgvector 时，没变化的命名空间
         会命中指纹缓存，不重复调用 Embedding。
+
+        `force` 不给时按 `reason` 判断：人手动触发的（`manual`、`manual:<谁>`）一定重建，
+        定时轮询只在结构变了时重建。管理接口以前传的是 `manual:<谁>`，
+        和这里比的 `manual` 对不上，结构没变就什么都不做——手动重建从来没生效过。
         """
+        if force is None:
+            force = reason == "manual" or reason.startswith("manual:")
         with self._reload_lock:
             changed = self.detect_schema_changes()
-            if not changed and reason != "manual":
+            if not changed and not force:
                 return []
 
             try:
@@ -1470,12 +1484,73 @@ class Text2SQLPipeline:
         )
         return "\n".join(sections)
 
-    def _build_schema_retrieval_service(self) -> ThreeTierSchemaRetrievalService:
+    @property
+    def embedding_status(self) -> Dict[str, object]:
+        """检索索引实际在用的向量：本地还是远端、哪个模型、几维，以及有没有退回本地。"""
+        status = getattr(self.schema_retrieval_service, "embedding_status", None)
+        return dict(status) if status else describe_embedding(local_embedding_client())
+
+    def build_schema_retrieval_service(self, embedding_client) -> ThreeTierSchemaRetrievalService:
+        """
+        用指定的 Embedding 建一份新的检索索引，**不换上**。建不成照常抛错。
+
+        页面换 Embedding 时用：先确认新模型能把整个索引建出来，再保存、再换上
+        （`install_schema_retrieval_service`）。中途失败的话正在用的索引一点没动。
+        """
+        return self._build_schema_retrieval_service(embedding_client)
+
+    def install_schema_retrieval_service(
+        self, service: ThreeTierSchemaRetrievalService, reason: str = "embedding"
+    ) -> None:
+        """换上一份建好的检索索引。正在处理的请求用完旧的，之后的请求用新的。"""
+        with self._reload_lock:
+            self.schema_retrieval_service = service
+            self.schema_fingerprints = self._current_fingerprints()
+        log_event(
+            _logger,
+            logging.INFO,
+            "schema.index_installed",
+            reason=reason,
+            **{f"embedding_{key}": value for key, value in self.embedding_status.items()},
+        )
+
+    def _build_schema_retrieval_service(self, embedding_client=None) -> ThreeTierSchemaRetrievalService:
         """
         构建三层 Schema 检索服务。
-        """
-        embedding_client = LocalHashEmbeddingClient(dimensions=1024)
 
+        不指定 Embedding 时按配置选（`embedding_backend`）。配的是远端、但它调不通或缺 Key 时，
+        退回本地哈希向量把服务建起来——Schema 检索建不起来整个服务就起不来，
+        而少了语义召回只是口语问法召回得差一些。退回的原因记在 `embedding_status` 里。
+        指定了 Embedding（页面切换时）就只用它，失败照常抛。
+        """
+        if embedding_client is not None:
+            service = self._assemble_schema_retrieval_service(embedding_client)
+            service.embedding_status = describe_embedding(embedding_client)
+            return service
+
+        try:
+            client = schema_embedding_client()
+            service = self._assemble_schema_retrieval_service(client)
+            service.embedding_status = describe_embedding(client)
+            return service
+        except (ModelCallError, ValueError) as exc:
+            if get_settings().embedding_backend != "remote":
+                raise
+            reason = f"{type(exc).__name__}: {exc}"[:300]
+            log_event(
+                _logger,
+                logging.WARNING,
+                "schema.embedding_fallback",
+                error_category=type(exc).__name__,
+                error=reason,
+            )
+            client = local_embedding_client()
+            service = self._assemble_schema_retrieval_service(client)
+            service.embedding_status = describe_embedding(client, fallback=reason)
+            return service
+
+    def _assemble_schema_retrieval_service(self, embedding_client) -> ThreeTierSchemaRetrievalService:
+        """用给定的 Embedding 把三层检索服务建出来。"""
         rerank_client = build_rerank_client()
 
         catalog = {item["name"]: item for item in self.semantic.catalog()}

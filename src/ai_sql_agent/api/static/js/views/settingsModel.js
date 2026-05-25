@@ -59,6 +59,14 @@ async function load() {
   redraw();
 }
 
+/* Embedding 那一块和这里共用一份状态（GET /admin/model 一起回来的）。还没取到时是 null。 */
+export const currentModelStatus = () => (phase === 'ready' ? status : null);
+
+/* Embedding 保存 / 恢复之后换上服务端回来的新状态。这里表单里还没保存的输入不动。 */
+export function replaceModelStatus(next) {
+  if (next) status = next;
+}
+
 /* 对话框刚打开：上次没保存就关掉的输入不留，状态重新取。 */
 export function resetModelSection() {
   phase = 'idle';

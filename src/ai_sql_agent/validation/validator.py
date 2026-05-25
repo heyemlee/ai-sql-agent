@@ -105,12 +105,16 @@ class ResultValidator:
             if self_check == SELF_CHECK_NOT_RUN:
                 # 该做的核对没做成：留一条发现，让它和「核对过、没问题」在响应里长得不一样。
                 # warn 而不是 block——结果未必是错的，没有理由为此回溯重跑。
+                cause = (
+                    "模型的回答里读不出结论"
+                    if self_check_error == "UnreadableVerdict"
+                    else f"模型调用失败（{self_check_error or '未知错误'}）"
+                )
                 findings.append(
                     ValidationFinding(
                         anomaly=AnomalyType.SELF_CHECK_NOT_RUN,
                         detail=(
-                            "语义自检未执行：模型调用失败"
-                            f"（{self_check_error or '未知错误'}）。"
+                            f"语义自检未执行：{cause}。"
                             "本步结果没有经过「SQL 实际行为是否回答了问题」这道核对。"
                         ),
                         severity="warn",

@@ -223,6 +223,9 @@ async def lifespan(app: FastAPI):
         model_credentials=settings.has_model_credentials,
         # page = 模型连接是管理员在页面上保存的那一份，压过了环境变量和 .env
         model_settings="page" if settings.page_store.get("values") else "server",
+        embedding_backend=settings.embedding_backend,
+        embedding_model=settings.embedding_model if settings.embedding_backend == "remote" else "",
+        embedding_settings="page" if settings.page_store.get("embedding") else "server",
         audit=settings.audit_enabled,
         schema_refresh_seconds=settings.schema_refresh_seconds,
         rate_limit_per_minute=settings.default_rate_limit_per_minute,
@@ -230,15 +233,17 @@ async def lifespan(app: FastAPI):
         max_execution_seconds=pipeline_config.max_execution_seconds,
     )
 
-    if settings.page_store.get("problem"):
-        # 页面保存过模型连接，但那个文件现在用不了：服务照常起，用的是环境变量和 .env 里的那一份
-        log_event(
-            _logger,
-            logging.WARNING,
-            "model_settings.unusable",
-            path=settings.model_settings_file,
-            problem=settings.page_store["problem"],
-        )
+    for section, key in (("chat", "problem"), ("embedding", "embedding_problem")):
+        if settings.page_store.get(key):
+            # 页面保存过模型连接，但那一节现在用不了：服务照常起，用的是环境变量和 .env 里的那一份
+            log_event(
+                _logger,
+                logging.WARNING,
+                "model_settings.unusable",
+                path=settings.model_settings_file,
+                section=section,
+                problem=settings.page_store[key],
+            )
 
     # 记忆库的位置取配置（AI_SQL_MEMORY_DB_PATH）：两个实例各用各的库，对话历史才不会串
     memory = create_memory_service()
@@ -835,7 +840,7 @@ def reload_schema(principal=Depends(require_admin)) -> Dict[str, Any]:
     业务库改了结构又不想等下一个轮询周期时用；
     定时轮询由 SchemaWatcher 负责（AI_SQL_SCHEMA_REFRESH_SECONDS）。
     """
-    changed = app.state.pipeline.reload_schema(reason=f"manual:{principal.caller}")
+    changed = app.state.pipeline.reload_schema(reason=f"manual:{principal.caller}", force=True)
     return {
         "reloaded": True,
         "changed_databases": changed,

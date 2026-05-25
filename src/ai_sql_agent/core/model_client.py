@@ -75,3 +75,7 @@ class FollowsModelSettings:
                 model=self.config.model,
                 has_key=bool(self.config.api_key),
             )
+
+    def model_available(self) -> bool:
+        """按当前的模型连接，现在有没有 Key 可用（会先跟上页面保存的连接）。"""
+        return self._connection().has_key

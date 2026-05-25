@@ -64,3 +64,40 @@ export function knownRejection(status) {
   const faults = (status && status.access_faults) || [];
   return faults.find((fault) => fault && fault.permanent && fault.scope === 'credential') || null;
 }
+
+/* ---- Embedding ---------------------------------------------------------------- */
+
+const embeddingOf = (status) => (status && status.embedding) || {};
+
+/* Embedding 表单里该填什么：现在用的是远端就照它填，否则填默认值（OpenAI 官方地址）。 */
+export function embeddingPrefill(status) {
+  const embedding = embeddingOf(status);
+  const defaults = embedding.defaults || {};
+  const remote = embedding.backend === 'remote';
+  return {
+    baseUrl: (remote && embedding.base_url) || defaults.base_url || '',
+    model: (remote && embedding.model) || defaults.model || '',
+    dimensions: String((remote && embedding.dimensions) || defaults.dimensions || ''),
+  };
+}
+
+/* Embedding 的 Key 能不能留空：填的地址落在已经有 Key 的主机上——现在 Embedding 用的那台，
+   或者对话模型那台（两边都是 OpenAI 时不用把同一把 Key 填两遍）。换了主机就必须重填。 */
+export function canKeepEmbeddingKey(status, form) {
+  const embedding = embeddingOf(status);
+  const addresses = embedding.reusable_key_addresses || [];
+  const target = originOf(String(form.baseUrl || '').trim() || (embedding.defaults || {}).base_url);
+  return Boolean(target) && addresses.includes(target);
+}
+
+/* 提交给服务端的 Embedding 请求体。Key 留空 = 接着用现有的；维度不是正整数 = 用默认值。 */
+export function embeddingRequestBody(form, apiKey) {
+  const text = (value) => String(value || '').trim();
+  const dimensions = Number(text(form.dimensions));
+  return {
+    base_url: text(form.baseUrl),
+    api_key: text(apiKey),
+    model: text(form.model),
+    dimensions: Number.isInteger(dimensions) && dimensions > 0 ? dimensions : 0,
+  };
+}

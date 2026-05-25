@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Dict, List
 
+from ai_sql_agent.core.model_text import plain_text
+
 from .objects import CotStep
 
 
@@ -41,8 +43,14 @@ class CotStepParser:
         return steps[0]
 
     def parse_many(self, text: str) -> List[CotStep]:
-        """解析多个 CoT 步骤。"""
-        matches = list(self._LABEL_PATTERN.finditer(text or ""))
+        """
+        解析多个 CoT 步骤。
+
+        先去掉 Markdown 记号（`**数据库**：`、`- 输出目标：`、`### 步骤2`）：标签和冒号之间
+        夹着 `**` 时按标签找不到，整份规划会解析成零步。
+        """
+        text = plain_text(text)
+        matches = list(self._LABEL_PATTERN.finditer(text))
         if not matches:
             return []
 

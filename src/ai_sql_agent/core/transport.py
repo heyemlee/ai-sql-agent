@@ -401,17 +401,28 @@ class ModelTransport:
         model: str,
         temperature: float = 0.0,
         max_tokens: int = 0,
+        response_schema: Optional[Dict[str, Any]] = None,
+        schema_name: str = "result",
     ) -> str:
-        """一次非流式对话，返回纯文本。两种协议的差异都收在这里。"""
+        """
+        一次非流式对话，返回纯文本。两种协议的差异都收在这里。
+
+        `response_schema` 只对 OpenAI 兼容协议生效：服务端按这份 JSON Schema 约束输出
+        （strict 模式），返回的仍是文本，由调用方 `json.loads`。Anthropic 那边照旧
+        靠提示词要求 JSON。
+        """
         payload = build_chat_payload(
             messages,
             model=model,
             temperature=temperature,
             stream=False,
             provider=self.provider,
-            max_tokens=max_tokens or self.max_output_tokens,
+            max_tokens=max_tokens or self._output_budget(model),
+            reasoning_effort=get_settings().reasoning_effort,
+            response_schema=response_schema,
+            schema_name=schema_name,
         )
-        result = self.post_json(url, payload, model=model)
+        result = self.post_chat(url, payload, model=model)
         return extract_chat_content(result, component=self.component, model=model)
 
     def chat_stream(
@@ -430,9 +441,56 @@ class ModelTransport:
             temperature=temperature,
             stream=True,
             provider=self.provider,
-            max_tokens=max_tokens or self.max_output_tokens,
+            max_tokens=max_tokens or self._output_budget(model),
+            reasoning_effort=get_settings().reasoning_effort,
         )
-        yield from self.stream_sse(url, payload, model=model)
+        for _ in range(_MAX_PARAMETER_ADJUSTMENTS + 1):
+            adapt_known_parameters(payload, url, model)
+            emitted = 0
+            try:
+                for chunk in self.stream_sse(url, payload, model=model):
+                    emitted += 1
+                    yield chunk
+                return
+            except ModelBadRequestError as error:
+                # 400 在第一段内容之前就回来了；已经吐过内容的流不能重放
+                if emitted or not adapt_after_rejection(payload, url, model, error, self.component):
+                    raise
+        raise ModelBadRequestError(
+            "模型服务一再拒绝请求参数，已放弃。", component=self.component, model=model
+        )
+
+    def post_chat(self, url: str, payload: Dict[str, Any], *, model: str) -> Dict[str, Any]:
+        """
+        发一次非流式对话请求。和 `post_json` 的区别：服务端说某个参数不认识、不支持时，
+        去掉或换个名字再发一次，并记住这台服务上的这个模型，之后的请求直接按它认的发。
+
+        这几个参数是「换了模型才会碰到」的那一类：OpenAI 的推理模型只认默认温度、
+        输出上限叫 `max_completion_tokens`；兼容 OpenAI 的中转站和开源推理框架
+        不一定认 `reasoning_effort` 和 `response_format`。为每个模型手写一张能力表
+        跟不上模型更新，所以按服务端的原话来。
+        """
+        for _ in range(_MAX_PARAMETER_ADJUSTMENTS + 1):
+            adapt_known_parameters(payload, url, model)
+            try:
+                return self.post_json(url, payload, model=model)
+            except ModelBadRequestError as error:
+                if not adapt_after_rejection(payload, url, model, error, self.component):
+                    raise
+        raise ModelBadRequestError(
+            "模型服务一再拒绝请求参数，已放弃。", component=self.component, model=model
+        )
+
+    def _output_budget(self, model: str) -> int:
+        """
+        这次调用的输出上限。
+
+        OpenAI 推理模型的上限连推理过程一起算：只给回答本身的量，推理一长就一个字
+        也剩不下（`finish_reason=length`、正文为空）。所以给它单独一档。
+        """
+        if self.provider != "anthropic" and openai_reasoning_model(model):
+            return get_settings().max_completion_tokens
+        return self.max_output_tokens
 
     def post_json(
         self,
@@ -868,28 +926,38 @@ class ModelTransport:
 
 
 def _iter_sse_content(lines: Iterator[str]) -> Iterator[str]:
-    """解析 SSE 流，只吐出增量文本（同时兼容 OpenAI 与 Anthropic 两种事件格式）。"""
+    """
+    解析 SSE 流，只吐出增量文本（同时兼容 OpenAI 与 Anthropic 两种事件格式）。
+
+    流以「输出到上限」结束时（OpenAI `finish_reason=length`、Anthropic
+    `stop_reason=max_tokens`）在最后抛 `ModelResponseError`：前面吐出去的是半截，
+    不能让调用方当成完整的规划去解析。
+    """
+    truncated = False
     for raw_line in lines:
         line = raw_line.strip()
         if not line or not line.startswith("data:"):
             continue
         data_text = line[len("data:"):].strip()
         if data_text == "[DONE]":
-            return
+            break
         try:
             event = json.loads(data_text)
         except json.JSONDecodeError:
             continue
 
-        # Anthropic：message_start / content_block_delta / message_stop
+        # Anthropic：message_start / content_block_delta / message_delta / message_stop
         event_type = event.get("type")
         if event_type == "content_block_delta":
             text = (event.get("delta") or {}).get("text", "")
             if text:
                 yield text
             continue
+        if event_type == "message_delta":
+            truncated = truncated or (event.get("delta") or {}).get("stop_reason") == "max_tokens"
+            continue
         if event_type == "message_stop":
-            return
+            break
         if event_type is not None and "choices" not in event:
             continue
 
@@ -898,6 +966,101 @@ def _iter_sse_content(lines: Iterator[str]) -> Iterator[str]:
         content = (choices[0].get("delta") or {}).get("content", "")
         if content:
             yield content
+        truncated = truncated or choices[0].get("finish_reason") == "length"
+
+    if truncated:
+        raise ModelResponseError("模型输出到了长度上限，内容被截断（流式）。")
+
+
+# ----------------------------------------------------------------------
+# 请求体：两种协议，以及 OpenAI 推理模型的几处不同
+# ----------------------------------------------------------------------
+
+# OpenAI 的推理模型：GPT-5 起的 gpt-N 和 o 系列。前面可以带中转站常见的 `openai/` 这类前缀。
+_OPENAI_REASONING = re.compile(r"(?:^|/)(?:gpt-(?:[5-9]|[1-9]\d)(?:[.\-]|$)|o[1-9](?:-|$))", re.I)
+
+
+def openai_reasoning_model(model: str) -> bool:
+    """
+    OpenAI 的推理模型。它们和 gpt-4o 这一代有三处不同，请求体要跟着变：
+
+    - 只认默认温度：带 `temperature=0` 整个请求被 400 拒绝；
+    - 输出上限叫 `max_completion_tokens`，而且推理过程也算在里面；
+    - 可以用 `reasoning_effort` 控制想多久——想得越久，第一个字来得越晚。
+
+    认不出的模型名（中转站上的 Qwen、DeepSeek 等）按原来的方式发：带温度、不带上限。
+    """
+    return bool(_OPENAI_REASONING.search(model or ""))
+
+
+_MAX_PARAMETER_ADJUSTMENTS = 4
+
+# (端点, 模型) → 这台服务上的这个模型不认、要去掉或改名的参数。进程内记着，重启清空。
+_ADJUSTMENTS: Dict[tuple, Dict[str, str]] = {}
+_ADJUSTMENTS_LOCK = threading.Lock()
+
+# 服务端说哪个参数不行时，怎么改。值为 "" 表示去掉，否则是改成的名字。
+_ADJUSTABLE = (
+    ("reasoning_effort", ""),
+    ("temperature", ""),
+    ("response_format", ""),
+    ("max_completion_tokens", "max_tokens"),
+    ("max_tokens", "max_completion_tokens"),
+)
+
+
+def adapt_known_parameters(payload: Dict[str, Any], url: str, model: str) -> None:
+    """按之前记下的，把这个模型不认的参数先改掉。"""
+    with _ADJUSTMENTS_LOCK:
+        known = dict(_ADJUSTMENTS.get((endpoint_of(url), model), {}))
+    for name, replacement in known.items():
+        if name in payload:
+            value = payload.pop(name)
+            if replacement:
+                payload[replacement] = value
+
+
+def adapt_after_rejection(
+    payload: Dict[str, Any],
+    url: str,
+    model: str,
+    error: ModelCallError,
+    component: str = "",
+) -> bool:
+    """
+    400 是因为某个参数吗？是的话改掉它、记下来，返回 True（调用方再发一次）；否则 False。
+
+    只认服务端原话里点了名的参数：一个与参数无关的 400（上下文太长、内容被拦）
+    不该引起任何改动。
+    """
+    text = f"{error.upstream_message} {error}".lower()
+    for name, replacement in _ADJUSTABLE:
+        if name not in payload or name not in text:
+            continue
+        if name == "max_tokens" and "max_completion_tokens" in payload:
+            continue
+        with _ADJUSTMENTS_LOCK:
+            _ADJUSTMENTS.setdefault((endpoint_of(url), model), {})[name] = replacement
+        value = payload.pop(name)
+        if replacement:
+            payload[replacement] = value
+        log_event(
+            _logger,
+            logging.WARNING,
+            "model.parameter_adapted",
+            component=component,
+            model=model,
+            parameter=name,
+            replaced_by=replacement or None,
+        )
+        return True
+    return False
+
+
+def forget_parameter_adaptations() -> None:
+    """清掉记下的参数改动（换模型连接时、测试里用）。"""
+    with _ADJUSTMENTS_LOCK:
+        _ADJUSTMENTS.clear()
 
 
 def _anthropic_accepts_temperature(model: str) -> bool:
@@ -919,12 +1082,17 @@ def build_chat_payload(
     stream: bool = False,
     provider: str = "openai",
     max_tokens: int = 0,
+    reasoning_effort: str = "",
+    response_schema: Optional[Dict[str, Any]] = None,
+    schema_name: str = "result",
 ) -> Dict[str, Any]:
     """按厂商协议构造请求体。
 
-    OpenAI 兼容：`messages` 直接带 system 角色；
+    OpenAI 兼容：`messages` 直接带 system 角色；推理模型（见 `openai_reasoning_model`）
+    不带温度，改带 `max_completion_tokens` 和 `reasoning_effort`；给了 `response_schema`
+    就要求按它输出（strict）。
     Anthropic Messages：system 要提到顶层字段，`max_tokens` 必填，
-    且 Claude 5 起不能带 `temperature`。
+    且 Claude 5 起不能带 `temperature`。`reasoning_effort` 和 `response_schema` 不用。
     """
     if provider == "anthropic":
         system_parts = [
@@ -945,16 +1113,55 @@ def build_chat_payload(
             payload["system"] = "\n\n".join(part for part in system_parts if part)
         return payload
 
-    return {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "stream": stream,
-    }
+    payload = {"model": model, "messages": messages, "stream": stream}
+    if openai_reasoning_model(model):
+        if max_tokens:
+            payload["max_completion_tokens"] = max_tokens
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+    else:
+        payload["temperature"] = temperature
+    if response_schema is not None:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": schema_name, "strict": True, "schema": response_schema},
+        }
+    return payload
 
 
 def extract_chat_content(result: Dict[str, Any], *, component: str, model: str) -> str:
-    """从对话响应里取出文本内容（兼容 OpenAI 与 Anthropic 两种返回体）。"""
+    """
+    从对话响应里取出文本内容（兼容 OpenAI 与 Anthropic 两种返回体）。
+
+    输出到了长度上限（OpenAI `finish_reason=length`、Anthropic `stop_reason=max_tokens`）
+    时抛 `ModelResponseError`，不把半截内容交出去：半条 SQL 会被当成完整的去执行，
+    半份规划会被解析成少了几步的规划。推理模型把上限全用在推理上时正文是空的，也走这里。
+    """
+    if isinstance(result, dict) and result.get("choices"):
+        choice = result["choices"][0] if isinstance(result["choices"][0], dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        if choice.get("finish_reason") == "length":
+            raise ModelResponseError(
+                "模型输出到了长度上限，内容被截断"
+                f"（finish_reason=length，已有 {len(str(message.get('content') or ''))} 个字符）。",
+                component=component,
+                model=model,
+            )
+        refusal = message.get("refusal")
+        if refusal and not message.get("content"):
+            raise ModelResponseError(
+                f"模型拒绝回答：{str(refusal)[:200]}", component=component, model=model
+            )
+    if (
+        isinstance(result, dict)
+        and isinstance(result.get("content"), list)
+        and result.get("stop_reason") == "max_tokens"
+    ):
+        raise ModelResponseError(
+            "模型输出到了长度上限，内容被截断（stop_reason=max_tokens）。",
+            component=component,
+            model=model,
+        )
     try:
         if isinstance(result, dict) and result.get("choices"):
             return result["choices"][0]["message"]["content"].strip()

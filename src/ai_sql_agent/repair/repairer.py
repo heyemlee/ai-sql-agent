@@ -163,6 +163,11 @@ class SqlRepairService:
     def _model_available(self) -> bool:
         if self.coder_client is None:
             return False
+        # client 构造时抄下的 Key 不一定是现在的：页面上刚配好模型连接、还没有调用过的话，
+        # config 里还是空的，修复会一直走规则版。先让它按当前的模型连接刷新一遍。
+        available = getattr(self.coder_client, "model_available", None)
+        if callable(available):
+            return bool(available())
         config = getattr(self.coder_client, "config", None)
         return bool(getattr(config, "api_key", ""))
 

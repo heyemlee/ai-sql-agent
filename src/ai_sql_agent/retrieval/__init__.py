@@ -22,6 +22,8 @@ from .keyword_extractor_client import (
 from .embedding_client import (
     AliyunEmbeddingClient,
     AliyunEmbeddingConfig,
+    RemoteEmbeddingClient,
+    RemoteEmbeddingConfig,
 )
 
 from .vector_index import VectorIndex
@@ -57,6 +59,8 @@ __all__ = [
     "AliyunKeywordExtractorConfig",
     "AliyunEmbeddingClient",
     "AliyunEmbeddingConfig",
+    "RemoteEmbeddingClient",
+    "RemoteEmbeddingConfig",
     "VectorIndex",
     "RRFFusionClient",
     "RRFFusionConfig",

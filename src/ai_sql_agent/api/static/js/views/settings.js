@@ -17,6 +17,14 @@ import {
   modelSection,
   resetModelSection,
 } from './settingsModel.js';
+import {
+  captureEmbeddingForm,
+  embeddingActions,
+  embeddingAddressTyped,
+  embeddingSection,
+  initEmbeddingSection,
+  resetEmbeddingSection,
+} from './settingsEmbedding.js';
 
 let dialog;
 let advancedOpen = false;
@@ -46,7 +54,7 @@ function identityRows() {
   return rows;
 }
 
-function draw({ fresh = false, fromModel = false } = {}) {
+function draw({ fresh = false, fromModel = false, fromEmbedding = false } = {}) {
   const isAdmin = Boolean(state.identity && state.identity.is_admin);
   // 重画时保住连接表单里还没保存的输入：拨一下别的开关不该把刚填的地址清掉。
   // 刚打开对话框时（fresh）不保：上次没保存就关掉的输入，再打开时不该看起来像已经生效了。
@@ -57,9 +65,14 @@ function draw({ fresh = false, fromModel = false } = {}) {
     user: typed('setUser', state.userId),
     transport: typed('setTransport', state.transport),
   };
-  // 模型连接那一块自己要求重画时，它已经把该留的值理好了（换协议、保存成功都要换掉表单里的值）
-  if (fresh) resetModelSection();
-  else if (!fromModel) captureModelForm();
+  // 模型连接 / Embedding 那一块自己要求重画时，它已经把该留的值理好了（换协议、保存成功都要换掉表单里的值）
+  if (fresh) {
+    resetModelSection();
+    resetEmbeddingSection();
+  } else {
+    if (!fromModel) captureModelForm();
+    if (!fromEmbedding) captureEmbeddingForm();
+  }
   setHtml(dialog, html`<div class="sheet" role="document">
     <div class="row-between">
       <h2 id="settingsTitle">${t('settings.title')}</h2>
@@ -107,6 +120,8 @@ function draw({ fresh = false, fromModel = false } = {}) {
         </form>
 
         ${modelSection()}
+
+        ${embeddingSection()}
 
         <section class="stack">
           <h3>${t('settings.diagnostics')}</h3>
@@ -197,11 +212,17 @@ export function openSettings() {
 export function initSettings() {
   dialog = $('dlgSettings');
   initModelSection(() => { if (dialog.open) draw({ fromModel: true }); });
+  initEmbeddingSection(() => { if (dialog.open) draw({ fromEmbedding: true }); });
 
   dialog.addEventListener('submit', (event) => {
     if (event.target.dataset.form === 'model') {
       event.preventDefault();
       modelActions['model-save']();
+      return;
+    }
+    if (event.target.dataset.form === 'embedding') {
+      event.preventDefault();
+      embeddingActions['embedding-save']();
       return;
     }
     if (event.target.dataset.form !== 'connection') return;
@@ -214,6 +235,7 @@ export function initSettings() {
     diagnostics = null;
     // 换了 Key 或身份，模型连接那一块能不能看、能不能改都得重新问
     resetModelSection();
+    resetEmbeddingSection();
     emit('reconnect');
     draw();
   });
@@ -229,6 +251,7 @@ export function initSettings() {
   });
   dialog.addEventListener('input', (event) => {
     if (event.target.id === 'modelBase') modelAddressTyped();
+    if (event.target.id === 'embBase') embeddingAddressTyped();
   });
 
   // 点到对话框外面的遮罩（事件目标是 dialog 本身）也算关闭
@@ -255,6 +278,7 @@ export function initSettings() {
     diagnose: () => diagnose(),
     operate: (target) => operate(target.dataset.op),
     ...modelActions,
+    ...embeddingActions,
   });
 
   on('open-settings', openSettings);

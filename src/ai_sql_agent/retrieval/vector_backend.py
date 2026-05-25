@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from ai_sql_agent.core import get_logger, get_settings, log_event
+from typing import List, Tuple
+
+from ai_sql_agent.core import ModelCallError, ModelCircuitOpenError, get_logger, get_settings, log_event
 from ai_sql_agent.retrieval.vector_index import VectorIndex
 
 _logger = get_logger("vector_backend")
@@ -60,3 +62,22 @@ def create_vector_index(
         namespace=namespace,
     )
     return VectorIndex(embedding_client)
+
+
+def search_or_skip(index, text: str, top_k: int) -> List[Tuple[int, float]]:
+    """
+    向量召回；Embedding 调不通时这一路返回空，只靠关键词召回。
+
+    远端 Embedding 挂了不该让整个问题失败：关键词召回和抽词时的术语映射还在，
+    召回差一些，但还能答。失败过一次之后 Client 会冷却一段时间，不再逐个关键词去撞。
+    """
+    try:
+        return index.search(text, top_k=top_k)
+    except ModelCallError as exc:
+        log_event(
+            _logger,
+            logging.DEBUG if isinstance(exc, ModelCircuitOpenError) else logging.WARNING,
+            "retrieval.vector_skipped",
+            error_category=exc.category,
+        )
+        return []

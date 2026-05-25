@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Dict, Optional, Protocol
 
+from ai_sql_agent.core.model_text import plain_text
+
 from .objects import (
     SELF_CHECK_MISMATCH,
     SELF_CHECK_NOT_APPLICABLE,
@@ -175,9 +177,15 @@ class SemanticSelfChecker:
             # 自检是增强项，不能因为它挂掉就让整条查询失败——但也不能假装它做过了。
             return SelfCheckResult(status=SELF_CHECK_NOT_RUN, error=type(exc).__name__)
 
-        conclusion = self._extract(verdict_raw, "结论") or ""
+        conclusion = self._extract(verdict_raw, "结论")
         reason = self._extract(verdict_raw, "理由") or verdict_raw.strip()
 
+        if not conclusion:
+            # 读不出结论就是没核对成，不能当成「一致」放过去——以前就是这样：
+            # 模型写成「**结论**：不一致」时标签找不到，不一致的 SQL 被记成了核对通过。
+            return SelfCheckResult(
+                status=SELF_CHECK_NOT_RUN, paraphrase=paraphrase, error="UnreadableVerdict"
+            )
         if "不一致" in conclusion:
             return SelfCheckResult(
                 status=SELF_CHECK_MISMATCH,
@@ -193,5 +201,5 @@ class SemanticSelfChecker:
 
     @staticmethod
     def _extract(text: str, label: str) -> str:
-        match = re.search(rf"{label}\s*[:：]\s*(.+)", text)
+        match = re.search(rf"{label}\s*[:：]\s*(.+)", plain_text(text))
         return match.group(1).strip() if match else ""

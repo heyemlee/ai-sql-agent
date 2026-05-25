@@ -15,8 +15,14 @@ class LocalHashEmbeddingClient:
     该实现只用于 Demo，不代表真实语义召回效果。
     """
 
+    backend = "local"
+
     def __init__(self, dimensions: int = 1024):
         self.dimensions = dimensions
+
+    @property
+    def signature(self) -> str:
+        return f"local_hash/{self.dimensions}"
 
     def embed_texts(self, texts: List[str]) -> np.ndarray:
         """

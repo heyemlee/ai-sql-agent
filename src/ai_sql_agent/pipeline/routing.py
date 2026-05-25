@@ -257,6 +257,19 @@ class TextGenerationClient(Protocol):
     def generate(self, prompt: str) -> str: ...
 
 
+ROUTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "route": {"type": "string", "enum": [RouteType.DATABASE_QUERY.value, RouteType.DATA_QA.value]},
+        "confidence": {"type": "number"},
+        "reason": {"type": "string"},
+    },
+    "required": ["route", "confidence", "reason"],
+    "additionalProperties": False,
+}
+"""路由结果的 JSON Schema。OpenAI 兼容协议下由服务端按它约束输出，不再从一段文字里找 JSON。"""
+
+
 class ModelIntentClassifier:
     """使用大模型进行二分类；返回格式异常时由上层回退到规则。"""
 
@@ -281,7 +294,12 @@ class ModelIntentClassifier:
 
 当前问题：{query}
 """
-        raw = self.client.generate(prompt).strip()
+        structured = getattr(self.client, "generate_structured", None)
+        raw = (
+            structured(prompt, ROUTE_SCHEMA, "route_decision")
+            if callable(structured)
+            else self.client.generate(prompt)
+        ).strip()
         payload = self._parse_json(raw)
         route = RouteType(payload["route"])
         confidence = max(0.0, min(1.0, float(payload.get("confidence", 0.8))))
