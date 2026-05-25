@@ -156,6 +156,12 @@ class TranslationTest(unittest.TestCase):
             expected |= {f"settings.model.reason.{reason}", f"settings.model.reason.{reason}.body"}
         for warning in ("insecurePage", "storeProblem", "customEndpoint"):
             expected |= {f"settings.model.warn.{warning}", f"settings.model.warn.{warning}.body"}
+        # Embedding 那一块：测试结果里的角色、忙什么、两种向量的说法、两条提醒
+        expected.add("settings.model.role.embedding")
+        expected |= {f"settings.embedding.busy.{task}" for task in ("test", "save", "restore")}
+        expected |= {f"settings.embedding.backend.{backend}" for backend in ("local", "remote")}
+        for warning in ("fallback", "storeProblem"):
+            expected |= {f"settings.embedding.warn.{warning}", f"settings.embedding.warn.{warning}.body"}
         self.assertEqual(sorted(expected - defined), [])
 
 
@@ -228,6 +234,9 @@ class ContractWiringTest(unittest.TestCase):
             "request('POST', '/admin/model/test', { body })",
             "request('PUT', '/admin/model', { body })",
             "request('DELETE', '/admin/model')",
+            "request('POST', '/admin/model/embedding/test', { body })",
+            "request('PUT', '/admin/model/embedding', { body })",
+            "request('DELETE', '/admin/model/embedding')",
         ):
             self.assertIn(call, api, call)
 
@@ -237,8 +246,9 @@ class ContractWiringTest(unittest.TestCase):
         状态模块里那份会被持久化的设置也不该碰到它。
         """
         view = (JS_DIR / "views" / "settingsModel.js").read_text(encoding="utf-8")
+        embedding = (JS_DIR / "views" / "settingsEmbedding.js").read_text(encoding="utf-8")
         form = (JS_DIR / "modelForm.js").read_text(encoding="utf-8")
-        for source in (view, form):
+        for source in (view, embedding, form):
             for sink in ("localStorage", "sessionStorage", "document.cookie", "indexedDB"):
                 self.assertNotIn(sink, source, sink)
         # 从状态模块只拿只读的 state：不拿 save（它会把 state 写进浏览器存储）
@@ -246,9 +256,12 @@ class ContractWiringTest(unittest.TestCase):
         self.assertEqual({name.strip() for name in names.split(",")}, {"state"})
         self.assertNotRegex(view, r"state\.\w+\s*=[^=]")
         self.assertNotIn("state.js", form)
+        self.assertNotIn("state.js", embedding)
         # 输入框是密码框，不让浏览器记，也从不拿服务端的值来填
         self.assertRegex(view, r'id="modelKey" type="password" value="\$\{typedKey\}"')
         self.assertRegex(view, r'id="modelKey"[^>]*autocomplete="off"')
+        self.assertRegex(embedding, r'id="embKey" type="password" value="\$\{typedKey\}"')
+        self.assertRegex(embedding, r'id="embKey"[^>]*autocomplete="off"')
         persisted = (JS_DIR / "state.js").read_text(encoding="utf-8")
         self.assertNotRegex(persisted, r"(?i)model.?key")
 

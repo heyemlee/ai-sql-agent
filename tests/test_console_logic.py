@@ -413,6 +413,33 @@ const out = {};
   };
 }
 
+// ---- modelForm.js：Embedding 表单 -------------------------------------------------
+{
+  const { canKeepEmbeddingKey, embeddingPrefill, embeddingRequestBody } = await load('modelForm.js');
+  const defaults = { base_url: 'https://api.openai.com/v1', model: 'text-embedding-3-small', dimensions: 1024 };
+  const local = { embedding: { backend: 'local', model: 'local_hash', dimensions: 1024, defaults,
+    reusable_key_addresses: ['https://api.openai.com'] } };
+  const remote = { embedding: { backend: 'remote', base_url: 'https://relay.example.com/v1',
+    model: 'text-embedding-3-large', dimensions: 3072, defaults, reusable_key_addresses: ['https://relay.example.com'] } };
+  const keep = (status, baseUrl) => canKeepEmbeddingKey(status, { baseUrl });
+  out.embeddingForm = {
+    prefill: [embeddingPrefill(local), embeddingPrefill(remote), embeddingPrefill(null)],
+    keep: {
+      chatHostOfficial: keep(local, 'https://api.openai.com/v1'),
+      blankMeansOfficial: keep(local, ''),
+      otherHost: keep(local, 'https://relay.example.com/v1'),
+      currentHost: keep(remote, 'https://relay.example.com'),
+      lookalike: keep(remote, 'https://relay.example.com.evil.example/v1'),
+      noStatus: canKeepEmbeddingKey(null, { baseUrl: 'https://api.openai.com/v1' }),
+    },
+    body: [
+      embeddingRequestBody({ baseUrl: ' https://api.openai.com/v1 ', model: ' text-embedding-3-small ', dimensions: ' 1536 ' }, ' sk-x '),
+      embeddingRequestBody({ baseUrl: '', model: '', dimensions: 'abc' }, ''),
+      embeddingRequestBody({ baseUrl: '', model: '', dimensions: '12.5' }, ''),
+    ],
+  };
+}
+
 console.log(JSON.stringify(out));
 """
 
@@ -704,6 +731,28 @@ class ConsoleLogicTest(unittest.TestCase):
         self.assertEqual(rejected["status_code"], 401)
         self.assertIsNone(model_only)
         self.assertIsNone(nothing)
+
+    # ---- Embedding 的表单 ----
+
+    def test_embedding_form_starts_from_the_remote_in_use_or_the_defaults(self):
+        local, remote, unknown = self.out["embeddingForm"]["prefill"]
+        self.assertEqual(local, {"baseUrl": "https://api.openai.com/v1", "model": "text-embedding-3-small",
+                                 "dimensions": "1024"})
+        self.assertEqual(remote, {"baseUrl": "https://relay.example.com/v1", "model": "text-embedding-3-large",
+                                  "dimensions": "3072"})
+        self.assertEqual(unknown, {"baseUrl": "", "model": "", "dimensions": ""})
+
+    def test_embedding_key_can_be_left_blank_only_for_a_host_that_has_one(self):
+        keep = self.out["embeddingForm"]["keep"]
+        self.assertEqual({name for name, value in keep.items() if value},
+                         {"chatHostOfficial", "blankMeansOfficial", "currentHost"})
+
+    def test_embedding_request_is_trimmed_and_bad_dimensions_mean_default(self):
+        typed, blank, fraction = self.out["embeddingForm"]["body"]
+        self.assertEqual(typed, {"base_url": "https://api.openai.com/v1", "api_key": "sk-x",
+                                 "model": "text-embedding-3-small", "dimensions": 1536})
+        self.assertEqual(blank, {"base_url": "", "api_key": "", "model": "", "dimensions": 0})
+        self.assertEqual(fraction["dimensions"], 0)
 
 
 if __name__ == "__main__":

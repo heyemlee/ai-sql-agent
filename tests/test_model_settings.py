@@ -629,6 +629,11 @@ class LocalOnlyWithoutAuthTest(_Environment):
         self.assertEqual(status.json(), {
             "editable": False, "reason": "local_only", "source": "page", "provider": "anthropic",
             "chat_model": "claude-sonnet-5", "coder_model": "claude-sonnet-5", "key_configured": True,
+            "embedding": {
+                "source": "server", "backend": "local", "model": "local_hash", "dimensions": 1024,
+                "key_configured": False, "fallback": "",
+                "active": {"backend": "local", "model": "local_hash", "dimensions": 1024},
+            },
         })
         # 接口地址、Key 的末四位、谁保存的，都不给
         self.assertNotIn("relay.invalid", status.text)
