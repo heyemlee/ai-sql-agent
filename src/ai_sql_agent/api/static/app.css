@@ -725,6 +725,24 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.32); }
 .setting-row .desc { font-size: 13px; color: var(--muted); }
 .model-settings .desc { font-size: 13px; color: var(--muted); }
 .model-settings .select-auto { align-self: flex-start; min-width: 220px; }
+/* 模型连接：先写清楚现在用的是哪个模型，再用下拉框换；地址和 Key 收在「连接设置」里 */
+.model-now { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.model-now-label { font-size: 12px; color: var(--muted); }
+.model-now-main { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.model-now-name { font-size: 16px; font-weight: 650; overflow-wrap: anywhere; }
+.model-now-meta { font-size: 12.5px; line-height: 1.8; color: var(--fg-2); }
+.model-now-meta > span:not(.model-now-sep) { white-space: nowrap; }
+.model-now-sep { margin: 0 2px; color: var(--muted); }
+.model-pick-row { display: flex; align-items: center; gap: 8px; }
+.model-pick-row > .select, .model-pick-row > .input { flex: 1; min-width: 0; }
+.model-ok { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ok-fg); }
+.model-confirm .row { margin-top: 10px; }
+.link-btn { padding: 0; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--fg-2); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.link-btn:hover { color: var(--fg); }
+@media (max-width: 520px) {
+  .model-pick-row { flex-wrap: wrap; }
+  .model-pick-row > .select, .model-pick-row > .input { flex-basis: 100%; }
+}
 #toast { position: fixed; left: 50%; bottom: 22px; z-index: 60; transform: translateX(-50%); padding: 9px 16px; border-radius: 10px; background: #262626; color: #fff; font-size: 13.5px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.2); }
 
 /* ─── narrow screens ───────────────────────────────────────────── */

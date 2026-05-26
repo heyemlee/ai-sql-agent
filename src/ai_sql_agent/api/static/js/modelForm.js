@@ -58,6 +58,16 @@ export function requestBody(form, apiKey) {
   };
 }
 
+/* 下拉框的候选：接口报的模型名、现在用的、默认的，去重后按字母排，空的不要。 */
+export function modelChoices(...groups) {
+  const names = new Set();
+  groups.flat().forEach((name) => {
+    const text = String(name || '').trim();
+    if (text) names.add(text);
+  });
+  return [...names].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}
+
 /* 这把 Key 是不是已经被模型服务明确拒绝过（凭证无效、停用、额度用尽）。
    服务记下之后不会再拿它去调模型，所以这里能直接说出来，不用等下一个问题失败。 */
 export function knownRejection(status) {

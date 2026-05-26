@@ -2,9 +2,11 @@
 模型连接的管理接口：看现在用的是哪一份、保存前先试一下、换一份、退回服务端配置。
 
     GET    /admin/model                 现在用的模型连接（不含 Key），以及这个请求能不能改
+    POST   /admin/model/models          这个连接的接口提供哪些模型（给页面的下拉框），不保存
     POST   /admin/model/test            拿提交的连接各发一条极短的请求，不保存
     PUT    /admin/model                 保存并立刻生效（不用重启）
     DELETE /admin/model                 丢掉页面保存的那一份，回到环境变量和 `.env`
+    POST   /admin/model/embedding/models 这个 Embedding 接口提供哪些向量模型，不保存
     POST   /admin/model/embedding/test  拿提交的 Embedding 连接算一段文本的向量，不保存
     PUT    /admin/model/embedding       先用它把 Schema 检索索引整个建好，再保存、换上
     DELETE /admin/model/embedding       回到服务端配置的 Embedding（同样先建好索引再换）
@@ -30,6 +32,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -57,13 +60,14 @@ from ai_sql_agent.core import (
     RetryPolicy,
     SqlAgentSettings,
     build_chat_payload,
+    get_http_client,
     get_logger,
     get_settings,
     log_event,
     reload_model_settings,
 )
 from ai_sql_agent.core.model_access import REASON_PERMISSION_DENIED, SCOPE_CREDENTIAL
-from ai_sql_agent.core.transport import forget_parameter_adaptations
+from ai_sql_agent.core.transport import _classify_status, forget_parameter_adaptations
 from ai_sql_agent.core.model_settings import (
     OFFICIAL_BASE_URL,
     PROVIDERS,
@@ -118,10 +122,25 @@ PROBE_OUTCOMES = (
     "server_error",
     "unexpected_response",
     "dimension_mismatch",
+    "unsupported",
     "failed",
 )
 """连接测试里一个模型的结果只会是这几种。页面按它们配文案（`settings.model.outcome.*`）。
-`dimension_mismatch` 只出现在 Embedding 的测试里：服务返回的维度和填写的不一样。"""
+`dimension_mismatch` 只出现在 Embedding 的测试里：服务返回的维度和填写的不一样。
+`unsupported` 只出现在读模型列表时：这个接口没有列模型的功能（404 / 405）。"""
+
+LIST_TIMEOUT_SECONDS = 15.0
+"""读模型列表只是问一句「有哪些模型」，不花 token，比连接测试等得更短。"""
+MAX_LISTED_MODELS = 500
+
+# 按名字猜哪些是向量模型、哪些不能拿来对话。只用来给下拉框筛选：猜错了无非列表里
+# 多一项或少一项，页面上永远可以手动填模型名，连接测试才是准的。
+_EMBEDDING_NAME = re.compile(r"embed|bge|gte-|m3e|(^|[/-])e5-", re.IGNORECASE)
+_NOT_CHAT_NAME = re.compile(
+    r"embed|bge|gte-|m3e|(^|[/-])e5-|rerank|whisper|tts|speech|transcri|audio|dall-e|image|"
+    r"moderation|realtime|sora|stable-diffusion|flux|kolors|video",
+    re.IGNORECASE,
+)
 
 EMBEDDING_REQUEST_FIELDS = frozenset({"base_url", "api_key", "model", "dimensions"})
 EMBEDDING_PROBE_TEXT = "供应商准时交付率"
@@ -779,6 +798,87 @@ def probe_embedding(
 
 
 # ----------------------------------------------------------------------
+# 有哪些模型可选
+# ----------------------------------------------------------------------
+
+
+def _model_names(document: Any) -> List[str]:
+    """
+    `GET /models` 的回答 → 模型名。OpenAI 和 Anthropic 都是 `{"data": [{"id": ...}]}`；
+    有的中转站直接回数组、或者把名字放在 `name` / `model` 里。认不出、写法不合规的条目跳过。
+    """
+    items = document.get("data", document.get("models")) if isinstance(document, dict) else document
+    if not isinstance(items, list):
+        raise ValueError("回答里没有模型列表")
+    names: List[str] = []
+    for item in items:
+        name = (item.get("id") or item.get("name") or item.get("model")) if isinstance(item, dict) else item
+        if not isinstance(name, str):
+            continue
+        try:
+            cleaned = clean_model_name(name, "模型")
+        except ModelSettingsError:
+            continue
+        if cleaned:
+            names.append(cleaned)
+    return names
+
+
+def _suits(kind: str, name: str) -> bool:
+    if kind == "embedding":
+        return bool(_EMBEDDING_NAME.search(name)) and "rerank" not in name.lower()
+    return not _NOT_CHAT_NAME.search(name)
+
+
+def list_models(
+    provider: str, base_url: str, api_key: str, kind: str, *, client: Optional[httpx.Client] = None
+) -> Dict[str, Any]:
+    """
+    问接口有哪些模型，给页面的下拉框用。只读：不调模型、不花 token、不保存。
+
+    读不到（中转站没开这个接口、Key 不对……）不算接口错误：页面照样能手动填模型名，
+    所以和连接测试一样只报结果分类、状态码和服务端那句话。按名字筛出适合这一处的
+    （`chat` / `embedding`）；一个也筛不出来时给全部，让人自己挑。
+    """
+    if provider == "anthropic":
+        headers = {"x-api-key": api_key, "anthropic-version": get_settings().anthropic_version}
+        params: Optional[Dict[str, Any]] = {"limit": 1000}
+    else:
+        headers = {"Authorization": f"Bearer {api_key}"}
+        params = None
+    result: Dict[str, Any] = {
+        "ok": False, "models": [], "total": 0, "outcome": "failed", "status_code": None, "message": "",
+    }
+    started = time.perf_counter()
+    try:
+        response = (client or get_http_client()).get(
+            build_endpoint(base_url, "models"), headers=headers, params=params, timeout=LIST_TIMEOUT_SECONDS
+        )
+    except httpx.TimeoutException:
+        result["outcome"] = "timeout"
+    except httpx.HTTPError:
+        result["outcome"] = "unreachable"
+    else:
+        result["status_code"] = response.status_code
+        if response.status_code >= 400:
+            error = _classify_status(response, component=PROBE_COMPONENT, model="", api_key=api_key)
+            result["outcome"] = "unsupported" if response.status_code in (404, 405) else _outcome_of(error)
+            result["message"] = error.upstream_message
+        else:
+            try:
+                names = _model_names(response.json())
+            except ValueError:
+                # 200 但不是 JSON 或没有列表：多半是网页（地址不对）
+                result["outcome"] = "unexpected_response"
+            else:
+                unique = sorted(set(names), key=str.lower)
+                suited = [name for name in unique if _suits(kind, name)] or unique
+                result.update(ok=True, outcome="ok", models=suited[:MAX_LISTED_MODELS], total=len(unique))
+    result["duration_ms"] = round((time.perf_counter() - started) * 1000)
+    return result
+
+
+# ----------------------------------------------------------------------
 # 让它生效
 # ----------------------------------------------------------------------
 
@@ -829,6 +929,39 @@ def model_status(
     """现在用的模型连接（主链路和 Embedding），以及这个请求能不能改它。"""
     _no_store(response)
     return describe(get_settings(), access, _pipeline(request))
+
+
+@router.post("/models")
+def list_chat_models(
+    request: Request,
+    response: Response,
+    access: ModelAdminAccess = Depends(model_admin_access),
+    body: Dict[str, Any] = Depends(_json_object),
+) -> Dict[str, Any]:
+    """
+    这个连接的接口提供哪些模型（`GET /models`），给页面的下拉框用。不调模型、不保存。
+
+    Key 留空的规则和连接测试一样：接口地址换了主机就必须填。
+    """
+    _no_store(response)
+    _require_edit(request, access)
+    try:
+        candidate = resolve_candidate(body, get_settings())
+    except ModelSettingsError as error:
+        raise _invalid(error) from None
+
+    result = list_models(candidate.provider, candidate.base_url, candidate.api_key, "chat")
+    log_event(
+        _logger,
+        logging.INFO,
+        "model_settings.listed",
+        caller=access.principal.caller,
+        provider=candidate.provider,
+        endpoint=origin_of(candidate.base_url),
+        outcome=result["outcome"],
+        count=len(result["models"]),
+    )
+    return result
 
 
 @router.post("/test")
@@ -973,6 +1106,34 @@ def _require_pipeline(request: Request) -> Any:
             status_code=503, detail={"code": "not_ready", "message": "服务还没有启动完。"}
         )
     return pipeline
+
+
+@router.post("/embedding/models")
+def list_embedding_models(
+    request: Request,
+    response: Response,
+    access: ModelAdminAccess = Depends(model_admin_access),
+    body: Dict[str, Any] = Depends(_json_object),
+) -> Dict[str, Any]:
+    """这个 Embedding 接口提供哪些向量模型。Key 留空的规则和 Embedding 的连接测试一样。"""
+    _no_store(response)
+    _require_edit(request, access)
+    try:
+        candidate = resolve_embedding_candidate(body, get_settings())
+    except ModelSettingsError as error:
+        raise _invalid(error) from None
+
+    result = list_models("openai", candidate.base_url, candidate.api_key, "embedding")
+    log_event(
+        _logger,
+        logging.INFO,
+        "model_settings.embedding_listed",
+        caller=access.principal.caller,
+        endpoint=origin_of(candidate.base_url),
+        outcome=result["outcome"],
+        count=len(result["models"]),
+    )
+    return result
 
 
 @router.post("/embedding/test")

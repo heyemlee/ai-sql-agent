@@ -1,5 +1,5 @@
-/* 设置。上半部分是每个人都可能用到的两项（语言、学习模式）；
-   连接配置、模型连接、诊断、运维操作全部收在「高级设置」里——
+/* 设置。上半部分是每个人都可能用到的两项（语言、学习模式），管理员还能在这里直接看到、
+   换掉这台服务用的模型（模型连接、Embedding）；连接配置、诊断、运维操作收在「高级设置」里——
    查数的员工不需要知道服务地址和 trace 是什么，也不该被这些东西挡在问题前面。 */
 
 import { api } from '../api.js';
@@ -12,16 +12,21 @@ import {
   ensureModelLoaded,
   initModelSection,
   modelActions,
-  modelAddressTyped,
+  modelConnectionToggled,
+  modelPicked,
   modelProviderChanged,
   modelSection,
+  modelTyped,
   resetModelSection,
 } from './settingsModel.js';
 import {
   captureEmbeddingForm,
   embeddingActions,
-  embeddingAddressTyped,
+  embeddingConnectionToggled,
+  embeddingPicked,
   embeddingSection,
+  embeddingStatusReady,
+  embeddingTyped,
   initEmbeddingSection,
   resetEmbeddingSection,
 } from './settingsEmbedding.js';
@@ -73,6 +78,8 @@ function draw({ fresh = false, fromModel = false, fromEmbedding = false } = {}) 
     if (!fromModel) captureModelForm();
     if (!fromEmbedding) captureEmbeddingForm();
   }
+  // 整块重画会换掉滚动的那一层：记下滚到哪了，画完放回去，免得点一下就跳回顶上
+  const scrolled = fresh ? 0 : (dialog.querySelector('.sheet') || {}).scrollTop || 0;
   setHtml(dialog, html`<div class="sheet" role="document">
     <div class="row-between">
       <h2 id="settingsTitle">${t('settings.title')}</h2>
@@ -90,6 +97,8 @@ function draw({ fresh = false, fromModel = false, fromEmbedding = false } = {}) 
       <div><h3>${t('settings.learning')}</h3><p class="desc">${t('settings.learning.desc')}</p></div>
       ${switchButton('toggle-learning', state.learning, t('settings.learning'))}
     </div>
+
+    ${isAdmin ? html`${modelSection()}${embeddingSection()}` : ''}
 
     <details class="disclosure" data-detail="advanced" ${advancedOpen ? 'open' : ''}>
       <summary>${t('settings.advanced')}</summary>
@@ -119,9 +128,7 @@ function draw({ fresh = false, fromModel = false, fromEmbedding = false } = {}) 
           <div><button type="submit" class="btn btn-primary">${t('settings.save')}</button></div>
         </form>
 
-        ${modelSection()}
-
-        ${embeddingSection()}
+        ${isAdmin ? '' : modelSection()}
 
         <section class="stack">
           <h3>${t('settings.diagnostics')}</h3>
@@ -159,6 +166,7 @@ function draw({ fresh = false, fromModel = false, fromEmbedding = false } = {}) 
       </dl>
     </section>
   </div>`);
+  if (scrolled) dialog.querySelector('.sheet').scrollTop = scrolled;
 }
 
 async function diagnose() {
@@ -206,12 +214,12 @@ async function operate(name) {
 export function openSettings() {
   draw({ fresh: !dialog.open });
   if (!dialog.open) dialog.showModal();
-  if (advancedOpen) ensureModelLoaded();
+  ensureModelLoaded();
 }
 
 export function initSettings() {
   dialog = $('dlgSettings');
-  initModelSection(() => { if (dialog.open) draw({ fromModel: true }); });
+  initModelSection(() => { if (dialog.open) draw({ fromModel: true }); }, embeddingStatusReady);
   initEmbeddingSection(() => { if (dialog.open) draw({ fromEmbedding: true }); });
 
   dialog.addEventListener('submit', (event) => {
@@ -241,17 +249,24 @@ export function initSettings() {
   });
 
   dialog.addEventListener('toggle', (event) => {
-    if (!event.target.dataset || event.target.dataset.detail !== 'advanced') return;
-    advancedOpen = event.target.open;
-    if (advancedOpen) ensureModelLoaded();
+    const detail = event.target.dataset && event.target.dataset.detail;
+    if (detail === 'model-connection') modelConnectionToggled(event.target.open);
+    if (detail === 'embedding-connection') embeddingConnectionToggled(event.target.open);
+    if (detail === 'advanced') advancedOpen = event.target.open;
   }, true);
 
+  // 只有下拉框选了一项才重画。输入框离开时也会发 change，那时重画会把正要点的按钮换掉
   dialog.addEventListener('change', (event) => {
+    if (event.target.tagName !== 'SELECT') return;
     if (event.target.id === 'modelProvider') modelProviderChanged(event.target.value);
+    if (event.target.id === 'modelChat' || event.target.id === 'modelCoder') {
+      modelPicked(event.target.id, event.target.value);
+    }
+    if (event.target.id === 'embModel') embeddingPicked(event.target.value);
   });
   dialog.addEventListener('input', (event) => {
-    if (event.target.id === 'modelBase') modelAddressTyped();
-    if (event.target.id === 'embBase') embeddingAddressTyped();
+    if (['modelBase', 'modelKey', 'modelChat', 'modelCoder'].includes(event.target.id)) modelTyped();
+    if (['embBase', 'embKey', 'embDims', 'embModel'].includes(event.target.id)) embeddingTyped();
   });
 
   // 点到对话框外面的遮罩（事件目标是 dialog 本身）也算关闭
@@ -284,10 +299,10 @@ export function initSettings() {
   on('open-settings', openSettings);
   on('lang', () => { if (dialog.open) draw(); });
   on('learning', () => { if (dialog.open) draw(); });
-  // 身份是跟着目录一起回来的：高级设置开着的话，这时候才知道能不能去取模型连接
+  // 身份是跟着目录一起回来的：对话框开着的话，这时候才知道能不能去取模型连接
   on('catalog', () => {
     if (!dialog.open) return;
     draw();
-    if (advancedOpen) ensureModelLoaded();
+    ensureModelLoaded();
   });
 }

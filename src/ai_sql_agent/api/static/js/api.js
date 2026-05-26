@@ -124,10 +124,13 @@ export const api = {
 
   // 模型连接（管理员）。Key 只往服务端送，这几个接口都不把它带回来
   modelStatus: () => request('GET', '/admin/model'),
+  // 这个连接的接口提供哪些模型（给下拉框）。不调模型、不保存
+  listModels: (body) => request('POST', '/admin/model/models', { body }),
   testModel: (body) => request('POST', '/admin/model/test', { body }),
   saveModel: (body) => request('PUT', '/admin/model', { body }),
   clearModel: () => request('DELETE', '/admin/model'),
   // Embedding（Schema 检索用的向量模型）。保存会先用新模型把检索索引建好，要等几秒到几十秒
+  listEmbeddingModels: (body) => request('POST', '/admin/model/embedding/models', { body }),
   testEmbedding: (body) => request('POST', '/admin/model/embedding/test', { body }),
   saveEmbedding: (body) => request('PUT', '/admin/model/embedding', { body }),
   clearEmbedding: () => request('DELETE', '/admin/model/embedding'),
