@@ -51,6 +51,302 @@ class SqlGuardTest(unittest.TestCase):
         self.assertFalse(check_readonly_sql(";").allowed)
 
 
+class SqlGuardAstTest(unittest.TestCase):
+    """
+    只读校验按语法树判（2026-10 起）。每条用例都对两种方言各跑一遍：
+    执行器传自己的方言，两种结果必须一致，除非用例本身就是方言差异。
+    """
+
+    DIALECTS = ("sqlite", "postgres")
+
+    def assertAllowed(self, sql, dialects=DIALECTS):
+        for dialect in dialects:
+            result = check_readonly_sql(sql, dialect=dialect)
+            self.assertTrue(result.allowed, f"[{dialect}] {sql!r}: {result.reason}")
+
+    def assertRejected(self, sql, dialects=DIALECTS, reason=None):
+        for dialect in dialects:
+            result = check_readonly_sql(sql, dialect=dialect)
+            self.assertFalse(result.allowed, f"[{dialect}] {sql!r} 不该放行")
+            self.assertTrue(result.reason, f"[{dialect}] {sql!r} 拒绝时必须给原因")
+            if reason:
+                self.assertIn(reason, result.reason, f"[{dialect}] {sql!r}")
+
+    # ---- 放行：只读查询的各种形状 ----
+
+    def test_allows_read_only_query_shapes(self):
+        for sql in [
+            "SELECT 1",
+            "SELECT 1;",
+            "SELECT 1; -- 结尾注释",
+            "select a, count(*) from t group by a having count(*) > 1 order by 2 desc limit 5",
+            "WITH a AS (SELECT 1 AS x) SELECT * FROM a",
+            "WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 5) SELECT * FROM r",
+            "SELECT 1 UNION SELECT 2",
+            "SELECT 1 UNION ALL SELECT 2",
+            "SELECT 1 INTERSECT SELECT 1",
+            "SELECT 1 EXCEPT SELECT 2",
+            "(SELECT 1) UNION (SELECT 2)",
+            "(SELECT 1)",
+            "VALUES (1, 'a'), (2, 'b')",
+            "SELECT * FROM (SELECT 1 AS x) s WHERE x IN (SELECT 1)",
+            "SELECT a, row_number() OVER (PARTITION BY b ORDER BY c) FROM t",
+            "SELECT CASE WHEN a > 1 THEN 'x' ELSE 'y' END FROM t",
+            "SELECT replace(name, 'a', 'b') FROM t",
+            "SELECT * FROM t LIMIT ?",
+        ]:
+            self.assertAllowed(sql)
+
+    def test_keywords_inside_strings_comments_and_quoted_identifiers_are_not_hits(self):
+        for sql in [
+            "SELECT * FROM t WHERE name = 'a; DROP TABLE t'",
+            "SELECT * FROM t WHERE name = 'delete' OR note = 'insert into x'",
+            "SELECT * FROM t WHERE name = 'it''s; update'",
+            'SELECT "update", "Last Update" FROM "set"',
+            "SELECT 1 AS \"drop\" FROM \"into\"",
+            "SELECT a FROM t -- DROP TABLE t",
+            "SELECT a /* ; DROP TABLE t */ FROM t",
+            "SELECT a FROM t WHERE b = 'x' /* 'unbalanced */",
+        ]:
+            self.assertAllowed(sql)
+
+    # ---- 拒绝：写操作、DDL、会话控制 ----
+
+    def test_rejects_every_non_query_statement(self):
+        for sql in [
+            "INSERT INTO t VALUES (1)",
+            "INSERT OR REPLACE INTO t VALUES (1)",
+            "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING",
+            "REPLACE INTO t VALUES (1)",
+            "UPDATE t SET a = 1",
+            "DELETE FROM t",
+            "MERGE INTO t USING s ON t.a = s.a WHEN MATCHED THEN DELETE",
+            "CREATE TABLE a (x INT)",
+            "CREATE TABLE a AS SELECT 1",
+            "CREATE TEMP TABLE a AS SELECT 1",
+            "CREATE VIEW v AS SELECT 1",
+            "DROP TABLE t",
+            "ALTER TABLE t ADD COLUMN c INT",
+            "TRUNCATE t",
+            "GRANT SELECT ON t TO u",
+            "REVOKE SELECT ON t FROM u",
+            "PRAGMA table_info(t)",
+            "PRAGMA writable_schema = 1",
+            "VACUUM",
+            "ANALYZE t",
+            "REINDEX t",
+            "BEGIN",
+            "BEGIN IMMEDIATE",
+            "COMMIT",
+            "END",
+            "ROLLBACK",
+            "SAVEPOINT a",
+            "RELEASE a",
+            "SET search_path = x",
+            "SET LOCAL statement_timeout = 0",
+            "RESET all",
+            "COPY t TO '/tmp/x'",
+            "DO $$ BEGIN END $$",
+            "CALL p()",
+            "EXPLAIN SELECT 1",
+            "EXPLAIN ANALYZE DELETE FROM t",
+            "SHOW all",
+            "LOCK TABLE t",
+            "LISTEN c",
+            "NOTIFY c",
+            "TABLE t",
+        ]:
+            self.assertRejected(sql)
+
+    def test_rejects_sqlite_only_statements(self):
+        # ATTACH / DETACH 在 PostgreSQL 方言里解析不了，同样是拒绝
+        self.assertRejected("ATTACH DATABASE '/tmp/e.db' AS e")
+        self.assertRejected("DETACH DATABASE e")
+
+    def test_rejects_writes_hidden_inside_a_query(self):
+        for sql in [
+            "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+            "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",
+            "WITH x AS (UPDATE t SET a = 1 RETURNING *) SELECT * FROM x",
+            "WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x",
+            "WITH a AS (SELECT 1), b AS (DELETE FROM t RETURNING a) SELECT * FROM a",
+            "SELECT * INTO new_t FROM t",
+            "SELECT * INTO TEMP new_t FROM t",
+            "SELECT * FROM t FOR UPDATE",
+            "SELECT * FROM t FOR SHARE",
+        ]:
+            self.assertRejected(sql)
+
+    def test_cte_write_reports_where_it_was_found(self):
+        result = check_readonly_sql(
+            "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x", dialect="postgres"
+        )
+        self.assertFalse(result.allowed)
+        self.assertIn("DELETE", result.reason)
+        self.assertIn("WITH", result.reason)
+
+    # ---- 拒绝：多语句与词法夹带 ----
+
+    def test_rejects_multiple_statements_however_they_are_smuggled(self):
+        for sql in [
+            "SELECT 1; DROP TABLE t",
+            "SELECT 1;DROP TABLE t",
+            "SELECT 1 ; -- x\nDROP TABLE t",
+            "SELECT 1 /* c */; DROP TABLE t",
+            "SELECT 1; /* c */ DELETE FROM t",
+            "SELECT 1;\n\n   UPDATE t SET a = 1",
+            "SELECT 1; SELECT 2",
+            # 旧实现先删 `--` 再认字符串：引号里的 `--` 把后半条语句当注释删掉了
+            "SELECT '--' AS x; DROP TABLE t",
+            "SELECT '/*' AS x; DROP TABLE t; SELECT '*/'",
+            # 反斜杠不是单引号字符串的转义符：`'a\\'` 到此为止
+            "SELECT 'a\\' ; DROP TABLE t; --'",
+        ]:
+            self.assertRejected(sql, reason="一条")
+
+    def test_case_and_whitespace_variations_change_nothing(self):
+        for sql in [
+            "sElEcT 1; dRoP tAbLe t",
+            "SELECT 1;\tDROP\nTABLE\r\nt",
+            "dElEtE fRoM t",
+            "wItH x As (sElEcT 1) iNsErT iNtO t sElEcT * fRoM x",
+            "/**/DROP/**/TABLE/**/t",
+            "   \n  UPDATE t SET a = 1",
+        ]:
+            self.assertRejected(sql)
+        self.assertAllowed("   \n sElEcT   1 \n")
+
+    def test_postgres_dollar_quoting_follows_the_dialect(self):
+        # PostgreSQL 里 `$$…$$` 是字符串，整条就是一条 SELECT；SQLite 里不是，
+        # 它会把分号后面的 DROP 当成第二条语句。两种方言都要先放行才算放行。
+        sql = "SELECT $$; DROP TABLE t; $$"
+        self.assertTrue(check_readonly_sql(sql, dialect="postgres").allowed)
+        self.assertFalse(check_readonly_sql(sql, dialect="sqlite").allowed)
+        self.assertFalse(check_readonly_sql(sql).allowed)
+
+    def test_nested_comments_follow_the_dialect(self):
+        # PostgreSQL 的块注释可嵌套，SQLite 的不行：同一段文字在两边是两条不同的语句。
+        sql = "SELECT 1 /* /* */ ; DROP TABLE t; /* */ */"
+        self.assertTrue(check_readonly_sql(sql, dialect="postgres").allowed)
+        self.assertFalse(check_readonly_sql(sql, dialect="sqlite").allowed)
+        self.assertFalse(check_readonly_sql(sql).allowed)
+
+    # ---- 拒绝：危险函数 ----
+
+    def test_rejects_dangerous_functions_in_both_dialects(self):
+        calls = [
+            "load_extension('x')",
+            "LOAD_EXTENSION('x')",
+            "main.load_extension('x')",
+            '"load_extension"(\'x\')',
+            "writefile('/tmp/x', 'y')",
+            "readfile('/etc/passwd')",
+            "edit('x')",
+            "fts3_tokenizer('simple')",
+            "pg_read_file('/etc/passwd')",
+            "pg_read_binary_file('/etc/passwd')",
+            "pg_catalog.pg_read_file('/etc/passwd')",
+            "pg_ls_dir('/')",
+            "pg_sleep(10)",
+            "pg_catalog.pg_sleep(10)",
+            "pg_advisory_lock(1)",
+            "pg_terminate_backend(1)",
+            "pg_cancel_backend(1)",
+            "set_config('app.user_id', 'x', false)",
+            "pg_catalog.set_config('app.user_id', 'x', false)",
+            "nextval('s')",
+            "setval('s', 1)",
+            "lo_import('/etc/passwd')",
+            "lo_export(1, '/tmp/x')",
+            "lo_put(1, 0, 'x')",
+            "dblink('host=x', 'select 1')",
+            "dblink_exec('host=x', 'delete from t')",
+            "query_to_xml('select 1', true, true, '')",
+            "table_to_xml('t', true, true, '')",
+            "crosstab('select 1')",
+        ]
+        for call in calls:
+            self.assertRejected(f"SELECT {call}", reason="禁止的函数")
+            self.assertRejected(f"SELECT * FROM t WHERE x = {call}", reason="禁止的函数")
+        for call in ("pg_ls_dir('/')", "fsdir('/')", "dblink('x', 'select 1') AS d(a int)"):
+            self.assertRejected(f"SELECT * FROM {call}", reason="禁止的函数")
+
+    def test_function_inside_a_subquery_or_cte_is_found(self):
+        self.assertRejected("SELECT * FROM (SELECT pg_sleep(1)) s", reason="pg_sleep")
+        self.assertRejected("WITH a AS (SELECT load_extension('x')) SELECT * FROM a", reason="load_extension")
+
+    def test_harmless_functions_and_lookalikes_stay_allowed(self):
+        for sql in [
+            "SELECT replace(a, 'x', 'y'), lower(a), upper(a), length(a), coalesce(a, 0) FROM t",
+            "SELECT now(), current_date, version()",
+            "SELECT count(*), sum(a), avg(a), min(a), max(a) FROM t",
+            "SELECT zeroblob(10), randomblob(10), hex(randomblob(4))",
+            "SELECT * FROM generate_series(1, 3)",
+            # 列名、别名撞上函数名但不是调用
+            "SELECT pg_sleep FROM t",
+            'SELECT 1 AS "load_extension" FROM t',
+            "SELECT * FROM t WHERE note = 'call pg_sleep(1)'",
+        ]:
+            self.assertAllowed(sql)
+
+    def test_unicode_escape_spellings_are_rejected(self):
+        # `U&"pg\\005fsleep"` 就是 pg_sleep；校验不去解码，直接不收
+        for sql in [
+            'SELECT U&"pg\\005fsleep"(1)',
+            "SELECT u&'x' FROM t",
+            'SELECT * FROM U&"\\0074"',
+        ]:
+            self.assertRejected(sql, reason="Unicode")
+
+    # ---- 拒绝：解析不了 ----
+
+    def test_unparseable_sql_fails_closed_with_a_clear_reason(self):
+        for sql in [
+            "SELECT ((( FROM",
+            "SELECT 1 FROM",
+            "SELEC 1",
+            "SELECT 1 /* 没有结尾的注释",
+            "SELECT 'unterminated",
+            "SELECT \"unterminated FROM t",
+            "SELECT 1 +",
+        ]:
+            self.assertRejected(sql, reason="无法解析")
+
+    def test_empty_and_comment_only_sql_is_rejected(self):
+        for sql in ["", "   ", ";", ";;", "-- nothing", "/* nothing */", " ; -- x"]:
+            self.assertRejected(sql, reason="为空")
+
+    # ---- 方言 ----
+
+    def test_dialect_decides_what_parses(self):
+        sql = "SELECT * FROM t LIMIT %s"  # psycopg 占位符：只有 PostgreSQL 认
+        self.assertTrue(check_readonly_sql(sql, dialect="postgres").allowed)
+        self.assertFalse(check_readonly_sql(sql, dialect="sqlite").allowed)
+        self.assertIn("无法解析", check_readonly_sql(sql, dialect="sqlite").reason)
+
+    def test_without_a_dialect_both_dialects_must_accept(self):
+        # 不知道目标库就不能挑解读：只有一种方言认得的写法，不传方言时拒绝
+        self.assertFalse(check_readonly_sql("SELECT * FROM t LIMIT %s").allowed)
+        reason = check_readonly_sql("SELECT * FROM t LIMIT %s").reason
+        self.assertIn("无法解析", reason)
+        self.assertIn("sqlite", reason)
+        self.assertTrue(check_readonly_sql("SELECT * FROM t LIMIT ?").allowed)
+
+    def test_unknown_dialect_must_not_loosen_the_check(self):
+        # 认不出的方言名按「两种都判」处理，不会因此放过任何一条
+        for sql in ["SELECT 1; DROP TABLE t", "WITH x AS (DELETE FROM t RETURNING *) SELECT 1", "SELECT pg_sleep(1)"]:
+            self.assertFalse(check_readonly_sql(sql, dialect="oracle").allowed, sql)
+
+    def test_result_shape_is_unchanged(self):
+        allowed = check_readonly_sql("SELECT a FROM t WHERE b = 'x'; -- tail")
+        self.assertTrue(allowed.allowed)
+        self.assertEqual(allowed.reason, "")
+        self.assertEqual(allowed.normalized_sql, "SELECT a FROM t WHERE b = ''")
+        denied = check_readonly_sql("DROP TABLE t")
+        self.assertFalse(denied.allowed)
+        self.assertEqual(denied.normalized_sql, "")
+
+
 class SQLiteExecutorSafetyTest(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

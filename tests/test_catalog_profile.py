@@ -205,7 +205,9 @@ class ProfileStatementTest(unittest.TestCase):
         narrow = DataPolicy(allow_tables=("svc_db.ticket",), deny_columns=("svc_db.ticket.secret",))
         for dialect in ("sqlite", "postgres"):
             for statement in _statements(query, dialect):
-                self.assertTrue(check_readonly_sql(statement.sql).allowed, statement.sql)
+                self.assertTrue(
+                    check_readonly_sql(statement.sql, dialect=dialect).allowed, statement.sql
+                )
                 for policy in (ALLOW_ALL, narrow):
                     decision = check_sql_access(
                         policy, database="svc_db", sql=statement.sql, dialect=dialect

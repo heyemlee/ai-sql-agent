@@ -191,15 +191,19 @@ class PreviewStatementTest(unittest.TestCase):
         self.assertTrue(supported_identifier("客户 名称", "postgres"))
         self.assertFalse(supported_identifier("", "sqlite"))
 
-    def test_names_the_readonly_guard_rejects_are_not_supported(self):
+    def test_quoted_keyword_names_are_supported_by_the_ast_guard(self):
         """
-        执行器的只读校验按整条语句扫关键字，引号里的也算。预览不为此开口子：
-        这样的名字在目录里如实标成「预览不了」，而不是列出来、一点就 502。
+        执行器的只读校验按语法树判（不再按词扫），引号里的标识符不是关键字：
+        叫 `set`、`update`、`Last Update` 的表与列照常能预览。2026-10 之前这里
+        是反过来的——旧校验会把它们拒掉，目录得如实标成「预览不了」。
         """
-        for name in ("set", "update", "Last Update", "call", "a;b", "into"):
-            self.assertFalse(supported_identifier(name, "sqlite"), name)
-        for name in ("last_update", "settings", "updated_at", "order", "group", "select"):
+        for name in ("set", "update", "Last Update", "call", "a;b", "into", "last_update",
+                     "settings", "updated_at", "order", "group", "select"):
             self.assertTrue(supported_identifier(name, "sqlite"), name)
+            self.assertTrue(supported_identifier(name, "postgres"), name)
+        # 空名与 NUL（我们自己的占位符哨兵）仍然不行
+        for name in ("", "a\x00b"):
+            self.assertFalse(supported_identifier(name, "sqlite"), repr(name))
 
     # ---- 取回来的东西有上限 ----
 
@@ -1357,20 +1361,20 @@ class CatalogHardeningTest(unittest.TestCase):
             sorted(table["name"] for table in domain["tables"]), ["child", "item", "set", 'we"ird']
         )
 
-        # 只读校验不放行的名字：目录如实说预览不了，而不是列出来、一点就报错
-        self.assertFalse(self._table(payload, "set")["previewable"])
-        with self.assertRaises(CatalogError) as caught:
-            catalog.preview(ALLOW_ALL, database="lab_db", table="set", query=PreviewQuery())
-        self.assertEqual((caught.exception.code, caught.exception.status), ("unsupported", 501))
+        # 名字撞上 SQL 关键字（`set`、`Last Update`）：只读校验按语法树判，
+        # 引号里的标识符照常放行，目录里是「可预览」，点进去真能取到数据
+        self.assertTrue(self._table(payload, "set")["previewable"])
+        empty = catalog.preview(ALLOW_ALL, database="lab_db", table="set", query=PreviewQuery())
+        self.assertEqual(empty["rows"], [])
 
         item = self._table(payload, "item")
         self.assertTrue(item["previewable"])
         flags = {column["name"]: column["previewable"] for column in item["columns"]}
-        self.assertEqual(flags, {"id": True, "Last Update": False, "name": True})
+        self.assertEqual(flags, {"id": True, "Last Update": True, "name": True})
         page = catalog.preview(ALLOW_ALL, database="lab_db", table="item", query=PreviewQuery())
-        self.assertEqual([column["name"] for column in page["columns"]], ["id", "name"])
-        self.assertEqual(page["rows"], [[1, "first"]])
-        self.assertEqual(page["columns_unsupported"], ["Last Update"])
+        self.assertEqual([column["name"] for column in page["columns"]], ["id", "Last Update", "name"])
+        self.assertEqual(page["rows"], [[1, "2024-01-01", "first"]])
+        self.assertEqual(page["columns_unsupported"], [])
         self.assertFalse(page["columns_hidden"])
 
         weird = catalog.preview(ALLOW_ALL, database="lab_db", table='we"ird', query=PreviewQuery())

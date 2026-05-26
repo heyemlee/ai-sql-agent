@@ -271,9 +271,16 @@ class PostgresExecutorTest(unittest.TestCase):
         self.assertFalse(result.success)
 
     def test_statement_timeout_aborts_long_query(self):
-        result = self.execute("SELECT pg_sleep(3)")
+        # 不能再用 pg_sleep：只读校验把它列进了禁用函数（它会让一条连接白白挂到超时）。
+        # 换成一条真跑得慢的查询，仍然由会话级 statement_timeout 中止。
+        result = self.execute("SELECT count(*) FROM generate_series(1, 2000000000)")
         self.assertFalse(result.success)
         self.assertIn("超时", result.error)
+
+    def test_pg_sleep_is_stopped_by_the_guard_before_it_runs(self):
+        result = self.execute("SELECT pg_sleep(3)")
+        self.assertFalse(result.success)
+        self.assertIn("pg_sleep", result.error)
 
     def test_readonly_transaction_blocks_write_at_db_layer(self):
         import psycopg
