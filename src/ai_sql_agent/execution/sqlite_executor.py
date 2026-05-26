@@ -69,7 +69,7 @@ class SQLiteMCPExecutor:
         sql = request.sql.strip()
 
         if self.readonly:
-            guard = check_readonly_sql(sql)
+            guard = check_readonly_sql(sql, dialect=self.dialect)
             if not guard.allowed:
                 return MCPExecutionResult(
                     database=request.database,

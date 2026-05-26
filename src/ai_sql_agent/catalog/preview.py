@@ -150,21 +150,23 @@ def supported_identifier(name: str, dialect: str) -> bool:
     """
     这个名字能不能写进预览 SQL 并且真的跑得起来。
 
-    双引号可以转义，所以空格、中文、大小写都没问题。三种不行：
+    双引号可以转义，所以空格、中文、大小写都没问题。两种不行：
 
     - NUL：我们自己的占位符哨兵；
     - PostgreSQL 下的 `%`：psycopg 带参数执行时会解释 SQL 文本里的 `%`，把它写成
       `%%` 能执行，但授权关卡解析到的列名就成了另一个名字。**授权看到的 SQL 必须
-      和数据库执行的是同一条**，所以不支持，不绕；
-    - 执行器的只读校验不放行的名字：它按整条语句扫关键字，引号里的也算，
-      所以叫 `update`、`Last Update` 的列写进去就会被拒。那道校验是给模型写的 SQL
-      把关的，不为预览开口子——目录这边如实说「这一列预览不了」。
+      和数据库执行的是同一条**，所以不支持，不绕。
+
+    撞上 SQL 关键字的名字（`update`、`Last Update`）不在其中：执行器的只读校验
+    按语法树判，引号里的标识符不是关键字（2026-10 之前它按词扫整条语句，这样的
+    名字会被拒）。最后仍然拿同一道校验试一遍，而不是在这里另列规则——放不放行
+    以校验为准，目录与执行器不会各说各话。
     """
     if not name or _PLACEHOLDER in name:
         return False
     if dialect == "postgres" and "%" in name:
         return False
-    return check_readonly_sql(f"SELECT {quote_identifier(name)}").allowed
+    return check_readonly_sql(f"SELECT {quote_identifier(name)}", dialect=dialect).allowed
 
 
 def quote_identifier(name: str) -> str:
