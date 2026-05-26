@@ -357,7 +357,9 @@ const out = {};
 
 // ---- modelForm.js：模型连接表单里的几个判断 ----------------------------------
 {
-  const { canKeepKey, insecurePage, knownRejection, originOf, prefill, requestBody } = await load('modelForm.js');
+  const {
+    canKeepKey, insecurePage, knownRejection, modelChoices, originOf, prefill, requestBody,
+  } = await load('modelForm.js');
   const status = {
     provider: 'anthropic',
     providers: {
@@ -403,6 +405,10 @@ const out = {};
       { provider: 'openai', baseUrl: ' https://relay.example.com/v1 ', chatModel: ' some-model ', coderModel: '' },
       '  sk-typed  ',
     ),
+    choices: [
+      modelChoices(['gpt-6-luna', 'GPT-5.6-luna', ''], 'gpt-6-luna', [' claude-x ', null], []),
+      modelChoices([], ''),
+    ],
     rejection: [
       knownRejection({ access_faults: [
         { permanent: false, scope: 'model' }, { permanent: true, scope: 'credential', status_code: 401 },
@@ -725,6 +731,11 @@ class ConsoleLogicTest(unittest.TestCase):
             "provider": "openai", "base_url": "https://relay.example.com/v1", "api_key": "sk-typed",
             "chat_model": "some-model", "coder_model": "",
         })
+
+    def test_dropdown_choices_are_deduplicated_trimmed_and_sorted(self):
+        listed, nothing = self.out["modelForm"]["choices"]
+        self.assertEqual(listed, ["claude-x", "GPT-5.6-luna", "gpt-6-luna"])
+        self.assertEqual(nothing, [])
 
     def test_only_a_permanent_rejection_of_the_credential_is_shown_on_the_key(self):
         rejected, model_only, nothing = self.out["modelForm"]["rejection"]

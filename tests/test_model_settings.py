@@ -1109,5 +1109,99 @@ class ConnectionTestTest(_Environment):
         self.assertEqual(saved.json()["warnings"], ["plaintext_http"])
 
 
+LISTED = ["gpt-6-luna", "gpt-5.6-luna", "text-embedding-3-small", "Qwen/Qwen3-Embedding-0.6B",
+          "BAAI/bge-reranker-v2-m3", "gpt-image-1", "gpt-4o-mini-tts", "whisper-1", "bad name!"]
+
+
+def models_reply(_request=None, _index=0):
+    return httpx.Response(200, json={"object": "list", "data": [{"id": name, "object": "model"} for name in LISTED]})
+
+
+class ModelListTest(_Environment):
+    """下拉框的候选：问接口有哪些模型。只读、不调模型、不保存；Key 的规则和连接测试一样。"""
+
+    def respond(self, request, index):
+        return models_reply()
+
+    def listed(self, client, **overrides):
+        body = {"provider": "openai", "base_url": f"{RELAY}/v1", "api_key": PAGE_KEY}
+        body.update(overrides)
+        response = client.post("/admin/model/models", json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assert_no_secret(response.text)
+        return response.json()
+
+    def test_the_endpoints_models_are_listed_and_only_chat_models_offered(self):
+        result = self.listed(self.app_client())
+        self.assertEqual((result["ok"], result["outcome"]), (True, "ok"))
+        self.assertEqual(result["models"], ["gpt-5.6-luna", "gpt-6-luna"])   # 向量、重排、图像、语音都不列
+        self.assertEqual(result["total"], 8)                                  # 写法不合规的那条不算
+        (request,) = self.service.requests
+        self.assertEqual((request.method, request.url.path), ("GET", "/v1/models"))
+        self.assertEqual(request.headers["authorization"], f"Bearer {PAGE_KEY}")
+        self.assertFalse(self.store_path.exists(), "读列表不等于保存")
+
+    def test_anthropic_lists_go_out_with_its_own_headers(self):
+        self.service.respond = lambda request, index: httpx.Response(200, json={
+            "data": [{"type": "model", "id": "claude-sonnet-5"}, {"type": "model", "id": "claude-opus-5-5"}],
+            "has_more": False})
+        result = self.listed(self.app_client(), provider="anthropic", base_url=RELAY)
+        self.assertEqual(result["models"], ["claude-opus-5-5", "claude-sonnet-5"])
+        (request,) = self.service.requests
+        self.assertEqual(str(request.url), f"{RELAY}/v1/models?limit=1000")
+        self.assertEqual((request.headers["x-api-key"], request.headers["anthropic-version"]),
+                         (PAGE_KEY, get_settings().anthropic_version))
+        self.assertNotIn("authorization", request.headers)
+
+    def test_the_stored_key_is_not_sent_to_a_different_host_to_list_models(self):
+        client = self.app_client()
+        client.put("/admin/model", json=page_body(provider="openai", base_url=f"{RELAY}/v1",
+                                                  chat_model="gpt-5.6-luna", coder_model="gpt-5.6-luna"))
+        refused = client.post("/admin/model/models",
+                              json={"provider": "openai", "base_url": f"{OTHER}/v1", "api_key": ""})
+        self.assertEqual(refused.status_code, 400)
+        self.assertEqual(refused.json()["detail"]["code"], "key_required")
+        self.assertEqual(self.service.calls, 0)
+
+        kept = self.listed(client, api_key="")
+        self.assertTrue(kept["ok"])
+        self.assertEqual(self.service.requests[0].headers["authorization"], f"Bearer {PAGE_KEY}")
+
+    def test_a_list_that_cannot_be_read_is_reported_not_raised(self):
+        cases = {
+            "auth": lambda request, index: httpx.Response(
+                401, json={"error": {"message": f"Incorrect API key provided: {PAGE_KEY}"}}),
+            "unsupported": lambda request, index: httpx.Response(404, json={"error": {"message": "not found"}}),
+            "unexpected_response": lambda request, index: httpx.Response(200, text="<html>Welcome</html>"),
+        }
+        from ai_sql_agent.api.model_admin import PROBE_OUTCOMES
+
+        client = self.app_client()
+        for outcome, respond in cases.items():
+            with self.subTest(outcome=outcome):
+                self.assertIn(outcome, PROBE_OUTCOMES, "页面按这个闭集配文案")
+                self.service.respond = respond
+                result = self.listed(client)
+                self.assertEqual((result["ok"], result["models"], result["outcome"]), (False, [], outcome))
+        self.assertEqual(MODEL_ACCESS.snapshot(), [], "读不到列表不把正在用的 Key 记成「已被拒绝」")
+
+    def test_embedding_models_are_listed_from_the_embedding_endpoint(self):
+        response = self.app_client().post("/admin/model/embedding/models",
+                                          json={"base_url": f"{RELAY}/v1", "api_key": PAGE_KEY})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["models"], ["Qwen/Qwen3-Embedding-0.6B", "text-embedding-3-small"])
+        self.assertEqual(str(self.service.requests[0].url), f"{RELAY}/v1/models")
+        self.assert_no_secret(response.text)
+
+    def test_someone_else_on_the_network_cannot_list_with_the_stored_key(self):
+        self.write_store(model_provider="openai", openai_api_key=PAGE_KEY, openai_base_url=f"{RELAY}/v1")
+        client = self.app_client(**REMOTE)
+        response = client.post("/admin/model/models",
+                               json={"provider": "openai", "base_url": f"{RELAY}/v1", "api_key": ""})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"]["code"], "local_only")
+        self.assertEqual(self.service.calls, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -231,14 +231,23 @@ class ContractWiringTest(unittest.TestCase):
         api = (JS_DIR / "api.js").read_text(encoding="utf-8")
         for call in (
             "request('GET', '/admin/model')",
+            "request('POST', '/admin/model/models', { body })",
             "request('POST', '/admin/model/test', { body })",
             "request('PUT', '/admin/model', { body })",
             "request('DELETE', '/admin/model')",
+            "request('POST', '/admin/model/embedding/models', { body })",
             "request('POST', '/admin/model/embedding/test', { body })",
             "request('PUT', '/admin/model/embedding', { body })",
             "request('DELETE', '/admin/model/embedding')",
         ):
             self.assertIn(call, api, call)
+
+    def test_model_settings_confirm_on_the_page_not_with_window_confirm(self):
+        """有的内嵌浏览器不弹 window.confirm、直接当成「取消」：保存会被悄悄吞掉。确认条画在页面里。"""
+        for name in ("settingsModel.js", "settingsEmbedding.js"):
+            source = (JS_DIR / "views" / name).read_text(encoding="utf-8")
+            self.assertNotRegex(source, r"\bconfirm\s*\(", name)
+            self.assertIn('role="alertdialog"', source, name)
 
     def test_the_model_key_is_sent_to_the_service_and_kept_nowhere_else(self):
         """
