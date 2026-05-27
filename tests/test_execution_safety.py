@@ -347,6 +347,133 @@ class SqlGuardAstTest(unittest.TestCase):
         self.assertEqual(denied.normalized_sql, "")
 
 
+# ---- 审计会话（2026-10-14，对 main@fb583c4）给出的用例 ----
+# 来源：runtime_data/audit-2026-10-14/sql_guard_bypass_cases.json（git 忽略，所以这里内联）。
+# 元素是 (审计编号, 方言, SQL)；方言 any 表示 sqlite / postgres / 不传方言三种都要判。
+# 审计里标 pg-unverified 的用例没有在真实 PostgreSQL 上跑过，这里只验证校验层的判定。
+
+AUDIT_MUST_REJECT = [
+    ('G01', 'any', "WITH a AS (SELECT '--') DELETE FROM t"),
+    ('G02', 'any', "WITH a AS (SELECT '--') UPDATE t SET v = 0"),
+    ('G03', 'any', "WITH a AS (SELECT '/*') DELETE FROM t WHERE '*/' = '*/'"),
+    ('G04', 'sqlite', 'WITH a AS (SELECT 1 AS "x\'") DELETE FROM t WHERE \'\'=\'\''),
+    ('G05', 'sqlite', "WITH a AS (SELECT 1 AS [x']) DELETE FROM t WHERE ''=''"),
+    ('G06', 'sqlite', "WITH a AS (SELECT 1 AS `x'`) DELETE FROM t WHERE ''=''"),
+    ('G07', 'postgres', "WITH a AS (SELECT '--'), x AS (DELETE FROM t RETURNING 1) SELECT 1 FROM x"),
+    ('G08', 'postgres', "WITH a AS (SELECT $$'$$), x AS (DELETE FROM t RETURNING 1) SELECT '' FROM x"),
+    ('G09', 'postgres', "WITH a AS (SELECT E'\\''), x AS (DELETE FROM t RETURNING 1) SELECT '' FROM x"),
+    ('G10', 'any', 'WITH a AS (SELECT 1) DELETE FROM payroll'),
+    ('G11', 'any', "SELECT '/*' , 1 ; drop table t -- */"),
+    ('G12', 'postgres', 'SELECT pg_sleep(1000)'),
+    ('G13', 'postgres', "SELECT pg_read_binary_file('/etc/passwd')"),
+    ('G14', 'postgres', "SELECT pg_stat_file('/etc/passwd')"),
+    ('G15', 'postgres', 'SELECT * FROM pg_ls_waldir()'),
+    ('G16', 'postgres', "SELECT dblink_exec('dbname=app','DELETE FROM t')"),
+    ('G17', 'postgres', "SELECT query_to_xml('select * from payroll', true, false, '')"),
+    ('G18', 'postgres', "SELECT set_config('statement_timeout','0',true)"),
+    ('G19', 'postgres', 'SELECT pg_advisory_lock(42)'),
+    ('G22', 'postgres', "SELECT j.* FROM (SELECT set_config('app.user_id','bob',true)) s, job j"),
+    ('G23', 'postgres', "SELECT set_config('transaction_read_only','off',true)"),
+    ('G24', 'sqlite', "VACUUM INTO '/tmp/exfil.db'"),
+    ('G25', 'sqlite', "ATTACH DATABASE '/path/other.db' AS o"),
+]
+
+AUDIT_MUST_STILL_ALLOW = [
+    ('L01', 'any', "SELECT replace(name, 'a', 'b') FROM t"),
+    ('L02', 'any', 'SELECT "set" FROM t'),
+    ('L03', 'any', 'SELECT "a;b" FROM t'),
+    ('L04', 'any', 'SELECT name AS copy FROM t'),
+    ('L05', 'any', "SELECT * FROM t WHERE comment = 'x' AND call = 1"),
+    ('L06', 'any', "SELECT 'it''s; fine'"),
+]
+
+# 资源炸弹：审计把它们归为执行层上限问题（E-03：SQLite 的 progress handler 打断不了
+# 单次函数调用，结果集只有行数上限没有字节上限）。只读校验**放行**，由执行层负责。
+# 不往禁用函数名单里加 randomblob / zeroblob：它们是无副作用的纯函数，名单拦不住
+# `printf('%.*c', 1e9, 'x')`、`replace(hex(zeroblob(..)), ..)`、无界递归 CTE、
+# 笛卡尔积这些同类写法，只会误伤正常用法，对根因（没有字节上限）没有帮助。
+AUDIT_RESOURCE_BOMBS = [
+    ('G20', 'sqlite', 'SELECT randomblob(1000000000)'),
+    ('G21', 'any', 'WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM r) SELECT count(*) FROM r'),
+    ('G26', 'sqlite', 'SELECT x, zeroblob(5000000) FROM t'),
+    ('G27', 'sqlite', 'SELECT hex(randomblob(150000000))'),
+]
+
+
+class SqlGuardAuditCasesTest(unittest.TestCase):
+    """审计会话交来的绕过清单与误杀清单，逐条断言（方言见每条的第二项）。"""
+
+    @staticmethod
+    def _dialects(declared):
+        # `any` 三种设置都测；只在一种方言下成立的用例，除了那种方言也测不传方言
+        # （不传时两种方言都要放行，只会更严）。
+        if declared == "any":
+            return ("", "sqlite", "postgres")
+        return (declared, "")
+
+    def test_every_audit_bypass_case_is_rejected(self):
+        self.assertEqual(len(AUDIT_MUST_REJECT), 23)
+        for case_id, declared, sql in AUDIT_MUST_REJECT:
+            for dialect in self._dialects(declared):
+                result = check_readonly_sql(sql, dialect=dialect)
+                label = f"{case_id} [{dialect or 'any'}] {sql!r}"
+                self.assertFalse(result.allowed, f"{label} 不该放行")
+                self.assertTrue(result.reason, f"{label} 拒绝时必须给原因")
+
+    def test_every_audit_false_positive_is_now_allowed(self):
+        self.assertEqual(len(AUDIT_MUST_STILL_ALLOW), 6)
+        for case_id, _, sql in AUDIT_MUST_STILL_ALLOW:
+            for dialect in ("", "sqlite", "postgres"):
+                result = check_readonly_sql(sql, dialect=dialect)
+                self.assertTrue(
+                    result.allowed, f"{case_id} [{dialect or 'any'}] {sql!r}: {result.reason}"
+                )
+
+    def test_resource_bombs_are_the_execution_layers_job_not_the_guards(self):
+        # 见 AUDIT_RESOURCE_BOMBS 上的说明。这条测试存在的意义是把「放行」写成明确的
+        # 决定：以后有人想靠加函数黑名单来「修」它，会先在这里撞上理由。
+        self.assertEqual(len(AUDIT_RESOURCE_BOMBS), 4)
+        for case_id, declared, sql in AUDIT_RESOURCE_BOMBS:
+            for dialect in self._dialects(declared):
+                self.assertTrue(
+                    check_readonly_sql(sql, dialect=dialect).allowed,
+                    f"{case_id} [{dialect or 'any'}] {sql!r}",
+                )
+
+    def test_unquoted_keyword_lookalikes_are_identifiers_not_statements(self):
+        # 语法树把它们认成了列名 / 别名 / 表名：不是 COPY / CALL / UPDATE 语句
+        for sql in [
+            "SELECT name AS copy FROM t",
+            "SELECT t.copy, t.call FROM t",
+            "SELECT * FROM t WHERE comment = 'x' AND call = 1",
+            "SELECT a AS update, b AS delete FROM t",
+            "SELECT a FROM copy",
+            "WITH x AS (SELECT 1 AS copy) SELECT copy FROM x",
+            "SELECT * FROM t AS call (a, b)",
+        ]:
+            for dialect in ("", "sqlite", "postgres"):
+                result = check_readonly_sql(sql, dialect=dialect)
+                self.assertTrue(result.allowed, f"[{dialect or 'any'}] {sql!r}: {result.reason}")
+
+    def test_the_statements_themselves_are_still_rejected(self):
+        for sql in [
+            "COPY t TO '/tmp/x'",
+            "COPY t FROM '/tmp/x'",
+            "CALL p()",
+            "SELECT copy FROM t; COPY t TO '/tmp/x'",
+            "SELECT call FROM t; CALL p()",
+            # 在函数调用的位置不是标识符
+            "SELECT call(1) FROM t",
+            # 在两种数据库里都是保留字：不给「被认领」的豁免
+            "SELECT 1 AS into",
+            "SELECT 1 AS create",
+        ]:
+            for dialect in ("", "sqlite", "postgres"):
+                self.assertFalse(
+                    check_readonly_sql(sql, dialect=dialect).allowed, f"[{dialect or 'any'}] {sql!r}"
+                )
+
+
 class SQLiteExecutorSafetyTest(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
