@@ -23,7 +23,10 @@
 旧的关键字表没有删，降为解析之后的**附加防线**（`_token_backstop`）：它扫的是
 sqlglot 按方言切出来的 token，字符串、注释、带引号的标识符天然不在里面，所以
 不会再误伤引号里的词；它防的是「语法树把某种写法认成了无害节点」这类解析器
-自身的盲区。附加防线只能多拒，不能放行语法树已经拒掉的语句。
+自身的盲区。语法树已经把某个词认成了列名 / 别名 / 表名（`name AS copy`、
+`call = 1`）时，这个词就是被解释清楚的，不算命中——`copy`、`call`、`update`
+在 PostgreSQL 里都是合法的非保留字，业务库里真有这样的列。多出来的、语法树
+没认领的裸词才算。附加防线只能多拒，不能放行语法树已经拒掉的语句。
 
 这一层是应用层防线，与数据库层的只读连接 / 只读账号配合形成纵深防御。
 """
@@ -36,7 +39,8 @@ from typing import List, Optional, Sequence, Set, Tuple
 # 调用方没说方言时，两种都要判过（见 `check_readonly_sql`）。
 _DEFAULT_DIALECTS: Tuple[str, ...] = ("sqlite", "postgres")
 
-# 附加防线的关键字表：解析通过的只读查询里，这些词不该以「裸词」出现。
+# 附加防线的关键字表：解析通过的只读查询里，这些词不该以「裸词」出现，
+# 除非语法树把它认领成了普通标识符（见 `_token_backstop`）。
 # 与旧版相比去掉了 `replace`——它也是常用的字符串函数，`REPLACE INTO` /
 # `INSERT OR REPLACE` 由语法树判（前者落成 Command，后者是 Insert）。
 _FORBIDDEN_KEYWORDS: Set[str] = {
@@ -67,6 +71,11 @@ _FORBIDDEN_KEYWORDS: Set[str] = {
     "set",
     "into",
 }
+
+# 在 SQLite 与 PostgreSQL 里都是保留字、不加引号做不了标识符的词：语法树即便
+# 把它们认成别名，数据库也只会报语法错。这几个不给「被认领」的豁免，
+# 宁可多拒（`SELECT 1 AS into` 本来就跑不起来）。
+_ALWAYS_KEYWORDS: Set[str] = {"into", "create"}
 
 # 能读写服务器文件、执行任意 SQL 文本、改会话状态或干扰别的会话的函数。
 # 名字按小写比；`_FORBIDDEN_FUNCTION_PREFIXES` 覆盖成族出现的函数。
@@ -287,7 +296,7 @@ def _check_one_dialect(text: str, dialect) -> object:
     if functions:
         return f"SQL 中包含禁止的函数：{', '.join(functions)}。"
 
-    return _token_backstop(tokens)
+    return _token_backstop(tokens, tree, exp)
 
 
 def _query_roots(exp) -> tuple:
@@ -460,32 +469,52 @@ def _unicode_escape(tokens: Sequence) -> str:
     return ""
 
 
-def _token_backstop(tokens: Sequence) -> Optional[str]:
+def _token_backstop(tokens: Sequence, tree, exp) -> Optional[str]:
     """
     附加防线：在 sqlglot 切出的 token 上再扫一遍关键字和函数调用。
 
     只看裸词（不看字符串、带引号的标识符；注释本来就不是 token），所以
     `'drop'`、`"Last Update"` 不会被误伤。函数名只在后面紧跟 `(` 时才算
     调用——带引号的函数名也算，`"load_extension"(…)` 一样是调用。
+
+    语法树里不带引号的标识符节点算「认领」：`SELECT name AS copy` 里的
+    `copy` 是一个别名，不是 COPY 语句。按**个数**对账而不是按有没有——
+    `copy` 在 token 里出现两次、语法树只认领了一个，多出来的那个仍然命中。
+    `_ALWAYS_KEYWORDS` 里的词不享受认领。
     """
+    from collections import Counter
+
     from sqlglot.tokens import TokenType
 
+    claimed = Counter(
+        str(node.name).lower()
+        for node in tree.find_all(exp.Identifier)
+        if not node.args.get("quoted")
+    )
+
     literal = _string_token_types()
-    keywords: Set[str] = set()
-    functions: Set[str] = set()
+    keyword_tokens: Counter = Counter()
+    call_tokens: Counter = Counter()
     for index, token in enumerate(tokens):
         if token.token_type in literal:
             continue
         word = token.text.lower()
         if token.token_type != TokenType.IDENTIFIER and word in _FORBIDDEN_KEYWORDS:
-            keywords.add(word)
+            keyword_tokens[word] += 1
         following = tokens[index + 1] if index + 1 < len(tokens) else None
         if (
             following is not None
             and following.token_type == TokenType.L_PAREN
             and _is_forbidden_function(word)
         ):
-            functions.add(word)
+            call_tokens[word] += 1
+
+    keywords = {
+        word
+        for word, count in keyword_tokens.items()
+        if word in _ALWAYS_KEYWORDS or count > claimed[word]
+    }
+    functions = {word for word, count in call_tokens.items() if count > claimed[word]}
 
     if keywords:
         return f"SQL 中包含禁止的关键字：{', '.join(sorted(keywords))}。"
