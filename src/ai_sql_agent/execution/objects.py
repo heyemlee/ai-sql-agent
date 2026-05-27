@@ -67,6 +67,13 @@ class MCPExecutionResult:
     调小的上限截了」——两者对「共有 N 条」这句话的杀伤力不一样。
     """
 
+    truncated_by: str = ""
+    """
+    `truncated=True` 时是哪个上限先到的：`rows`（行数）或 `bytes`（字节预算）。
+    只在进程内使用（日志、测试），**不进 `to_dict()`**——契约里 `truncated` /
+    `row_limit` 两个字段已经够调用方判断，不为这件事给线上载荷加字段。
+    """
+
     as_of: str = ""
     """
     数据时点，RFC 3339（契约 §4.6.4）。SQL 真正执行的时刻，由执行器打点。

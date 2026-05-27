@@ -61,6 +61,10 @@ class PipelineConfig:
     # 只对进程内执行器生效：use_mcp_protocol=True 时上限由 MCP server 进程自己定。
     max_rows: int = 1000
     max_execution_seconds: float = 10.0
+    # 结果的字节预算与 SQLite 单值长度上限（AI_SQL_MAX_RESULT_BYTES / AI_SQL_MAX_VALUE_BYTES）。
+    # 默认值与 Settings、两个执行器各自的默认值相同，数值钉在测试里。
+    max_result_bytes: int = 8 * 1024 * 1024
+    max_value_bytes: int = 8 * 1024 * 1024
     # 执行失败后的 Log-driven 修复回路
     enable_repair: bool = True
     enable_normalization: bool = True

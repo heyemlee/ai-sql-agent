@@ -1644,6 +1644,7 @@ class Text2SQLPipeline:
                     readonly=True,
                     max_rows=self.config.max_rows,
                     max_execution_seconds=self.config.max_execution_seconds,
+                    max_result_bytes=self.config.max_result_bytes,
                 )
             else:
                 executor = SQLiteMCPExecutor(
@@ -1652,6 +1653,8 @@ class Text2SQLPipeline:
                     readonly=True,
                     max_rows=self.config.max_rows,
                     max_execution_seconds=self.config.max_execution_seconds,
+                    max_result_bytes=self.config.max_result_bytes,
+                    max_value_bytes=self.config.max_value_bytes,
                 )
 
             router.register_executor(database=database.name, executor=executor)

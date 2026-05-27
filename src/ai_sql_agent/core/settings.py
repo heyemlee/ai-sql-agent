@@ -376,6 +376,35 @@ class SqlAgentSettings(BaseSettings):
     必须大于 0：PostgreSQL 把 `statement_timeout = 0` 当成「不限时」。
     """
 
+    max_result_bytes: int = Field(default=8 * 1024 * 1024, ge=1024)
+    """
+    单条查询返回的值加起来最多多少字节，超出的行被丢弃，结果里标 `truncated`
+    （`row_limit` 是实际返回的行数）。
+
+    行数上限管不住体积：每行 5 MB 的话 40 行就是 200 MB，它先进执行器内存，再进
+    HTTP 响应、A2A 数据段、对话记忆库和下一步的提示词（审计 E-03）。
+
+    默认 8 MiB 的依据：`max_rows` 的默认 1000 行里，每行约 1 KB 文本是偏重的业务表
+    （约 1 MB），8 MiB 给到它的 8 倍；预览一页至多 100 行，远在其下。只有长文本、
+    备注、JSON 大字段成批取出时才会碰到，碰到时结果标「已截断」，调用方
+    加条件或只取需要的列即可。第一行就超过它时查询报错，不返回半行。
+
+    口径是各个值的字节数之和（字符串按 UTF-8、二进制按原长、数字按 8 字节），
+    不含列名和序列化的标点。SQLite 与 PostgreSQL 执行器都按它截；
+    PostgreSQL 一侧只管「返回多少」，见 `PostgresMCPExecutor`。
+    """
+
+    max_value_bytes: int = Field(default=8 * 1024 * 1024, ge=1024)
+    """
+    SQLite 单个字符串 / 二进制值 / 一行的最大长度（`SQLITE_LIMIT_LENGTH`），超出时
+    语句在分配之前就报错。progress handler 打断不了单次函数调用，
+    `SELECT hex(randomblob(150000000))` 这种写法只有这个上限管得住。
+
+    默认与 `max_result_bytes` 相同：单个值比整份结果的预算还大时，它本来就
+    返回不出去。调高之前注意——库里已有超过这个长度的行，`SELECT` 读它们也会报错。
+    只对 SQLite 生效，PostgreSQL 没有对应的会话参数。
+    """
+
     db_pool_max_connections: int = 8
     """
     单个 PostgreSQL 业务库的连接池上限。0 表示不用池，每次现建连接

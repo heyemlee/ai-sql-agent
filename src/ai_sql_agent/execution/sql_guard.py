@@ -290,7 +290,7 @@ def _check_one_dialect(text: str, dialect) -> object:
         {
             name
             for name in (_function_name(node, exp) for node in tree.find_all(exp.Func))
-            if name and _is_forbidden_function(name)
+            if name and is_forbidden_function(name)
         }
     )
     if functions:
@@ -428,7 +428,7 @@ def _function_name(node, exp) -> str:
         return ""
 
 
-def _is_forbidden_function(name: str) -> bool:
+def is_forbidden_function(name: str) -> bool:
     return name in _FORBIDDEN_FUNCTIONS or name.startswith(_FORBIDDEN_FUNCTION_PREFIXES)
 
 
@@ -505,7 +505,7 @@ def _token_backstop(tokens: Sequence, tree, exp) -> Optional[str]:
         if (
             following is not None
             and following.token_type == TokenType.L_PAREN
-            and _is_forbidden_function(word)
+            and is_forbidden_function(word)
         ):
             call_tokens[word] += 1
 

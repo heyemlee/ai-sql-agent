@@ -25,6 +25,8 @@ server = MCPServer(
 # AI_SQL_MAX_EXECUTION_SECONDS：那两个配置管的是 API 进程里的执行器。
 _MAX_ROWS = 1000
 _MAX_EXECUTION_SECONDS = 10.0
+_MAX_RESULT_BYTES = 8 * 1024 * 1024
+_MAX_VALUE_BYTES = 8 * 1024 * 1024
 
 _DATABASES = {
     "erp_db": ("runtime_data/erp_demo.db", create_erp_demo_database),
@@ -48,6 +50,8 @@ def _build_router() -> MCPRouter:
                 readonly=True,
                 max_rows=_MAX_ROWS,
                 max_execution_seconds=_MAX_EXECUTION_SECONDS,
+                max_result_bytes=_MAX_RESULT_BYTES,
+                max_value_bytes=_MAX_VALUE_BYTES,
             ),
         )
     return router

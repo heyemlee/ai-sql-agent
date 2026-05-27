@@ -10,6 +10,7 @@ from .data_time import QUERY_TIME, now_rfc3339
 from .dialects import POSTGRES
 from .pool import BoundedConnectionPool
 from .objects import MCPExecutionRequest, MCPExecutionResult
+from .result_budget import RowTooLarge, trim_to_budget
 from .sql_guard import check_readonly_sql
 
 
@@ -33,7 +34,11 @@ class PostgresMCPExecutor:
     - 执行超时：会话级 `statement_timeout`，由数据库负责中断，
       不依赖应用轮询；
     - 行数上限：服务端游标按需取数，多取一行用于判断是否被截断，
-      避免把整张表拉进内存。
+      避免把整张表拉进内存；
+    - 字节上限：取回的值加起来最多 max_result_bytes，超出截断并标记。
+      **这一条只管「返回多少」**：驱动一次取回的这批行已经在内存里，单个值再大
+      也会先收下来（PostgreSQL 没有「单值最大长度」这样的会话参数）。要在源头
+      挡住，用 SQL 里的 `left()` / `substr()`，或让只读账号看不到那些列。
     """
 
     dialect = POSTGRES.name
@@ -52,6 +57,7 @@ class PostgresMCPExecutor:
         as_of_source: str = QUERY_TIME,
         pool_max_connections: Optional[int] = None,
         pool_idle_seconds: Optional[float] = None,
+        max_result_bytes: int = 8 * 1024 * 1024,
     ):
         self.database = database
         self.dsn = dsn
@@ -59,6 +65,7 @@ class PostgresMCPExecutor:
         self.readonly = readonly
         self.max_rows = max_rows
         self.max_execution_seconds = max_execution_seconds
+        self.max_result_bytes = max_result_bytes
         self.as_of_source = as_of_source
         """默认 query_time（读主库）。DSN 指向只读副本或数仓时改成 snapshot。"""
 
@@ -156,6 +163,15 @@ class PostgresMCPExecutor:
 
             truncated = len(raw_rows) > max_rows
             raw_rows = raw_rows[:max_rows]
+            truncated_by = "rows" if truncated else ""
+            row_limit = max_rows
+
+            # 字节预算：第一行就放不下时抛 RowTooLarge（见下面的 except），
+            # 否则取到放不下的那一行为止，标记截断
+            raw_rows, over_budget = trim_to_budget(raw_rows, self.max_result_bytes)
+            if over_budget:
+                truncated, truncated_by, row_limit = True, "bytes", len(raw_rows)
+
             rows: List[Dict[str, Any]] = [
                 dict(zip(columns, row)) for row in raw_rows
             ]
@@ -168,9 +184,22 @@ class PostgresMCPExecutor:
                 rows=rows,
                 row_count=len(rows),
                 truncated=truncated,
-                row_limit=max_rows,
+                row_limit=row_limit,
+                truncated_by=truncated_by,
                 as_of=as_of,
                 as_of_source=self.as_of_source,
+            )
+
+        except RowTooLarge as exc:
+            # 这是结果太大，不是连接出了问题：连接照常还回池
+            return MCPExecutionResult(
+                database=request.database,
+                sql=sql,
+                success=False,
+                error=(
+                    f"单行结果约 {exc.size} 字节，超过结果字节上限 {exc.limit}。"
+                    "请只选择需要的列，或对长文本用 substr / left 截取。"
+                ),
             )
 
         except Exception as exc:  # psycopg 未安装或执行失败都走这里

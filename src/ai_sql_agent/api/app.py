@@ -209,6 +209,8 @@ async def lifespan(app: FastAPI):
     pipeline_config = PipelineConfig(
         max_rows=settings.max_rows,
         max_execution_seconds=settings.max_execution_seconds,
+        max_result_bytes=settings.max_result_bytes,
+        max_value_bytes=settings.max_value_bytes,
     )
 
     log_event(
@@ -231,6 +233,8 @@ async def lifespan(app: FastAPI):
         rate_limit_per_minute=settings.default_rate_limit_per_minute,
         max_rows=pipeline_config.max_rows,
         max_execution_seconds=pipeline_config.max_execution_seconds,
+        max_result_bytes=pipeline_config.max_result_bytes,
+        max_value_bytes=pipeline_config.max_value_bytes,
     )
 
     for section, key in (("chat", "problem"), ("embedding", "embedding_problem")):
