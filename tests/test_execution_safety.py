@@ -388,7 +388,8 @@ AUDIT_MUST_STILL_ALLOW = [
 ]
 
 # 资源炸弹：审计把它们归为执行层上限问题（E-03：SQLite 的 progress handler 打断不了
-# 单次函数调用，结果集只有行数上限没有字节上限）。只读校验**放行**，由执行层负责。
+# 单次函数调用，结果集只有行数上限没有字节上限）。只读校验**放行**，由执行层负责——
+# 执行层的字节预算、单值长度上限在 tests/test_execution_budget.py 里逐条断言。
 # 不往禁用函数名单里加 randomblob / zeroblob：它们是无副作用的纯函数，名单拦不住
 # `printf('%.*c', 1e9, 'x')`、`replace(hex(zeroblob(..)), ..)`、无界递归 CTE、
 # 笛卡尔积这些同类写法，只会误伤正常用法，对根因（没有字节上限）没有帮助。
@@ -515,8 +516,22 @@ class SQLiteExecutorSafetyTest(unittest.TestCase):
         self.assertFalse(result.success)
 
     def test_connection_layer_is_readonly(self):
-        # 第二道防线：即使绕过应用层校验，连接本身也写不进去
+        # 第二道防线：即使绕过应用层校验，连接本身也写不进去。
+        # 执行器的连接上装了默认拒绝的授权器，写语句在准备阶段就被拒
+        # （DatabaseError: not authorized），比 mode=ro 的「attempt to write a readonly
+        # database」更早——DatabaseError 是 OperationalError 的父类，断言取宽的那个
         conn = self.executor._connect()
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                conn.execute("UPDATE t SET name = 'x'")
+        finally:
+            conn.close()
+
+    def test_mode_ro_alone_still_refuses_writes(self):
+        # 授权器之下的那一层各自成立：不经过执行器，只用只读 URI 打开
+        from ai_sql_agent.execution.sql_guard import readonly_sqlite_uri
+
+        conn = sqlite3.connect(readonly_sqlite_uri(str(self.db_path)), uri=True)
         try:
             with self.assertRaises(sqlite3.OperationalError):
                 conn.execute("UPDATE t SET name = 'x'")
