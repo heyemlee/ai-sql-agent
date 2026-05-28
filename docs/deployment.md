@@ -52,6 +52,8 @@ it is mounted read-only instead. Rotating a key means editing the file and runni
 | `AI_SQL_PGVECTOR_DSN` | internal PG | Shared by schema vectors, long-term memory and audit |
 | `AI_SQL_MAX_ROWS` | `1000` | Row cap per query; rows beyond it are dropped and the step is marked `truncated`. See "Execution limits" below |
 | `AI_SQL_MAX_EXECUTION_SECONDS` | `10` | Per-query timeout, aborted on the database side |
+| `AI_SQL_MAX_RESULT_BYTES` | `8388608` | Bytes of all values in one result; rows beyond it are dropped and the step is marked `truncated`. See "Execution limits" below |
+| `AI_SQL_MAX_VALUE_BYTES` | `8388608` | SQLite only: longest single string / BLOB / row (`SQLITE_LIMIT_LENGTH`); a longer value aborts the statement |
 | `AI_SQL_HTTP_MAX_RETRIES` | `2` | Backoff retries on model 429/5xx |
 | `AI_SQL_DEFAULT_RATE_LIMIT_PER_MINUTE` | `60` | Default when a key has no override |
 | `AI_SQL_DEFAULT_DAILY_TOKEN_QUOTA` | per budget | 0 means unlimited; set a cap to protect the model bill |
@@ -69,6 +71,20 @@ force. Unset, they are 1000 rows and 10 seconds.
   configured. The compose files in this repository used to set `10000` / `30`. A copy of
   them, or an `.env` that still carries those numbers, takes effect on the next restart
   after upgrading.
+- **The byte limits bound result size, which the row cap cannot.** One row of 5 MB
+  is still one row. `AI_SQL_MAX_RESULT_BYTES` caps the sum of all values returned
+  (a cut result is marked `truncated`, and its `row_limit` is the number of rows
+  actually returned); a first row that is already over it is an error, not an empty
+  page. `AI_SQL_MAX_VALUE_BYTES` is SQLite's `SQLITE_LIMIT_LENGTH`: it stops
+  `hex(randomblob(150000000))`-style single calls (which the timeout cannot
+  interrupt) before they allocate. Rows already stored longer than it cannot be
+  read, so raise it before storing larger values rather than after.
+  PostgreSQL has no per-value session setting: there the budget bounds what is
+  returned, not what the driver receives (use `left()` or a role that cannot see the
+  column).
+- **SQLite read-only executors also install an authorizer** that denies everything
+  except reading data: `ATTACH`, `VACUUM INTO`, `PRAGMA` and `sqlite_*` / `pragma_*` /
+  `dbstat` are refused by the engine even if the application layer is bypassed.
 - **Raising the row cap is not free.** Every returned row travels in the `/query`
   response and the A2A data part, and the whole result is stored in conversation memory
   and handed to the memory summarizer. Raise it for a reason, and watch response size

@@ -50,6 +50,8 @@ curl -s localhost:8000/readyz | python -m json.tool
 | `AI_SQL_PGVECTOR_DSN` | 指向内网 PG | Schema 向量、长期记忆、审计共用 |
 | `AI_SQL_MAX_ROWS` | `1000` | 单查询返回行数上限；超出的行丢弃，该步骤标 `truncated`。见下方「执行上限」 |
 | `AI_SQL_MAX_EXECUTION_SECONDS` | `10` | 单查询执行超时（数据库侧中断） |
+| `AI_SQL_MAX_RESULT_BYTES` | `8388608` | 单查询返回的值加起来的字节上限；超出的行丢弃，该步骤标 `truncated`。见下方「执行上限」 |
+| `AI_SQL_MAX_VALUE_BYTES` | `8388608` | 仅 SQLite：单个字符串 / 二进制值 / 一行的最大长度（`SQLITE_LIMIT_LENGTH`），超出则语句报错中止 |
 | `AI_SQL_HTTP_MAX_RETRIES` | `2` | 模型 429/5xx 退避重试次数 |
 | `AI_SQL_DEFAULT_RATE_LIMIT_PER_MINUTE` | `60` | 未在 Key 上单独配置时的默认限流 |
 | `AI_SQL_DEFAULT_DAILY_TOKEN_QUOTA` | 按预算设 | 0 表示不限，建议设上限保护模型账单 |
@@ -65,6 +67,17 @@ curl -s localhost:8000/readyz | python -m json.tool
   不管配成什么，查询一直按 1000 行 / 10 秒执行。本仓库的 compose 文件以前写的是
   `10000` / `30`；照着它抄出去的 compose，或者还留着这两个数的 `.env`，
   升级后第一次重启就会生效。
+- **字节上限管的是体积，行数上限管不了它。** 一行 5 MB 也只是一行。
+  `AI_SQL_MAX_RESULT_BYTES` 限制返回的所有值加起来多少字节（被截时标 `truncated`，
+  `row_limit` 是实际返回的行数）；第一行就超过它时报错，不返回空页。
+  `AI_SQL_MAX_VALUE_BYTES` 就是 SQLite 的 `SQLITE_LIMIT_LENGTH`：
+  `hex(randomblob(150000000))` 这类超时打不断的单次调用，在分配之前就被它拦下。
+  库里已有的、比它更长的行读取时也会报错，要存更大的值，先调这个再存。
+  PostgreSQL 没有单值长度的会话参数：那边的字节预算只管「返回多少」，不管驱动收到多少
+  （用 `left()`，或让只读账号看不到那一列）。
+- **SQLite 的只读执行器还装了数据库层授权器**：除读数据之外一律拒绝，
+  `ATTACH`、`VACUUM INTO`、`PRAGMA`、`sqlite_*` / `pragma_*` / `dbstat` 即使应用层被绕过
+  也会在引擎里被拒。
 - **调大行数上限是有代价的。** 返回的每一行都会进 `/query` 响应和 A2A 的 data part，
   整份结果还会存进对话记忆、做摘要时交给摘要器。有理由再调，调完看一下响应大小和记忆库。
 - 两个值都必须大于 0。`0` 会在启动时被拒绝，它不表示「不限」。
