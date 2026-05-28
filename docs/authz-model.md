@@ -143,6 +143,27 @@ IntersectionPolicy(service=..., user=...)
 写规则时照着数据目录或 `information_schema` 里显示的名字抄即可。
 PostgreSQL 分支只有判定逻辑的单元测试，没有在真实库上跑过带引号的混合大小写表。
 
+### 3.1 关卡看得见什么：列引用、`rowid`、引擎内部对象
+
+SQL 授权关卡是靠 SQL 的结构来判的，没有 schema，所以有三条保守规则（实现在
+`auth/sql_analysis.py` 与 `auth/enforcement.py`，回归测试在 `tests/test_authorization_gaps.py`）：
+
+- **每个不带前缀的列引用都要被问到**，包括 `HAVING`、与输出别名同名的 `ORDER BY` 项和
+  表值函数的实参。分不清它是别名还是真列时按真列问——所以一个输出别名恰好和被禁列
+  同名（`SELECT name, 1 AS salary … ORDER BY salary`）会被多拒一次。
+  2026-10-14 之前这几处被漏掉，`HAVING max(salary) > n` 可以把被禁列的值二分出来。
+- **SQLite 的 `rowid` / `oid` / `_rowid_` 是主键列的别名**，关卡不知道哪一列是主键，
+  所以只要这张表有任何列级限制（`deny_columns` 里有它），就拒绝对这三个名字的引用。
+  PostgreSQL 里 `rowid` 只是个普通列名，不套这条。
+- **SQLite 引擎自己的对象对所有角色一律拒绝**，不交给策略：`sqlite_*` 系统表
+  （`sqlite_master` 及其别名 `sqlite_schema`）、`dbstat`、表值 `pragma_*` 函数。
+  通配放行（`erp_db.*`）会把它们一起放行，表值函数又没有表名，
+  `pragma_table_info('任意表')` 因此能列出任何表的列。PostgreSQL 的 `pg_catalog` /
+  `information_schema` 不在这条里，仍按策略判定。
+
+仍然没有覆盖的：**视图会遮住它读的基表**（`deny_tables` 禁了基表，读视图照样读得到）。
+要么同时禁掉依赖它的视图，要么不把这类视图暴露给受限角色。
+
 ## 4. 不在这一轮的
 
 - **glob 代数**：交集用组合对象绕开了。要把交集落回一份可读的 `DataPolicy`

@@ -23,6 +23,14 @@ sqlglot 按方言解析，然后按作用域解析每个列引用的归属。
 误杀的方向也如实写下来：sqlglot 的 `Scope.columns` 会把关联子查询里的列同时
 算进外层作用域，所以 `SELECT (SELECT max(salary) FROM emp) FROM dept` 会拿
 `salary` 去问 `dept` 一次。这是保守方向的多判一次，不是漏判。
+
+**`Scope.columns` 本身会漏列，这里要补回来。** 它为了不把「引用 SELECT 别名」的名字
+当成真实列，会丢掉几类**不带前缀**的列引用：`HAVING` / `QUALIFY` 里的、名字恰好等于
+某个输出别名的 `ORDER BY` / `DISTINCT` 项（包括 `ORDER BY ssn * 1` 这种表达式）、
+表值函数的实参、`Hint`。被丢掉的列从没被问过策略，`HAVING max(salary) > n` 因此能
+当布尔探针把被禁列的值二分出来（2026-10-14 审查复现）。补回来的做法见
+`_dropped_columns`：这些名字**既可能是别名也可能是真列**，分不清就按真列问，
+任一候选拒绝就拒绝。代价是：一个输出别名恰好和被禁列同名时会被多拒一次。
 """
 from __future__ import annotations
 
@@ -89,6 +97,15 @@ class SqlAnalysis:
     tables: Tuple[TableRef, ...] = ()
     columns: Tuple[ColumnRef, ...] = ()
     stars: Tuple[StarRef, ...] = ()
+    table_functions: Tuple[str, ...] = ()
+    """
+    FROM 里的表值函数名（小写），如 `pragma_table_info`、`json_each`。
+
+    它们没有表名，`tables` 里不会出现——原来授权关卡因此把
+    `SELECT name FROM pragma_table_info('其他表')` 当成「不碰任何表」放行。
+    关卡不判断每个函数该不该放行（那是策略的事），只把名字交出来，
+    引擎内部那几个由 `enforcement` 一律拒绝。
+    """
 
 
 def _sqlglot_dialect(dialect: str) -> Optional[str]:
@@ -143,7 +160,7 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
     try:
         import sqlglot
         from sqlglot import exp
-        from sqlglot.optimizer.scope import build_scope
+        from sqlglot.optimizer.scope import ScopeType, build_scope
     except ImportError as exc:  # pragma: no cover - 依赖缺失属于部署事故
         return SqlAnalysis(
             parsed=False,
@@ -178,6 +195,11 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
     columns: List[ColumnRef] = []
     stars: List[StarRef] = []
 
+    # id(scope.expression) -> (scope, 别名表, 本作用域的真实表)。补列时要沿父作用域往上找。
+    states: Dict[int, tuple] = {}
+    # `Scope.columns` 已经交给下面循环处理过的列节点（按 id）。
+    seen_columns: Set[int] = set()
+
     for scope in root.traverse():
         # 这个作用域里 alias -> 真实表；值是 Scope 的（CTE / 子查询）交给它自己那一轮。
         local: Dict[str, TableRef] = {}
@@ -192,8 +214,10 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
             tables.append(ref)
 
         scope_tables = tuple(dict.fromkeys(local.values()))
+        states[id(scope.expression)] = (scope, local, scope_tables)
 
         for column in scope.columns:
+            seen_columns.add(id(column))
             qualifier = column.table or ""
             if qualifier:
                 target = local.get(qualifier)
@@ -211,12 +235,109 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
 
         stars.extend(_scope_stars(scope, local, scope_tables, exp))
 
+    columns.extend(_dropped_columns(tree, states, seen_columns, exp, ScopeType))
+
     return SqlAnalysis(
         parsed=True,
         tables=tuple(dict.fromkeys(tables)),
         columns=tuple(columns),
         stars=tuple(stars),
+        table_functions=_table_functions(tree, exp),
     )
+
+
+def _table_functions(tree, exp) -> Tuple[str, ...]:
+    """
+    FROM 里的表值函数名。表值函数是 `Table` 节点，但 `.this` 是函数而不是标识符，
+    所以 `.name` 为空、`_table_ref` 返回 None，`tables` 里看不到它们。
+    """
+    names: List[str] = []
+    for node in tree.find_all(exp.Table):
+        func = node.this
+        if not isinstance(func, exp.Func):
+            continue
+        # 认得的函数类（如 PostgreSQL 的 generate_series）没有 `.name`，退到 sql_name()
+        name = (getattr(func, "name", "") or func.sql_name() or "").strip().lower()
+        if name:
+            names.append(name)
+    return tuple(dict.fromkeys(names))
+
+
+def _dropped_columns(tree, states, seen_columns, exp, ScopeType) -> List[ColumnRef]:
+    """
+    补回 `Scope.columns` 丢掉的列引用（原因见模块文档）。
+
+    做法：整棵树里所有 `Column` 节点，减去任何作用域的 `columns` 里出现过的，
+    剩下的就是被丢的。每一个按它所在的 SELECT（`parent_select`）找回作用域，
+    再按和 `Scope.columns` 一致的规则决定它能绑到哪些表：
+
+    - 带前缀：沿作用域往外找第一个认得这个前缀的；找不到就跳过（那是 CTE /
+      派生表的别名，它的列在它自己那一轮判过了）。
+    - 不带前缀：本作用域的全部真实表，**加上**外层作用域的——SQL 的名字解析
+      本来就是「先内后外」，内层表里没有这一列时它绑到外层表。往外走只穿过
+      子查询 / 表值函数 / 可关联的派生表，碰到 CTE、UNION 分支、普通派生表就停，
+      和 `Scope.external_columns` 的边界一致。
+    """
+    found: List[ColumnRef] = []
+
+    for column in tree.find_all(exp.Column):
+        if id(column) in seen_columns:
+            continue
+        if isinstance(column.this, exp.Star):
+            continue  # `t.*` 由 `_scope_stars` 处理
+        home = column.parent_select
+        if home is None or id(home) not in states:
+            continue
+        if _orders_a_set_operation(column, exp):
+            continue  # `UNION … ORDER BY a` 的 a 是输出列名，不属于任何一张表
+
+        candidates = _bind_dropped(column, states[id(home)][0], states, ScopeType)
+        if candidates:
+            found.append(ColumnRef(name=column.name, candidates=candidates))
+
+    return found
+
+
+def _orders_a_set_operation(column, exp) -> bool:
+    order = column.find_ancestor(exp.Order)
+    if order is None:
+        return False
+    set_operation = getattr(exp, "SetOperation", None) or exp.Union
+    return isinstance(order.parent, set_operation)
+
+
+def _bind_dropped(column, scope, states, ScopeType) -> Tuple[TableRef, ...]:
+    chain = []
+    current = scope
+    while current is not None:
+        entry = states.get(id(current.expression))
+        if entry is not None:
+            chain.append(entry)
+        if not _sees_outer_scope(current, ScopeType):
+            break
+        current = current.parent
+
+    qualifier = column.table or ""
+    if qualifier:
+        for _scope, local, _tables in chain:
+            target = local.get(qualifier)
+            if target is not None:
+                return (target,)
+        return ()
+
+    candidates: List[TableRef] = []
+    for _scope, _local, scope_tables in chain:
+        candidates.extend(scope_tables)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _sees_outer_scope(scope, ScopeType) -> bool:
+    kind = getattr(scope, "scope_type", None)
+    if kind in (ScopeType.SUBQUERY, ScopeType.UDTF):
+        return True
+    if kind == ScopeType.DERIVED_TABLE:
+        return bool(getattr(scope, "can_be_correlated", False))
+    return False
 
 
 def _scope_stars(scope, local, scope_tables, exp) -> List[StarRef]:

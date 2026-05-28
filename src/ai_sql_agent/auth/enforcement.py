@@ -35,10 +35,23 @@ from ai_sql_agent.core import log_event
 from ai_sql_agent.core.logging_setup import get_logger
 from ai_sql_agent.core.metrics import ACCESS_DENIED
 
-from .identifiers import bind_dialect
+from .identifiers import bind_dialect, quoted_names_are_case_sensitive
 from .sql_analysis import SqlAnalysis, TableRef, analyze_sql
 
 _logger = get_logger("auth")
+
+# SQLite 里 INTEGER PRIMARY KEY 列的别名。关卡没有 schema，不知道哪一列是主键，
+# 所以 `SELECT rowid` 对策略来说是一个谁也写不出规则的列名（2026-10-14 审查：
+# 禁了 `employees.id`，`SELECT rowid FROM employees` 照样把 id 读了出来）。
+_ROWID_ALIASES = frozenset({"rowid", "oid", "_rowid_"})
+
+# SQLite 引擎自己的对象：系统表（`sqlite_master` 及其别名 `sqlite_schema`、
+# `sqlite_sequence`、`sqlite_stat1`…）、`dbstat`，以及表值 pragma 函数
+# （`pragma_table_info('任意表')` 能列出任何表的列，`pragma_database_list` 带出库文件的
+# 绝对路径）。业务问答没有任何理由读它们，所以不交给策略，**对所有角色一律拒绝**——
+# 通配放行（`erp_db.*`）会把它们一并放行，deny 规则又只拦得住一个名字。
+_ENGINE_INTERNAL_PREFIXES = ("sqlite_", "pragma_")
+_ENGINE_INTERNAL_NAMES = frozenset({"dbstat"})
 
 
 @dataclass(frozen=True)
@@ -81,12 +94,16 @@ class AuthorizationDecision:
     reason: str = ""
     denied_tables: Tuple[str, ...] = ()
     denied_columns: Tuple[str, ...] = ()
+    denied_internal: Tuple[str, ...] = ()
+    """引擎内部对象（见 `_ENGINE_INTERNAL_*`）。这类拒绝不是缺权限，不该提示去申请。"""
 
     @property
     def audit_error(self) -> str:
         """执行结果里那句错误文案。表名要带上，调用方才知道该申请什么权限。"""
         if self.allowed:
             return ""
+        if self.denied_internal:
+            return f"不允许查询数据库引擎内部对象：{', '.join(self.denied_internal)}。"
         if self.denied_tables:
             return (
                 f"没有访问权限：{', '.join(self.denied_tables)}。"
@@ -168,6 +185,24 @@ def _column_allowed(access: Any, database: str, table: TableRef, column: str) ->
     )
 
 
+def _engine_internals(analysis: SqlAnalysis, dialect: str) -> Tuple[str, ...]:
+    """
+    SQL 里引用到的 SQLite 引擎内部对象（表、表值函数）。PostgreSQL 的系统目录是另一套，
+    不在这里处理（`pg_catalog` / `information_schema` 仍按策略判定）。
+    """
+    if quoted_names_are_case_sensitive(dialect):
+        return ()
+
+    def internal(name: str) -> bool:
+        return name.startswith(_ENGINE_INTERNAL_PREFIXES) or name in _ENGINE_INTERNAL_NAMES
+
+    found: List[str] = [
+        table.qualified for table in analysis.tables if internal(table.name.casefold())
+    ]
+    found.extend(f"{name}()" for name in analysis.table_functions if internal(name))
+    return tuple(dict.fromkeys(found))
+
+
 def check_sql_access(
     access: Any, *, database: str, sql: str, dialect: str = ""
 ) -> AuthorizationDecision:
@@ -190,6 +225,16 @@ def check_sql_access(
             reason=f"SQL 无法解析，出于安全拒绝执行：{analysis.error}",
         )
 
+    # 引擎内部对象先于一切策略判定，也先于下面的「没有表」：
+    # `pragma_table_info('x')` 这种表值函数不产生 `tables`，不先查就会被当成无数据面。
+    internals = _engine_internals(analysis, dialect)
+    if internals:
+        return AuthorizationDecision(
+            allowed=False,
+            reason="引用了数据库引擎内部对象。",
+            denied_internal=internals,
+        )
+
     if not analysis.tables:
         # `SELECT 1` 这类不碰表的查询：没有数据面，放行。
         return _ALLOWED
@@ -206,10 +251,17 @@ def check_sql_access(
             denied_tables=tuple(sorted(dict.fromkeys(denied_tables))),
         )
 
+    rowid_aliases_apply = not quoted_names_are_case_sensitive(dialect)
+
     denied_columns: List[str] = []
     for column in analysis.columns:
+        is_rowid = rowid_aliases_apply and column.name.casefold() in _ROWID_ALIASES
         for table in column.candidates:
             if not _column_allowed(access, database, table, column.name):
+                denied_columns.append(f"{table.qualified}.{column.name}")
+            elif is_rowid and restricts_columns(access, database, table.name):
+                # rowid 就是主键列本身，关卡不知道主键叫什么：这张表只要有任何列级
+                # 限制，就按「可能读到了禁列」拒绝（和 `SELECT *` 同一个理由）。
                 denied_columns.append(f"{table.qualified}.{column.name}")
 
     for star in analysis.stars:
@@ -272,5 +324,6 @@ def _audit_denied(
         reason=decision.reason,
         tables=list(decision.denied_tables),
         columns=list(decision.denied_columns),
+        internal=list(decision.denied_internal),
         sql=sql,
     )
