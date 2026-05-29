@@ -169,6 +169,16 @@ class DataPolicy:
 
         return _rules_restrict_columns(self.deny_columns, database, table)
 
+    def is_unrestricted(self) -> bool:
+        """
+        这份策略有没有隐藏任何东西：放行规则里有通配 `*`，且没有任何 deny。
+
+        授权关卡用它判断视图目录要不要介入——没有东西可隐藏的策略，视图遮不住什么
+        （见 `ai_sql_agent.auth.views`）。写得保守：`erp_db.*` 这种只放行一个库的规则
+        不算无限制。
+        """
+        return "*" in self.allow_tables and not self.deny_tables and not self.deny_columns
+
     def row_predicate(self, database: str, table: str) -> Optional[str]:
         """
         这张表的行过滤谓词。
@@ -275,6 +285,13 @@ class IntersectionPolicy:
         return _ask(
             self.service, "allows_column_reference", database, names, column
         ) and _ask(self.user, "allows_column_reference", database, names, column)
+
+    def is_unrestricted(self) -> bool:
+        """两边都没有隐藏任何东西才算无限制（任一边没声明这个方法就当有限制）。"""
+        return all(
+            callable(getattr(side, "is_unrestricted", None)) and side.is_unrestricted()
+            for side in (self.service, self.user)
+        )
 
     def restricts_columns(self, database: str, table: str) -> bool:
         """任一边有列级限制就算有——取更严的那个。"""

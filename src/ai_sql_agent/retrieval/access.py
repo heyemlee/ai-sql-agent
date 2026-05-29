@@ -40,6 +40,9 @@ class AllowAll:
     def restricts_columns(self, database: str, table: str) -> bool:
         return False
 
+    def is_unrestricted(self) -> bool:
+        return True
+
 
 ALLOW_ALL = AllowAll()
 

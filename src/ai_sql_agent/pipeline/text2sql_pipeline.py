@@ -7,7 +7,12 @@ import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from ai_sql_agent.auth import authorization_scope, check_sql_access, extract_referenced_tables
+from ai_sql_agent.auth import (
+    ViewCatalog,
+    authorization_scope,
+    check_sql_access,
+    extract_referenced_tables,
+)
 from ai_sql_agent.auth.identifiers import bind_dialect
 from ai_sql_agent.core.errors import ModelCallError
 from ai_sql_agent.core import (
@@ -192,6 +197,11 @@ class Text2SQLPipeline:
             database.name: database.dialect for database in self.databases
         }
 
+        # 视图会遮住它读的基表，授权关卡自己推不出哪些名字是视图（见 auth/views.py）。
+        # 目录随授权作用域交给关卡；启动时扫一次，之后每次 schema 轮询都重扫。
+        self.view_catalog = ViewCatalog()
+        self._refresh_view_catalog()
+
         self.schema_retrieval_service = self._build_schema_retrieval_service()
         self.schema_fingerprints = self._current_fingerprints()
         self._reload_lock = threading.Lock()
@@ -246,7 +256,10 @@ class Text2SQLPipeline:
         # ai_sql_agent.execution.execute（首次生成 / 失败修复 / 历史重放）都按这份权限判，
         # 作用域外的执行一律被拒。以前每个调用点各写一次检查，修复那条漏了。
         with usage_scope(), authorization_scope(
-            access or ALLOW_ALL, user_id=user_id, trace_id=get_trace_id()
+            access or ALLOW_ALL,
+            user_id=user_id,
+            trace_id=get_trace_id(),
+            views=self.view_catalog,
         ):
             return self._run(
                 query,
@@ -1168,6 +1181,19 @@ class Text2SQLPipeline:
             for database in self.databases
         }
 
+    def _refresh_view_catalog(self) -> None:
+        """
+        重扫各库的表与视图目录。扫描失败的库在目录里登记为失败（对受限角色拒绝一切，
+        直到下一次扫描成功），所以这里不向上抛。
+        """
+        for database in self.databases:
+            self.view_catalog.refresh(
+                database.name,
+                database.dialect,
+                db_path=str(database.db_path or ""),
+                dsn=database.dsn or "",
+            )
+
     def detect_schema_changes(self) -> List[str]:
         """
         对比指纹，返回发生变化的库名。
@@ -1198,6 +1224,9 @@ class Text2SQLPipeline:
         if force is None:
             force = reason == "manual" or reason.startswith("manual:")
         with self._reload_lock:
+            # 指纹只看表，视图的增删它感知不到；目录扫描很轻，每次轮询都做，
+            # 不依赖「有没有变化」。
+            self._refresh_view_catalog()
             changed = self.detect_schema_changes()
             if not changed and not force:
                 return []
@@ -1254,6 +1283,7 @@ class Text2SQLPipeline:
             database=database,
             sql=sql,
             dialect=self._dialect_name(database),
+            views=self.view_catalog,
         )
         if decision.allowed:
             return []

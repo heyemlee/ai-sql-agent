@@ -106,6 +106,25 @@ class SqlAnalysis:
     关卡不判断每个函数该不该放行（那是策略的事），只把名字交出来，
     引擎内部那几个由 `enforcement` 一律拒绝。
     """
+    functions: Tuple[str, ...] = ()
+    """
+    SQL 里调用的**全部**函数名（小写，去掉 schema 前缀与引号），含标量函数。
+
+    关卡用它拦那些「把字符串当 SQL 或表名去执行」的函数（`query_to_xml('select …')`、
+    `table_to_xml('表'::regclass)`、`dblink(…)`），和覆盖 RLS 身份的 `set_config`：
+    它们读的表不出现在 AST 里，按表和列判永远看不见。
+    """
+
+
+# SQLite 引擎自己的对象。`enforcement` 对它们一律拒绝，`views` 扫描视图定义时也用同一个
+# 判据（视图的定义里读了引擎内部对象，就当作无法判断的视图）。
+ENGINE_INTERNAL_PREFIXES = ("sqlite_", "pragma_")
+ENGINE_INTERNAL_NAMES = frozenset({"dbstat"})
+
+
+def is_engine_internal(name: str) -> bool:
+    lowered = (name or "").casefold()
+    return lowered.startswith(ENGINE_INTERNAL_PREFIXES) or lowered in ENGINE_INTERNAL_NAMES
 
 
 def _sqlglot_dialect(dialect: str) -> Optional[str]:
@@ -195,6 +214,12 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
     columns: List[ColumnRef] = []
     stars: List[StarRef] = []
 
+    # PostgreSQL 里，不带前缀的标识符既可能是列也可能是**整行**：`row_to_json(e)`、
+    # `SELECT e FROM t e`、`e::text`、`(e).salary` 里的 `e` 是 FROM 里的别名，
+    # 取到的是那张表的全部列（含被禁列）。名字等于某个别名/表名的无前缀「列」
+    # 因此按 `e.*` 算。SQLite 没有整行引用这回事。
+    whole_row = read == "postgres"
+
     # id(scope.expression) -> (scope, 别名表, 本作用域的真实表)。补列时要沿父作用域往上找。
     states: Dict[int, tuple] = {}
     # `Scope.columns` 已经交给下面循环处理过的列节点（按 id）。
@@ -229,13 +254,20 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
                 candidates: Tuple[TableRef, ...] = (target,)
             else:
                 candidates = scope_tables
+                whole_row_target = local.get(column.name) if whole_row else None
+                if whole_row_target is not None:
+                    stars.append(StarRef(tables=(whole_row_target,)))
             if not candidates:
                 continue
             columns.append(ColumnRef(name=column.name, candidates=candidates))
 
         stars.extend(_scope_stars(scope, local, scope_tables, exp))
 
-    columns.extend(_dropped_columns(tree, states, seen_columns, exp, ScopeType))
+    extra_columns, extra_stars = _dropped_columns(
+        tree, states, seen_columns, exp, ScopeType, whole_row
+    )
+    columns.extend(extra_columns)
+    stars.extend(extra_stars)
 
     return SqlAnalysis(
         parsed=True,
@@ -243,7 +275,26 @@ def analyze_sql(sql: str, dialect: str = "") -> SqlAnalysis:
         columns=tuple(columns),
         stars=tuple(stars),
         table_functions=_table_functions(tree, exp),
+        functions=_function_names(tree, exp),
     )
+
+
+def _function_names(tree, exp) -> Tuple[str, ...]:
+    """
+    调用到的全部函数名，小写。`Anonymous`（sqlglot 不认识的函数，如 `query_to_xml`）的
+    `.name` 就是 SQL 里写的那个名字，带不带 schema 前缀、加不加引号都一样；
+    认识的函数类（`COUNT`、`CAST`…）取 `sql_name()`。
+    """
+    names: List[str] = []
+    for node in tree.find_all(exp.Func):
+        if isinstance(node, exp.Anonymous):
+            name = (node.name or "").strip()
+        else:
+            name = node.sql_name() or ""
+        name = name.lower()
+        if name:
+            names.append(name)
+    return tuple(dict.fromkeys(names))
 
 
 def _table_functions(tree, exp) -> Tuple[str, ...]:
@@ -263,7 +314,9 @@ def _table_functions(tree, exp) -> Tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
-def _dropped_columns(tree, states, seen_columns, exp, ScopeType) -> List[ColumnRef]:
+def _dropped_columns(
+    tree, states, seen_columns, exp, ScopeType, whole_row: bool = False
+) -> Tuple[List[ColumnRef], List[StarRef]]:
     """
     补回 `Scope.columns` 丢掉的列引用（原因见模块文档）。
 
@@ -279,6 +332,7 @@ def _dropped_columns(tree, states, seen_columns, exp, ScopeType) -> List[ColumnR
       和 `Scope.external_columns` 的边界一致。
     """
     found: List[ColumnRef] = []
+    found_stars: List[StarRef] = []
 
     for column in tree.find_all(exp.Column):
         if id(column) in seen_columns:
@@ -291,11 +345,31 @@ def _dropped_columns(tree, states, seen_columns, exp, ScopeType) -> List[ColumnR
         if _orders_a_set_operation(column, exp):
             continue  # `UNION … ORDER BY a` 的 a 是输出列名，不属于任何一张表
 
-        candidates = _bind_dropped(column, states[id(home)][0], states, ScopeType)
+        scope = states[id(home)][0]
+        candidates = _bind_dropped(column, scope, states, ScopeType)
         if candidates:
             found.append(ColumnRef(name=column.name, candidates=candidates))
+        if whole_row and not column.table:
+            target = _bind_whole_row(column.name, scope, states, ScopeType)
+            if target is not None:
+                found_stars.append(StarRef(tables=(target,)))
 
-    return found
+    return found, found_stars
+
+
+def _bind_whole_row(name, scope, states, ScopeType) -> Optional[TableRef]:
+    """无前缀名字是不是外到内第一个认得的 FROM 别名 / 表名（PostgreSQL 整行引用）。"""
+    current = scope
+    while current is not None:
+        entry = states.get(id(current.expression))
+        if entry is not None:
+            target = entry[1].get(name)
+            if target is not None:
+                return target
+        if not _sees_outer_scope(current, ScopeType):
+            break
+        current = current.parent
+    return None
 
 
 def _orders_a_set_operation(column, exp) -> bool:

@@ -161,8 +161,42 @@ SQL 授权关卡是靠 SQL 的结构来判的，没有 schema，所以有三条�
   `pragma_table_info('任意表')` 因此能列出任何表的列。PostgreSQL 的 `pg_catalog` /
   `information_schema` 不在这条里，仍按策略判定。
 
-仍然没有覆盖的：**视图会遮住它读的基表**（`deny_tables` 禁了基表，读视图照样读得到）。
-要么同时禁掉依赖它的视图，要么不把这类视图暴露给受限角色。
+- **PostgreSQL：整行引用按 `e.*` 算。** 不带前缀的 `e` 如果恰好是 FROM 里的别名或表名
+  （`row_to_json(e)`、`SELECT e FROM t e`、`e::text`、`(e).salary`），取到的是这张表的
+  全部列，含被禁列；这张表有任何列级限制就拒绝。派生表 / CTE 的别名不算（它们的列在
+  子查询自己那一轮判过了）。
+- **把字符串当 SQL 或表名执行的函数一律拒绝**（PostgreSQL 方言）：`query_to_xml` /
+  `table_to_xml` / `cursor_to_xml` / `schema_to_xml` / `database_to_xml` 及它们的
+  `_and_xmlschema` / `xmlschema` 变体、`ts_stat`、`dblink*`——它们读的表不出现在 AST 里，
+  按表和列判永远看不见。`set_config` 也拒：它能覆盖执行器为 RLS 设的
+  `app.user_id`。这一条在关卡里重复了 `sql_guard` 的判断，是故意的：守卫在
+  `readonly=False` 的执行器上不跑，关卡每次都跑。
+  **以上 PostgreSQL 的几条都只验证了关卡的判定，没有在真实 PostgreSQL 上跑过。**
+
+### 3.2 视图
+
+视图会遮住它读的基表：`deny_tables` 禁了 `payroll`，`SELECT * FROM v_payroll` 的 SQL 文本里
+却没有这个名字。关卡是纯函数，推不出哪些名字是视图，所以由 `ViewCatalog`
+（`auth/views.py`）提供：来自数据库目录（SQLite 的 `sqlite_master`、PostgreSQL 的
+`pg_class` + `pg_get_viewdef`，视图定义用同一套 sqlglot 分析解析），随授权作用域交给
+关卡（`authorization_scope(..., views=...)`），不是进程全局。
+
+管道启动时为每个库扫一次，之后每次 schema 轮询（`reload_schema`）都重扫——表指纹只看
+表，感知不到视图的增删。目录在时，**受限策略**读视图 = 读它的全部基表（视图套视图展开到底）：
+
+- 任一基表被策略拒绝 → 拒绝；
+- 基表有列级限制 → 拒绝（视图列对应基表哪一列，关卡看不见，和 `SELECT *` 同一个理由）；
+- 视图定义解析不了（`INDEXED BY` 之类 sqlglot 不认的写法）→ 拒绝，原因是「不知道」；
+- 目录里没登记的对象（扫描之后才建的表或视图）→ 拒绝，要等下一次扫描（或手动重载）后才可查询；
+- 目录扫描失败 → 对受限角色拒绝一切，直到下一次扫描成功。旧目录**不**保留：
+  它可能正好缺了这次想看的那个视图。
+
+没有任何 deny 的策略（`full_access()`、`ALLOW_ALL`）没有东西可遮，不受目录约束。
+这个库从没登记过目录时（例如直接用执行器的脚本）关卡按老样子判——这是前提而不是
+安全属性：直接构造执行器的调用方要自己登记并把目录放进作用域。
+PostgreSQL 的目录扫描（`scan_postgres`）和视图展开**没有在真实 PostgreSQL 上验证**。
+SQLite 更彻底的做法是让执行器连接装 `set_authorizer`，直接按 SQLite 报告的真实读取
+判定，视图、`rowid`、解析差异一并消除——那在 `execution/`，不在这里。
 
 ## 4. 不在这一轮的
 

@@ -18,6 +18,7 @@ from .key_store import ApiKeyStore
 from .objects import ApiKeyRecord, DataPolicy, Principal
 from .sql_analysis import ColumnRef, SqlAnalysis, TableRef, analyze_sql
 from .sql_tables import extract_referenced_tables
+from .views import ViewCatalog
 
 __all__ = [
     "ApiKeyRecord",
@@ -29,6 +30,7 @@ __all__ = [
     "Principal",
     "SqlAnalysis",
     "TableRef",
+    "ViewCatalog",
     "analyze_sql",
     "authorization_scope",
     "authorize_sql",

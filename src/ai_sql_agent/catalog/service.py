@@ -323,10 +323,21 @@ def _facet(name: str, result: Any, declared: Sequence[str], own: bool) -> Dict[s
 class DataCatalog:
     """数据目录、只读预览与表概况。一个进程一个实例，挂在 `app.state.catalog`。"""
 
-    def __init__(self, *, semantic: Any, databases: Sequence[Any], router: Any, clock=time.monotonic):
+    def __init__(
+        self,
+        *,
+        semantic: Any,
+        databases: Sequence[Any],
+        router: Any,
+        clock=time.monotonic,
+        views: Any = None,
+    ):
         self.semantic = semantic
         self.databases = list(databases)
         self.router = router
+        # 视图目录（`ai_sql_agent.auth.views`）：预览走的是同一道授权关卡，
+        # 作用域里要带上它，关卡才认得出视图。没有就不展开。
+        self.views = views
         self._clock = clock
         self._structures: Dict[str, _Structure] = {}
         self._lock = threading.Lock()
@@ -347,6 +358,7 @@ class DataCatalog:
             semantic=pipeline.semantic,
             databases=pipeline.databases,
             router=pipeline.mcp_router,
+            views=getattr(pipeline, "view_catalog", None),
         )
 
     # ------------------------------------------------------------------
@@ -828,7 +840,11 @@ class DataCatalog:
         started = time.perf_counter()
         timeout = settings.catalog_preview_timeout_seconds
         with authorization_scope(
-            access, caller=caller, user_id=user_id, trace_id=get_trace_id()
+            access,
+            caller=caller,
+            user_id=user_id,
+            trace_id=get_trace_id(),
+            views=self.views,
         ):
             result = self.router.execute(
                 MCPExecutionRequest(
@@ -1002,7 +1018,11 @@ class DataCatalog:
         skipped: List[Dict[str, str]] = []
 
         with authorization_scope(
-            access, caller=caller, user_id=user_id, trace_id=get_trace_id()
+            access,
+            caller=caller,
+            user_id=user_id,
+            trace_id=get_trace_id(),
+            views=self.views,
         ):
             stats = self.router.execute(
                 MCPExecutionRequest(
