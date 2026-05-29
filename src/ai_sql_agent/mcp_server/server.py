@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+from ai_sql_agent.auth import ViewCatalog
 from ai_sql_agent.core import get_settings
 from mcp.server import MCPServer
 
@@ -59,6 +60,22 @@ def _build_router() -> MCPRouter:
 
 _router = _build_router()
 
+# 视图会遮住它读的基表，授权关卡自己推不出哪些名字是视图（见 ai_sql_agent.auth.views）。
+# 管道靠 schema 轮询刷新目录；这个 stdio 进程没有轮询，所以启动时全部扫一次，
+# 之后**每次调用前重扫被查的那个库**（只是读一次 sqlite_master，比查询本身便宜得多）。
+# 失败语义和管道一致：扫描失败登记为失败，受限策略一律被拒，而不是放行。
+_views = ViewCatalog()
+
+
+def _refresh_views(database: str) -> None:
+    entry = _DATABASES.get(database)
+    if entry is not None:
+        _views.refresh(database, "sqlite", db_path=str(entry[0]))
+
+
+for _name in _DATABASES:
+    _refresh_views(_name)
+
 
 def list_databases() -> str:
     """列出可查询的数据库。"""
@@ -104,7 +121,8 @@ def execute_sql(database: str, sql: str) -> str:
 
     # 授权作用域靠 contextvar 传，**不跨进程**——调用方那一侧的策略到不了这里，
     # 所以这个进程必须自己绑一份。不绑的话执行器会一律拒绝（这是有意的默认值）。
-    with authorization_scope(_server_policy(), caller="mcp-stdio"):
+    _refresh_views(database)
+    with authorization_scope(_server_policy(), caller="mcp-stdio", views=_views):
         result = _router.execute(
             MCPExecutionRequest(database=database, sql=sql)
         )
