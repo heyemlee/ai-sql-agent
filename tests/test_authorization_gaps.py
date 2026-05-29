@@ -279,6 +279,208 @@ class ExecutorEndToEndTest(unittest.TestCase):
         self.assertEqual([row["name"] for row in result.rows], ["ann", "bob", "cy"])
 
 
+class WholeRowReferenceTest(unittest.TestCase):
+    """
+    S-07：PostgreSQL 里不带前缀的 `e` 可以是整行（`row_to_json(e)`、`SELECT e FROM t e`、
+    `e::text`、`(e).salary`），取到的是这张表的全部列，含被禁列。关卡把这类引用按 `e.*` 算。
+
+    **这些用例只验证关卡的判定，没有在真实 PostgreSQL 上跑过**；整行引用的语义来自 PostgreSQL 文档。
+    """
+
+    DENIED = [
+        "SELECT row_to_json(e) FROM employees e",
+        "SELECT to_jsonb(employees) FROM employees",
+        "SELECT e FROM employees e",
+        "SELECT e::text FROM employees e",
+        "SELECT (e).salary FROM employees e",
+        "SELECT (e).* FROM employees e",
+        "SELECT json_agg(e) FROM employees e",
+        # 相关子查询里引用外层别名
+        "SELECT (SELECT row_to_json(e)) FROM employees e",
+        # 落在 HAVING 里（Scope.columns 会丢的那一类）
+        "SELECT count(*) FROM employees e HAVING max(length(e::text)) > 1",
+    ]
+
+    def test_whole_row_references_are_denied_when_the_table_has_column_rules(self):
+        for sql in self.DENIED:
+            with self.subTest(sql=sql):
+                decision = _check(SALARY_POLICY, sql, dialect="postgres")
+                self.assertFalse(decision.allowed)
+                self.assertIn("employees.*", decision.denied_columns)
+
+    def test_qualified_columns_are_not_whole_row_references(self):
+        decision = _check(
+            SALARY_POLICY, "SELECT e.name FROM employees e", dialect="postgres"
+        )
+        self.assertTrue(decision.allowed, decision.audit_error)
+
+    def test_a_derived_table_alias_is_not_a_base_table(self):
+        # d 的列在子查询自己那一轮判过了；这里不能把它当 employees 的整行
+        decision = _check(
+            SALARY_POLICY,
+            "SELECT row_to_json(d) FROM (SELECT name FROM employees) d",
+            dialect="postgres",
+        )
+        self.assertTrue(decision.allowed, decision.audit_error)
+
+    def test_a_table_without_column_rules_may_be_referenced_as_a_row(self):
+        decision = _check(
+            SALARY_POLICY, "SELECT row_to_json(p) FROM payroll p", dialect="postgres"
+        )
+        self.assertTrue(decision.allowed, decision.audit_error)
+
+    def test_a_policy_without_any_column_rule_may_use_whole_rows(self):
+        decision = _check(
+            DataPolicy.full_access(),
+            "SELECT row_to_json(e) FROM employees e",
+            dialect="postgres",
+        )
+        self.assertTrue(decision.allowed, decision.audit_error)
+
+    def test_sqlite_has_no_whole_row_references(self):
+        # SQLite 里这个 `e` 什么也不是（执行时会报错），不套 PostgreSQL 的规则
+        decision = _check(
+            SALARY_POLICY, "SELECT e FROM employees e", dialect="sqlite"
+        )
+        self.assertTrue(decision.allowed, decision.audit_error)
+
+
+class SqlInStringFunctionTest(unittest.TestCase):
+    """
+    S-07 / E-01：把字符串当 SQL 或表名执行的函数，以及覆盖 RLS 身份的 `set_config`。
+    它们读的表不出现在 AST 里，按表和列判永远看不见。**只验证关卡的判定，未在真实 PostgreSQL 上跑。**
+    """
+
+    XML_FAMILY = [
+        "query_to_xml", "query_to_xml_and_xmlschema", "query_to_xmlschema",
+        "table_to_xml", "table_to_xml_and_xmlschema", "table_to_xmlschema",
+        "cursor_to_xml", "cursor_to_xmlschema",
+        "schema_to_xml", "schema_to_xml_and_xmlschema", "schema_to_xmlschema",
+        "database_to_xml", "database_to_xml_and_xmlschema", "database_to_xmlschema",
+    ]
+
+    def test_the_xml_family_is_denied_for_every_role(self):
+        for name in self.XML_FAMILY:
+            sql = f"SELECT {name}('select * from payroll', true, false, '')"
+            with self.subTest(function=name):
+                decision = _check(DataPolicy.full_access(), sql, dialect="postgres")
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.denied_functions, (name,))
+
+    def test_spelling_variants_are_denied(self):
+        for sql in (
+            "SELECT QUERY_TO_XML('select 1', true, false, '')",
+            "SELECT pg_catalog.query_to_xml('select 1', true, false, '')",
+            'SELECT "query_to_xml"(\'select 1\', true, false, \'\')',
+            "SELECT * FROM query_to_xml('select 1', true, false, '') x",
+            "SELECT (SELECT table_to_xml('payroll'::regclass, true, false, ''))",
+            "SELECT 1 FROM employees WHERE length(query_to_xml('select 1', true, false, '')::text) > 0",
+        ):
+            with self.subTest(sql=sql):
+                self.assertFalse(
+                    _check(DataPolicy.full_access(), sql, dialect="postgres").allowed
+                )
+
+    def test_ts_stat_and_dblink_are_denied(self):
+        for sql in (
+            "SELECT ts_stat('select tsv from docs')",
+            "SELECT dblink('host=x', 'select 1')",
+            "SELECT dblink_exec('host=x', 'delete from t')",
+            "SELECT dblink_connect('host=x')",
+        ):
+            with self.subTest(sql=sql):
+                self.assertFalse(
+                    _check(DataPolicy.full_access(), sql, dialect="postgres").allowed
+                )
+
+    def test_set_config_cannot_overwrite_the_rls_identity(self):
+        for sql in (
+            "SELECT set_config('app.user_id', 'bob', true)",
+            "SELECT pg_catalog.set_config('app.user_id', 'bob', true)",
+            "SELECT j.* FROM (SELECT set_config('app.user_id','bob',true)) s, job j",
+        ):
+            with self.subTest(sql=sql):
+                decision = _check(DataPolicy.full_access(), sql, dialect="postgres")
+                self.assertFalse(decision.allowed)
+                self.assertEqual(decision.denied_functions, ("set_config",))
+
+    def test_these_functions_need_no_table_to_be_denied(self):
+        # 没有 FROM：以前会走「不碰表，放行」
+        decision = _check(
+            DataPolicy.full_access(),
+            "SELECT query_to_xml('select 1', true, false, '')",
+            dialect="postgres",
+        )
+        self.assertFalse(decision.allowed)
+
+    def test_message_does_not_tell_the_caller_to_ask_for_permission(self):
+        decision = _check(
+            DataPolicy.full_access(),
+            "SELECT set_config('app.user_id', 'bob', true)",
+            dialect="postgres",
+        )
+        self.assertIn("set_config", decision.audit_error)
+        self.assertNotIn("申请", decision.audit_error)
+
+    def test_ordinary_functions_and_reads_of_settings_are_allowed(self):
+        for sql in (
+            "SELECT current_setting('app.user_id', true)",
+            "SELECT count(*), max(amount), lower('X') FROM payroll",
+            "SELECT now()",
+        ):
+            with self.subTest(sql=sql):
+                decision = _check(DataPolicy.full_access(), sql, dialect="postgres")
+                self.assertTrue(decision.allowed, decision.audit_error)
+
+    def test_sqlite_dialect_does_not_apply_postgres_function_rules(self):
+        # SQLite 没有这些函数；一个同名的自定义函数不在这条规则的范围内
+        decision = _check(
+            DataPolicy.full_access(), "SELECT set_config('a', 'b', 1)", dialect="sqlite"
+        )
+        self.assertTrue(decision.allowed, decision.audit_error)
+
+
+class GoldSqlIsNotRefusedTest(unittest.TestCase):
+    """
+    反向的安全网：上面这些规则都是「拿不准就拒」的方向，要确认它们没有误伤仓库自己的
+    标准答案。用一份**受限但和这些查询毫无关系**的策略（所以 `SELECT *`、整行引用、
+    HAVING 这些规则全都在场），benchmark 里每一条 gold SQL 在两种方言下都必须放行。
+    """
+
+    POLICY = DataPolicy(deny_columns=("nodb.notable.nocolumn",))
+
+    @staticmethod
+    def _gold_sql():
+        import json
+
+        directory = Path(__file__).resolve().parents[1] / "benchmark"
+        for name in ("dataset.json", "holdout.json", "bilingual_cases.json"):
+            path = directory / name
+            if not path.exists():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+            items = data if isinstance(data, list) else data.get("cases") or data.get("items") or []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                value = item.get("gold_sql")
+                if isinstance(value, str) and value.strip().lower().startswith(("select", "with")):
+                    yield f"{name}:{item.get('id', '?')}", value
+
+    def test_no_gold_sql_is_refused_on_either_dialect(self):
+        queries = list(self._gold_sql())
+        if not queries:
+            self.skipTest("benchmark 数据集不在")
+        self.assertGreater(len(queries), 100)
+        for dialect in ("sqlite", "postgres"):
+            for label, sql in queries:
+                with self.subTest(dialect=dialect, case=label):
+                    decision = check_sql_access(
+                        self.POLICY, database="erp_db", sql=sql, dialect=dialect
+                    )
+                    self.assertTrue(decision.allowed, f"{decision.audit_error} :: {sql}")
+
+
 class GateSeesEveryRealReadTest(unittest.TestCase):
     """
     差分：SQLite 自己说读了哪些 (表, 列)，关卡对「禁掉其中任何一个」都必须拒绝。
