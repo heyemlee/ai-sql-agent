@@ -207,8 +207,8 @@ class Text2SQLPipeline:
         self._reload_lock = threading.Lock()
         self.cot_planner = self._build_cot_planner()
         self.mcp_router = self._build_mcp_router()
-        # 语义自检复用规划模型的客户端：离线 Mock 环境下它同样可用，
-        # 但 Mock 不会真做语义判断，所以自检在离线时自然退化为不报异常。
+        # 语义自检复用规划模型的客户端。离线 Mock 环境下它不真做语义判断，
+        # 自检按「不适用」处理（见 SemanticSelfChecker.run），不留发现、不算风险提示。
         self.result_validator = ResultValidator(
             self_checker=SemanticSelfChecker(
                 getattr(self.cot_planner, "thinking_client", None)

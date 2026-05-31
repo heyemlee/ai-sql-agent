@@ -41,6 +41,15 @@ class ThinkingModelClient(FollowsModelSettings):
     def __init__(self, config: ThinkingModelConfig | None = None):
         self._bind_connection(config or ThinkingModelConfig())
 
+    def answers_from_mock(self) -> bool:
+        """
+        现在调用的话，回答是不是 Mock 编的：没有 Key，且允许走 Mock。
+
+        跟着页面保存的模型连接走（`model_available` 会先刷新连接）。
+        语义自检靠它区分「模型的回答读不出结论」和「根本没有模型」。
+        """
+        return not self.model_available() and self.config.use_mock_when_no_api_key
+
     def generate(self, prompt: str) -> str:
         """
         非流式生成规划结果。

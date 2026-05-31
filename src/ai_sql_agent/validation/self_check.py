@@ -147,8 +147,15 @@ class SemanticSelfChecker:
         前面已经做完了什么。不告诉它的后果是系统性误报：跨库查询的最后一步
         只做「后半段」，拿原问题去比必然判成「漏掉了筛选条件」——
         实测跨库样本的误报率因此达到 100%，等于把提示变成噪音。
+
+        客户端此刻在用 Mock 回答（没有 Key、允许走 Mock）时按「不适用」算：
+        Mock 不做语义判断，读不出结论是必然的，记成「没做成」会让每条离线答案
+        都带上风险提示。每次调用时现问——页面保存了 Key 之后，下一次就会真做。
         """
         if not self.client or not sql.strip():
+            return SelfCheckResult(status=SELF_CHECK_NOT_APPLICABLE)
+        answers_from_mock = getattr(self.client, "answers_from_mock", None)
+        if callable(answers_from_mock) and answers_from_mock():
             return SelfCheckResult(status=SELF_CHECK_NOT_APPLICABLE)
 
         facts = ""
