@@ -28,7 +28,7 @@
 
 - **跨库查数**：把问题拆成多个目标库上的查询，上一步结果作为下一步筛选条件。
 - **连续追问**：区分“查新数据”和“解释上次结果”，结合会话上下文与可选个人长期记忆。
-- **受控执行**：表列权限、只读连接、超时与行数限制；失败修复与结果风险检查分别处理。
+- **受控执行**：表列权限（视图按它读的基表判）、只读连接、超时、行数与结果大小限制；失败修复与结果风险检查分别处理。
 - **可复现验证**：内置四个演示库、离线 Mock、评测集与发布门禁，可本地运行或内网部署。
 
 ## 系统架构
@@ -64,11 +64,11 @@
 | Schema 太大，直接塞入 Prompt 成本高 | 库 → 表 → 字段分层召回，BM25 + 向量经 RRF 融合和精排；按相关性裁剪 SchemaGraph，优先保留关联键 | [retrieval](src/ai_sql_agent/retrieval) · [预算裁剪](src/ai_sql_agent/pipeline/schema_budget.py) |
 | 跨库不能直接执行一条 JOIN | 每步绑定目标库，通过中间结果回填条件；检查步骤与目标库是否一致，阻止 SQL 引用其他库的表 | [pipeline](src/ai_sql_agent/pipeline/text2sql_pipeline.py) |
 | SQL 能执行，却算错了 | SchemaGraph 标注 JOIN 基数，生成时约束去重与主键投影；执行后检查空结果、基数与语义一致性 | [graph_builder](src/ai_sql_agent/retrieval/graph_builder.py) · [validation](src/ai_sql_agent/validation) |
-| 模型生成了越权查询 | 在模型上下文中过滤无权 Schema；执行前用 SQLGlot 解析表、列与作用域，解析失败则拒绝，再叠加 SQL Guard 与数据库只读连接 | [AST 分析](src/ai_sql_agent/auth/sql_analysis.py) · [execution](src/ai_sql_agent/execution) |
+| 模型生成了越权查询 | 在模型上下文中过滤无权 Schema；执行前用 SQLGlot 解析表、列与作用域，视图展开到基表再判，解析失败则拒绝；再叠加基于 SQLGlot AST 的只读守卫、SQLite 默认拒绝的 authorizer 与数据库只读连接 | [AST 分析](src/ai_sql_agent/auth/sql_analysis.py) · [视图](src/ai_sql_agent/auth/views.py) · [execution](src/ai_sql_agent/execution) |
 | 模型或 SQL 执行失败 | 错误定位与局部修复，默认最多 2 次；模型不可用时尝试重放该用户同题成功 SQL，重新授权并显式标记降级 | [repair](src/ai_sql_agent/repair) · [降级逻辑](src/ai_sql_agent/pipeline/text2sql_pipeline.py) |
 | 线上问题难定位、难复现 | `trace_id` 关联 SQL、库表、耗时、修复和 Token 用量；用户反馈可导出评测用例，确认正确的查询可用作生成范例 | [audit](src/ai_sql_agent/audit) · [feedback](src/ai_sql_agent/feedback) |
 
-执行默认限制为 **1,000 行、10 秒**，可通过 [PipelineConfig](src/ai_sql_agent/pipeline/objects.py) 调整。结果风险检查提供提示，不代表业务正确性保证。
+执行默认限制为 **1,000 行、10 秒、每次结果 8 MiB**（SQLite 另限单个值 8 MiB），可通过 [PipelineConfig](src/ai_sql_agent/pipeline/objects.py) 与 `AI_SQL_MAX_*` 环境变量调整，见部署指南的[执行上限](docs/deployment.zh-CN.md#执行上限)。结果风险检查提供提示，不代表业务正确性保证。
 
 ## 快速开始
 
@@ -149,11 +149,12 @@ make gate                  # 完整门禁：需要模型凭证
 
 CI 配置覆盖单元测试、pgvector 集成、固定版本的 A2A 契约、演示链路与容器冒烟。详见 [工作流](.github/workflows/ci.yml) 和 [评测说明](benchmark/README.zh-CN.md)。
 
-### 已知限制与尚未完成的验证（截至 2026-10-04）
+### 已知限制与尚未完成的验证（截至 2026-10-14）
 
 - **英文适配的模型回归没有跑齐。** 模型 Key 被停用之前，改动前后各跑完 2 轮完整门禁加不完整的第 3 轮；门禁改动前后卡在同样三项上，最终代码上没有跑过完整门禁。记录见 [benchmark/baseline/2026-10-04](benchmark/baseline/2026-10-04/README.md)，其中的数字不能当作基线引用。
-- **PostgreSQL 没有在真实库上验证过**这次新增的任何东西：授权里的标识符大小写规则、预览 SQL（不带 schema 限定；表结构从 `public` 读，表名靠 `search_path` 解析）、最小权限脚本的方言绑定。只有单元测试。
-- **`AI_SQL_MAX_ROWS` 与 `AI_SQL_MAX_EXECUTION_SECONDS` 只对 API 进程内的执行器生效**（默认 1000 行 / 10 秒，就是这两个变量没生效时实际在用的上限）。这一点在 SQLite 上验证过；PostgreSQL 分支只有用假驱动的单元测试。MCP stdio 服务固定 1000 行 / 10 秒。上限比每页行数小时，预览的一页按上限给。
+- **PostgreSQL 没有在真实库上验证过**这次新增的任何东西：授权里的标识符大小写规则、预览 SQL（不带 schema 限定；表结构从 `public` 读，表名靠 `search_path` 解析）、最小权限脚本的方言绑定；以及 2026-10-14 授权修复里的视图目录扫描与视图展开、整行引用（`e.*`）、拒绝把字符串当 SQL 执行的函数（`query_to_xml`、`dblink`、`set_config` 等）。只有单元测试。
+- **`AI_SQL_MAX_ROWS`、`AI_SQL_MAX_EXECUTION_SECONDS`、`AI_SQL_MAX_RESULT_BYTES`、`AI_SQL_MAX_VALUE_BYTES` 只对 API 进程内的执行器生效**（默认 1000 行 / 10 秒 / 8 MiB / 8 MiB；前两个就是这两个变量没生效时实际在用的上限）。这一点在 SQLite 上验证过；PostgreSQL 分支只有用假驱动的单元测试。PostgreSQL 上字节预算只限制返回的部分，驱动已经收下的数据不受限，也没有单值上限。MCP stdio 服务固定 1000 行 / 10 秒 / 8 MiB。上限比每页行数小时，预览的一页按上限给。
+- **受限策略下的视图**：策略里有任何 deny 的角色，读视图等于读它的全部基表——任一基表被拒、基表有列级限制、或视图定义解析不了，都会被拒绝。上次扫描之后才建的表或视图，要等下一次 schema 轮询或 `POST /admin/schema/reload` 后才能查；某个库的扫描失败期间，这类角色对该库的查询一律被拒。输出别名恰好和被禁列同名（`1 AS salary … ORDER BY salary`）也会被拒。详见[授权模型 §3.1–3.2](docs/authz-model.md)。
 - **数据目录先读表结构、再按调用方权限裁剪**（有缓存与单飞）；看不到的东西不会返回给调用方。
 - **模型凭证被拒之后的处理只用 mock transport 验证过。** 识别「额度耗尽」「Key 停用」「模型无权限」靠的是字样表；状态是进程级的；第一个拒绝回来之前已经发出的并发请求收不回来。
 - **英文界面**：语义元数据没有英文键时，数据字典的文字照原文显示；服务端的自由文本（路由原因、校验说明、错误信息）是中文。
