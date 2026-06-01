@@ -11,6 +11,23 @@ from typing import Any, Callable, Dict, List, Optional
 ABORT_MODEL_ACCESS = "model_access_unavailable"
 """中止原因：模型凭证被拒 / 额度耗尽 / 无权使用模型（见 ai_sql_agent.core.model_access）。"""
 
+ABORT_MODEL_UNAVAILABLE = "model_unavailable"
+"""
+中止原因：某一题的模型调用失败，流水线走了降级链路（`PipelineResult.degraded`）。
+
+和上一种不是一回事：凭证被拒、额度耗尽会记进进程的状态表，下一题之前就看得到；
+服务端报错不会记——中转站回 404「这个分组里没有账号支持该模型」、重试完仍然 5xx、
+连不上——只能从这一题的结果上看出来。降级答复不是模型答的（一句固定话术，或者重放的
+历史 SQL），接着跑只会把剩下的题全记成答错：2026-10-14 那次门禁在第 65 题断供，
+最后打出来的是「阻断发布」，而不是「没跑完」。
+"""
+
+ABORT_SUMMARY = {
+    ABORT_MODEL_ACCESS: "模型凭证不可用",
+    ABORT_MODEL_UNAVAILABLE: "模型服务不可用",
+}
+"""入口打印「为什么停」时的说法。"""
+
 EXIT_INCOMPLETE = 3
 """
 评测没有跑完时入口的退出码。与另外两个非零码分开：1 是「跑完了，没达标」，
@@ -50,9 +67,39 @@ def model_access_blocks() -> List[Dict[str, Any]]:
     return MODEL_ACCESS.permanent_blocks()
 
 
+def is_degraded(pipeline_result) -> bool:
+    """流水线这一次走了降级链路（模型不可用）。只认真的 True：测试里的 Mock 什么属性都有。"""
+    return getattr(pipeline_result, "degraded", False) is True
+
+
+def degraded_detail(item_id: Any, reason: str) -> Dict[str, Any]:
+    """
+    撞上模型故障的那一题，写进 abort_detail。
+
+    只有题号、降级原因和时间；模型这一侧的原始报错在日志的 `pipeline.model_unavailable` 里，
+    按时间去找。
+    """
+    import time
+
+    return {
+        "scope": "item",
+        "item": item_id,
+        "reason": reason or ABORT_MODEL_UNAVAILABLE,
+        "since": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
+def describe_degraded(detail: Dict[str, Any]) -> str:
+    """把 degraded_detail 写成给人看的一句话，两个入口共用。"""
+    return (
+        f"{detail.get('item')} 拿到的是降级答复（{detail.get('reason')}，{detail.get('since')}），"
+        "模型的原始报错见日志里的 pipeline.model_unavailable"
+    )
+
+
 class BenchmarkIncomplete(RuntimeError):
     """
-    一轮评测没能跑完（目前唯一的原因：模型凭证不可用）。
+    一轮评测没能跑完：模型凭证不可用，或者某一题的模型调用失败（reason 区分这两种）。
 
     带着已经完成的那部分结果，由入口决定怎么保存；**不是**一个可以拿来算指标的结果。
     """
@@ -67,6 +114,7 @@ class BenchmarkIncomplete(RuntimeError):
         hits: int = 0,
         blocks: Optional[List[Dict[str, Any]]] = None,
         rows: Optional[List[Dict[str, Any]]] = None,
+        reason: str = ABORT_MODEL_ACCESS,
     ):
         super().__init__(message)
         self.stage = stage
@@ -75,11 +123,12 @@ class BenchmarkIncomplete(RuntimeError):
         self.hits = hits
         self.blocks = list(blocks or [])
         self.rows = list(rows or [])
+        self.reason = reason
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "incomplete": True,
-            "abort_reason": ABORT_MODEL_ACCESS,
+            "abort_reason": self.reason,
             "stage": self.stage,
             "completed": self.completed,
             "planned": self.planned,
@@ -120,6 +169,9 @@ class BenchmarkItemResult:
 
     degraded: bool = False
     """模型不可用时的降级答复。用户看得到，属于显性失败。"""
+
+    degrade_reason: str = ""
+    """降级原因（model_unavailable / model_unavailable_replayed_sql）；没降级时为空。"""
 
     flag_reasons: List[str] = field(default_factory=list)
     """触发风险提示的软异常类型，用于定位误报是哪一类校验打出来的。"""
@@ -173,7 +225,10 @@ class BenchmarkReport:
 
     abort_reason: str = ""
     abort_detail: List[Dict[str, Any]] = field(default_factory=list)
-    """中止时已知的模型访问故障（不含 Key，不含主机名）。"""
+    """
+    为什么停：中止时已知的模型访问故障（不含 Key，不含主机名），
+    或者拿到降级答复的那一题（`scope` 为 `item`，见 degraded_detail）。
+    """
 
     @property
     def column_recall(self) -> float:
@@ -324,6 +379,7 @@ class BenchmarkReport:
                     "answered": item.answered,
                     "flagged": item.flagged,
                     "degraded": item.degraded,
+                    "degrade_reason": item.degrade_reason,
                     "silent_error": item.silent_error,
                     "flag_reasons": item.flag_reasons,
                     "steps": item.steps,
@@ -556,6 +612,14 @@ class BenchmarkRunner:
                 report.abort_detail = blocks
                 report.total = len(report.items)
                 break
+            # 状态表里没有记录，这一题的模型调用却失败了（服务端报错，不是凭证）：
+            # 拿到的是降级答复，不是模型答的。一样停下，这一题一样不计入。
+            if result.degraded:
+                report.incomplete = True
+                report.abort_reason = ABORT_MODEL_UNAVAILABLE
+                report.abort_detail = [degraded_detail(result.item_id, result.degrade_reason)]
+                report.total = len(report.items)
+                break
 
             report.items.append(result)
             report.category_totals[result.category] = (
@@ -650,6 +714,11 @@ class BenchmarkRunner:
                 error=f"pipeline异常：{exc}",
             )
 
+        # 每个分支都把降级带出去：run() 靠它认出「这一题是在模型故障里跑的」。
+        # 以前只有执行成功的分支带，断供时规划失败、没有步骤，就被记成了普通的答错。
+        degraded = is_degraded(pipeline_result)
+        degrade_reason = getattr(pipeline_result, "degrade_reason", "") if degraded else ""
+
         if not pipeline_result.step_logs:
             return BenchmarkItemResult(
                 item_id=item["id"],
@@ -657,6 +726,8 @@ class BenchmarkRunner:
                 query=item["query"],
                 correct=False,
                 error="未生成执行步骤",
+                degraded=degraded,
+                degrade_reason=degrade_reason,
             )
 
         final_log = pipeline_result.step_logs[-1]
@@ -677,6 +748,8 @@ class BenchmarkRunner:
                 recall_hit=recall_hit,
                 retrieval_recall_hit=retrieval_hit,
                 retrieved_columns=retrieved_count,
+                degraded=degraded,
+                degrade_reason=degrade_reason,
             )
 
         predicted_rows = list(execution.get("rows") or [])
@@ -699,6 +772,7 @@ class BenchmarkRunner:
             answered=answered,
             flagged=flagged,
             degraded=degraded,
+            degrade_reason=degrade_reason,
             flag_reasons=flag_reasons,
             steps=self._step_trace(pipeline_result),
         )
@@ -716,8 +790,9 @@ def run_holdout_recall(
     留出集用完全不同的口语问法且不参与调参，才是「上线后遇到真实用户」的估计值。
     发布门禁卡的是这一项，评测集那一项只作为不许退化的下限。
 
-    模型凭证不可用时抛 `BenchmarkIncomplete`（带着已完成的逐题结果），不返回一个数——
-    一个只跑了一半的召回率不是召回率。
+    模型凭证不可用、或者某一题拿到的是降级答复时，抛 `BenchmarkIncomplete`（带着已完成的
+    逐题结果），不返回一个数——一个只跑了一半的召回率不是召回率。降级的结果里没有进 Prompt 的
+    字段，照常算会把每一题都记成没召回。
     """
     access_check = access_check or model_access_blocks
     if pipeline is None:
@@ -746,6 +821,17 @@ def run_holdout_recall(
                 hits=hit,
                 blocks=blocks,
                 rows=rows,
+            )
+        if is_degraded(result):
+            raise BenchmarkIncomplete(
+                f"留出集只跑完 {len(rows)}/{len(items)} 条：模型服务不可用。",
+                stage="holdout",
+                completed=len(rows),
+                planned=len(items),
+                hits=hit,
+                blocks=[degraded_detail(item.get("id"), getattr(result, "degrade_reason", ""))],
+                rows=rows,
+                reason=ABORT_MODEL_UNAVAILABLE,
             )
         visible = set(result.prompt_columns or result.retrieved_columns)
         matched = all(column in visible for column in item["gold_columns"])

@@ -9,9 +9,12 @@ from statistics import mean
 from ai_sql_agent.core import get_settings
 from benchmark.run_benchmark import SMOKE_IDS
 from benchmark.runner import (
+    ABORT_MODEL_ACCESS,
+    ABORT_SUMMARY,
     EXIT_INCOMPLETE,
     BenchmarkIncomplete,
     BenchmarkRunner,
+    describe_degraded,
     run_holdout_recall,
     save_incomplete,
 )
@@ -51,7 +54,8 @@ def _format_rule(rule: dict) -> str:
 
 def _abort_incomplete(*, output, rounds, samples, report=None, holdout=None) -> int:
     """
-    门禁中途停下（模型凭证不可用）。**不判定**：既不是通过，也不是未达标。
+    门禁中途停下（模型凭证不可用，或者某一题的模型调用失败）。**不判定**：既不是通过，
+    也不是未达标。
 
     已完成的轮次与这一轮跑完的部分存下来备查；退出码与「未达标」（1）、
     「没法跑」（2）都不同，CI 不会把它读成任何一种结论。
@@ -59,8 +63,11 @@ def _abort_incomplete(*, output, rounds, samples, report=None, holdout=None) -> 
     blocks = (holdout.blocks if holdout is not None else None) or (
         report.abort_detail if report is not None else []
     )
+    reason = (holdout.reason if holdout is not None else None) or (
+        report.abort_reason if report is not None else ""
+    ) or ABORT_MODEL_ACCESS
     payload = {
-        "abort_reason": "model_access_unavailable",
+        "abort_reason": reason,
         "abort_detail": blocks,
         "rounds_planned": rounds,
         "rounds_completed": min((len(v) for v in samples.values()), default=0),
@@ -74,8 +81,11 @@ def _abort_incomplete(*, output, rounds, samples, report=None, holdout=None) -> 
         if holdout is not None
         else f"评测集 {report.total}/{report.planned_total} 条"
     )
-    print(f"[gate] 未完成：模型凭证不可用，门禁在{where}处停止。", file=sys.stderr)
+    print(f"[gate] 未完成：{ABORT_SUMMARY.get(reason, reason)}，门禁在{where}处停止。", file=sys.stderr)
     for block in blocks:
+        if block.get("scope") == "item":
+            print(f"[gate] {describe_degraded(block)}。", file=sys.stderr)
+            continue
         print(
             f"[gate] 已知故障：{block.get('reason')}（范围 {block.get('scope')}，自 {block.get('since')}）",
             file=sys.stderr,

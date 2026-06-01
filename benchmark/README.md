@@ -417,16 +417,24 @@ python -m benchmark.run_benchmark --smoke
 python -m benchmark.gate
 ```
 
-### When the model credential stops working mid-run
+### When the model stops working mid-run
 
 Before and after **every item**, the benchmark and the gate look at the model-access
 faults this process already knows about (key rejected, quota exhausted, model not
-permitted — local state only, no request is sent). As soon as there is one, they stop:
+permitted — local state only, no request is sent). After every item they also check
+whether it got a **degraded answer** (`degraded`). Server-side failures are not recorded
+in that state — a relay answering 404 "no account in this group supports the model",
+5xx after the retries, a dropped connection — and a degraded answer is not the model's
+answer, so scoring it would turn one outage into a run of wrong answers. Either way,
+they stop at once:
 
 - the item that hit it is not counted, the remaining items are not run, and **nothing is
   re-run or retried**;
 - what was completed is written to disk marked `incomplete: true` (the `--output` path;
   `--partial-output` for the gate; otherwise `runtime_data/*_incomplete_<time>.json`);
+- `abort_reason` is `model_access_unavailable` (credential) or `model_unavailable`
+  (service). For the latter, `abort_detail` names the item and the time; the model's own
+  error is in the `pipeline.model_unavailable` log line at that time;
 - the exit code is **3**. 1 means "finished, below the line", 2 means "could not run"
   (no credentials), 3 means "did not finish, no verdict";
 - the gate prints neither a pass nor a fail. Numbers from an unfinished round cannot be

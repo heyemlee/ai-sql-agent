@@ -6,7 +6,15 @@ import sys
 from pathlib import Path
 
 from ai_sql_agent.core import get_settings
-from benchmark.runner import EXIT_INCOMPLETE, BenchmarkRunner, save_incomplete
+from benchmark.runner import (
+    ABORT_MODEL_ACCESS,
+    ABORT_MODEL_UNAVAILABLE,
+    ABORT_SUMMARY,
+    EXIT_INCOMPLETE,
+    BenchmarkRunner,
+    describe_degraded,
+    save_incomplete,
+)
 
 # 离线冒烟子集：Mock 模型可以正确处理的样例（单库 + 跨库各一条）。
 # 完整 150 条评测需要配置模型凭证（OPENAI_API_KEY / ANTHROPIC_API_KEY）走真实模型。
@@ -16,10 +24,12 @@ SMOKE_IDS = ["q003", "q010", "q046", "q101"]
 
 def _report_incomplete(report, *, output, completed_rounds=None, rounds_planned=1) -> int:
     """
-    评测中途停下（模型凭证不可用）：把已完成的部分存下来，说明没有结论，返回非零。
+    评测中途停下（模型凭证不可用，或者某一题的模型调用失败）：把已完成的部分存下来，
+    说明没有结论，返回非零。
 
     不打印准确率汇总——只跑了一部分的数字摆在那里，早晚会被人当成结果引用。
     """
+    summary = ABORT_SUMMARY.get(report.abort_reason, ABORT_SUMMARY[ABORT_MODEL_ACCESS])
     payload = {
         "abort_reason": report.abort_reason,
         "abort_detail": report.abort_detail,
@@ -31,12 +41,15 @@ def _report_incomplete(report, *, output, completed_rounds=None, rounds_planned=
     target = save_incomplete(payload, output, "benchmark")
     print("=" * 60, file=sys.stderr)
     print(
-        f"[未完成] 模型凭证不可用，评测已停止：这一轮跑完 {report.total}/{report.planned_total} 条"
+        f"[未完成] {summary}，评测已停止：这一轮跑完 {report.total}/{report.planned_total} 条"
         + (f"，此前完整跑完 {len(completed_rounds)}/{rounds_planned} 轮" if rounds_planned > 1 else "")
         + "。",
         file=sys.stderr,
     )
     for block in report.abort_detail:
+        if block.get("scope") == "item":
+            print(f"[未完成] {describe_degraded(block)}。", file=sys.stderr)
+            continue
         print(
             f"[未完成] 已知故障：{block.get('reason')}（范围 {block.get('scope')}"
             + (f"，模型 {block.get('model')}" if block.get("model") else "")
@@ -44,7 +57,8 @@ def _report_incomplete(report, *, output, completed_rounds=None, rounds_planned=
             file=sys.stderr,
         )
     print(f"[未完成] 已完成的部分已写入 {target}（标注 incomplete，不能当作评测结果引用）。", file=sys.stderr)
-    print("[未完成] 没有补跑，也不会自动重试。修复凭证后请重新安排完整的一轮。", file=sys.stderr)
+    fix = "确认模型服务恢复后" if report.abort_reason == ABORT_MODEL_UNAVAILABLE else "修复凭证后"
+    print(f"[未完成] 没有补跑，也不会自动重试。{fix}请重新安排完整的一轮。", file=sys.stderr)
     return EXIT_INCOMPLETE
 
 
