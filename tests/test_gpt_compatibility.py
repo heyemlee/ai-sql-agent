@@ -37,6 +37,7 @@ from ai_sql_agent.pipeline.routing import ROUTE_SCHEMA, ModelIntentClassifier, R
 from ai_sql_agent.retrieval.keyword_extractor_client import AliyunKeywordExtractor
 from ai_sql_agent.validation.objects import (
     SELF_CHECK_MISMATCH,
+    SELF_CHECK_NOT_APPLICABLE,
     SELF_CHECK_NOT_RUN,
     SELF_CHECK_PASSED,
     AnomalyType,
@@ -374,10 +375,52 @@ class ScriptedChecker:
         return self.answers.pop(0)
 
 
+class MockScriptedChecker(ScriptedChecker):
+    """像离线的 ThinkingModelClient 一样声明自己在用 Mock 回答。"""
+
+    def __init__(self, *answers, from_mock=True):
+        super().__init__(*answers)
+        self.from_mock = from_mock
+
+    def answers_from_mock(self):
+        return self.from_mock
+
+
 class FormattedSelfCheckTest(unittest.TestCase):
     def run_check(self, verdict):
         checker = SemanticSelfChecker(ScriptedChecker("**复述**：统计每个供应商的订单数量", verdict))
         return checker.run("每个供应商的采购金额", "SELECT supplier_id, COUNT(*) FROM po GROUP BY 1")
+
+    def test_a_mock_client_is_not_applicable_and_is_not_asked(self):
+        client = MockScriptedChecker("这是 Mock 的规划文本", "也没有结论")
+        result = SemanticSelfChecker(client).run(
+            "每个供应商的订单数量", "SELECT supplier_id, COUNT(*) FROM po GROUP BY 1"
+        )
+        self.assertEqual(result.status, SELF_CHECK_NOT_APPLICABLE)
+        self.assertIsNone(result.finding)
+        self.assertEqual(len(client.answers), 2, "Mock 不做语义判断，不该被问")
+
+    def test_a_real_client_with_an_unreadable_verdict_is_still_not_run(self):
+        client = MockScriptedChecker("复述：统计订单数量", "看起来没问题", from_mock=False)
+        result = SemanticSelfChecker(client).run(
+            "每个供应商的订单数量", "SELECT supplier_id, COUNT(*) FROM po GROUP BY 1"
+        )
+        self.assertEqual(result.status, SELF_CHECK_NOT_RUN)
+        self.assertEqual(result.error, "UnreadableVerdict")
+
+    def test_the_validator_leaves_no_finding_when_the_client_is_a_mock(self):
+        validator = ResultValidator(
+            self_checker=SemanticSelfChecker(MockScriptedChecker("Mock 文本", "Mock 文本")),
+            enable_cardinality=False,
+        )
+        outcome = validator.validate(
+            query="每个供应商的订单数量",
+            sql="SELECT supplier_id, COUNT(*) FROM po GROUP BY 1",
+            row_count=2,
+        )
+        self.assertEqual(outcome.findings, [])
+        self.assertEqual(outcome.self_check, SELF_CHECK_NOT_APPLICABLE)
+        self.assertTrue(outcome.passed)
 
     def test_bold_mismatch_is_a_mismatch(self):
         result = self.run_check("**结论**：不一致\n**理由**：问的是金额，统计的是数量")

@@ -92,6 +92,29 @@ class RateComputationTest(unittest.TestCase):
         self.assertEqual(report.false_alarm_rate, 1.0)
 
 
+class OfflineSmokeHasNoFalseAlarmsTest(unittest.TestCase):
+    """
+    CI 的发布门禁跑的就是这 4 条冒烟样本，且没有模型凭证（走 Mock）。
+
+    2026-10-14 那次：读不出结论的自检改记为「没做成」之后，Mock 的回答里从来没有
+    「结论：」，4 条正确答案全被打上 self_check_not_run，误报率 100%，门禁在推送后
+    才拦下来。这里在单测阶段就锁住。
+    """
+
+    def test_correct_offline_answers_carry_no_risk_flag(self):
+        from ai_sql_agent.core import get_settings
+        from benchmark.gate import SMOKE_IDS
+        from benchmark.runner import BenchmarkRunner
+
+        if get_settings().has_model_credentials:
+            self.skipTest("配了模型凭证就不是离线冒烟")
+        report = BenchmarkRunner().run(ids=SMOKE_IDS)
+        reasons = {item.item_id: item.flag_reasons for item in report.items if item.flagged}
+        self.assertEqual(report.false_alarm_rate, 0.0, reasons)
+        for item in report.items:
+            self.assertNotIn("self_check_not_run", item.flag_reasons, item.item_id)
+
+
 class ThresholdsFileTest(unittest.TestCase):
     """门禁阈值文件的结构与方向，改错方向等于门禁失效。"""
 

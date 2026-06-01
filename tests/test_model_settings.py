@@ -475,6 +475,20 @@ class ClientsFollowTest(_Environment):
         reload_model_settings()
         bump_connection_version()
 
+    def test_answers_from_mock_follows_the_saved_connection(self):
+        # 语义自检靠它判断「这次是 Mock 在答」：启动时没 Key、之后在页面保存了，
+        # 下一次自检就得真做，不能一直停在「不适用」。
+        from ai_sql_agent.planning import ThinkingModelClient, ThinkingModelConfig
+
+        thinking = ThinkingModelClient()
+        strict = ThinkingModelClient(ThinkingModelConfig(use_mock_when_no_api_key=False))
+        self.assertTrue(thinking.answers_from_mock())
+        self.assertFalse(strict.answers_from_mock(), "不允许走 Mock 时没有 Key 就是报错，不是 Mock")
+
+        self.switch_to(RELAY, PAGE_KEY)
+        self.assertFalse(thinking.answers_from_mock())
+        self.assertEqual(self.service.calls, 0, "问一句「是不是 Mock」不该调用模型")
+
     def test_a_client_built_without_a_key_starts_calling_the_model_once_one_is_saved(self):
         from ai_sql_agent.generation.coder_client import CoderModelClient
         from ai_sql_agent.planning import ThinkingModelClient
