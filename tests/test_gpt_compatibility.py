@@ -518,3 +518,22 @@ class PromptRulesTest(unittest.TestCase):
         self.assertIn("操作指令没要求汇总，就逐条输出，不要聚合", prompt)
         self.assertIn("不要自己补充操作指令没写的条件", prompt)
         self.assertIn("「逐条」不等于不去重", prompt)
+        self.assertIn("只输出「输出目标」里列出的字段", prompt)
+        self.assertIn("不要用 LEFT JOIN 和 COALESCE 补行", prompt)
+
+    def test_planning_keeps_the_output_to_what_was_asked(self):
+        """
+        换到 gpt-6.1-sol 后剩下的静默错误几乎都是输出形状：规划把筛选那一侧的编号和名称、
+        日期、单位也写进了输出目标；「每个…的合计」以主表为准左关联，把没有记录的补成 0。
+        """
+        from ai_sql_agent.planning.prompt_builder import CotPromptBuilder
+
+        instruction = CotPromptBuilder()._build_task_instruction()
+        self.assertIn("输出目标只放Query问到的字段或计算结果", instruction)
+        self.assertIn("它的编号、名称等字段不要输出", instruction)
+        self.assertIn("跨库拆步时，前一步为下一步", instruction, "跨库拆步的关联键照样输出")
+        # 只说「用主键标识每一行」时，模型拿快照编号、工单内部编号当标识，用户认不出来
+        self.assertIn("快照编号、流水号这类只在系统内部用的记录编号不要拿来标识", instruction)
+        self.assertIn("不要以X的主表为准", instruction)
+        for leaked in ("板材", "涂料", "台面", "门板", "变更总金额", "工时合计"):
+            self.assertNotIn(leaked, instruction, "例子不能是评测集原题")
