@@ -16,6 +16,7 @@
 6. 整条链路：一个问题只发出一次被拒的调用，后面的阶段全部在本地短路；
    修复阶段遇到模型不可用是降级，不是 500；自检没做成会留下标记；
 7. 评测入口遇到凭证不可用立即停，留下已完成的部分并标 incomplete，退出码非零，不出门禁结论；
+   某一题拿到的是降级答复（服务端报错，状态表里没有记录）也一样停，不把断供记成答错；
 8. 状态接口只展示已知故障，不探测；复位只走已有的管理员入口。
 """
 import contextlib
@@ -1025,6 +1026,84 @@ class BenchmarkStopsTest(unittest.TestCase):
         self.assertEqual(state["runs"], 3)
         self.assertTrue(error.to_dict()["incomplete"])
 
+    # ---- 状态表里没有记录，这一题却拿到了降级答复 ----
+
+    def runner_that_degrades_at_item(self, number, *, replayed=False):
+        """第 number 题的模型调用失败：流水线照常返回，走的是降级链路，凭证状态表里什么都没记。"""
+        from ai_sql_agent.pipeline.objects import PipelineResult
+        from benchmark.runner import BenchmarkRunner
+
+        state = {"runs": 0}
+        runner = BenchmarkRunner(access_check=lambda: [])
+        real_run = runner.pipeline.run
+
+        def run(query, *args, **kwargs):
+            state["runs"] += 1
+            if state["runs"] != number:
+                return real_run(query, *args, **kwargs)
+            if replayed:  # 重放了历史 SQL：结果可能是对的，但不是模型答的
+                result = real_run(query, *args, **kwargs)
+                result.degraded, result.degrade_reason = True, "model_unavailable_replayed_sql"
+                return result
+            return PipelineResult(query=query, keywords=[], schema_context="", cot_output="",
+                                  degraded=True, degrade_reason="model_unavailable")
+
+        runner.pipeline.run = run
+        return runner, state
+
+    def test_a_degraded_answer_stops_the_run_like_a_rejected_key(self):
+        from benchmark.run_benchmark import SMOKE_IDS
+
+        runner, state = self.runner_that_degrades_at_item(3)
+        report = runner.run(ids=SMOKE_IDS)
+
+        self.assertTrue(report.incomplete)
+        self.assertEqual(report.abort_reason, "model_unavailable")
+        self.assertEqual(state["runs"], 3, "第 4 题没有再去跑")
+        self.assertEqual([item.item_id for item in report.items], SMOKE_IDS[:2],
+                         "降级的那一题不是模型答的：不计入，也不记成答错")
+        self.assertEqual((report.total, report.planned_total, report.correct), (2, 4, 2))
+        (detail,) = report.abort_detail
+        self.assertEqual((detail["scope"], detail["item"], detail["reason"]),
+                         ("item", SMOKE_IDS[2], "model_unavailable"))
+
+    def test_a_replayed_answer_is_not_a_measurement_either(self):
+        from benchmark.run_benchmark import SMOKE_IDS
+
+        runner, _state = self.runner_that_degrades_at_item(2, replayed=True)
+        report = runner.run(ids=SMOKE_IDS)
+
+        self.assertTrue(report.incomplete)
+        self.assertEqual([item.item_id for item in report.items], SMOKE_IDS[:1])
+        self.assertEqual(report.abort_detail[0]["reason"], "model_unavailable_replayed_sql")
+
+    def test_holdout_stops_on_a_degraded_answer_instead_of_counting_a_miss(self):
+        from benchmark.runner import BenchmarkIncomplete, run_holdout_recall
+
+        holdout = self.directory / "holdout.json"
+        holdout.write_text(json.dumps([
+            {"id": f"h{n}", "query": f"问题 {n}", "gold_columns": ["erp_db.supplier.supplier_name"]}
+            for n in range(1, 6)
+        ], ensure_ascii=False), encoding="utf-8")
+        state = {"runs": 0}
+
+        class Pipeline:
+            def run(self, query):
+                state["runs"] += 1
+                if state["runs"] == 3:  # 降级的结果里没有进 Prompt 的字段，照常算就是一次「没召回」
+                    return mock.Mock(degraded=True, degrade_reason="model_unavailable",
+                                     prompt_columns=[], retrieved_columns=[])
+                return mock.Mock(prompt_columns=["erp_db.supplier.supplier_name"], retrieved_columns=[])
+
+        with self.assertRaises(BenchmarkIncomplete) as raised:
+            run_holdout_recall(Pipeline(), holdout, access_check=lambda: [])
+
+        error = raised.exception
+        self.assertEqual((error.completed, error.planned, error.hits), (2, 5, 2))
+        self.assertEqual((error.reason, error.blocks[0]["item"]), ("model_unavailable", "h3"))
+        self.assertEqual(error.to_dict()["abort_reason"], "model_unavailable")
+        self.assertEqual(state["runs"], 3)
+
     # ---- 入口：退出码、落盘、不出结论 ----
 
     def run_cli(self, main, argv, runner):
@@ -1121,6 +1200,81 @@ class BenchmarkStopsTest(unittest.TestCase):
         self.assertEqual((saved["rounds_planned"], saved["rounds_completed"]), (2, 0))
         self.assertEqual(saved["partial_holdout"]["completed"], 7)
         self.assertFalse(saved["partial_round"]["incomplete"], "评测集那一半是跑完了的，如实保留")
+
+    def test_gate_names_the_model_service_not_the_key(self):
+        import benchmark.gate as gate
+
+        runner, _state = self.runner_that_degrades_at_item(3)
+        partial = self.directory / "gate-partial.json"
+        with mock.patch.object(gate, "BenchmarkRunner", lambda **kwargs: runner):
+            code, stdout, stderr = self.run_cli(
+                gate.main, ["gate", "--smoke", "--partial-output", str(partial)], runner)
+
+        self.assertEqual(code, 3)
+        self.assertNotIn("阻断发布", stderr, "断供不是「未达标」")
+        self.assertNotIn("通过发布门禁", stdout + stderr)
+        self.assertIn("模型服务不可用", stderr)
+        self.assertNotIn("模型凭证不可用", stderr)
+        self.assertIn("pipeline.model_unavailable", stderr, "告诉人去日志里找哪一行")
+        saved = json.loads(partial.read_text(encoding="utf-8"))
+        self.assertEqual(saved["abort_reason"], "model_unavailable")
+        self.assertEqual(saved["abort_detail"][0]["item"], "q046")
+        self.assertEqual(len(saved["partial_round"]["items"]), 2)
+
+    def test_run_benchmark_says_to_wait_for_the_service_not_to_fix_the_key(self):
+        import benchmark.run_benchmark as cli
+
+        runner, _state = self.runner_that_degrades_at_item(2)
+        output = self.directory / "report.json"
+        with mock.patch.object(cli, "BenchmarkRunner", lambda **kwargs: runner):
+            code, stdout, stderr = self.run_cli(
+                cli.main, ["run_benchmark", "--smoke", "--output", str(output)], runner)
+
+        self.assertEqual(code, 3)
+        saved = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(saved["abort_reason"], "model_unavailable")
+        self.assertEqual(len(saved["partial_round"]["items"]), 1)
+        self.assertIn("模型服务不可用", stderr)
+        self.assertIn("确认模型服务恢复后", stderr)
+        self.assertNotIn("执行准确率", stdout)
+
+
+class RelayDropsTheModelTest(_ModelServiceEnvironment):
+    """
+    2026-10-14 那次门禁：跑到第 65 题，中转站开始对每个请求回 404「这个分组里没有账号支持该模型」。
+
+    这不是凭证故障，状态表里不会记；评测以前照样逐题跑完，三轮里 386 题被记成答错，
+    门禁打出「阻断发布」。现在第一道拿到降级答复的题就停。
+    """
+
+    def respond(self, request, index):
+        return httpx.Response(404, json={"error": {
+            "message": 'Model "m-1" is not supported by any configured account in this group',
+            "type": "model_not_found",
+        }})
+
+    def test_the_benchmark_stops_at_the_first_degraded_answer(self):
+        from benchmark.run_benchmark import SMOKE_IDS
+        from benchmark.runner import BenchmarkRunner
+
+        runner = BenchmarkRunner()
+        queries = []
+        real_run = runner.pipeline.run
+
+        def run(query, *args, **kwargs):
+            queries.append(query)
+            return real_run(query, *args, **kwargs)
+
+        runner.pipeline.run = run
+        report = runner.run(ids=SMOKE_IDS)
+
+        self.assertGreater(self.service.calls, 0, "请求真的发到了（假的）模型服务")
+        self.assertEqual(MODEL_ACCESS.permanent_blocks(), [], "404 不会记进状态表——所以要看这一题的结果")
+        self.assertEqual(len(queries), 1, "第一题就停，后面的题一道都没跑")
+        self.assertTrue(report.incomplete)
+        self.assertEqual(report.abort_reason, "model_unavailable")
+        self.assertEqual((report.total, report.items), (0, []))
+        self.assertEqual(report.abort_detail[0]["item"], SMOKE_IDS[0])
 
 
 class StatusEndpointTest(_ModelServiceEnvironment):
