@@ -124,6 +124,33 @@ def build_rerank_client() -> AliyunRerankClient:
     """
     return AliyunRerankClient(AliyunRerankConfig(api_key="", workspace_id=""))
 
+
+REMOTE_COLUMN_BUDGET = (10, 3)
+"""远端 Embedding 时字段级的（每库保留字段数, 每表保底字段数）。"""
+
+LOCAL_COLUMN_BUDGET = (20, 4)
+"""本地哈希向量时的同一组参数。"""
+
+
+def column_budget_for(embedding_client) -> tuple:
+    """
+    进图字段的预算跟着 Schema 检索实际用的向量走。
+
+    每表保底字段是为了多表关联时不让一张表占满配额、另一张表只剩 join key；当初用本地哈希向量时
+    设 4 把 multi_join 召回从 14/25 拉到 17/25。换成远端 Embedding 后召回已经是 100%，
+    这两个数反倒成了进图字段占比超线（44%，门禁线 40%）的主因。2026-10-14 只跑检索的扫参：
+
+    - 远端：每库 10 个、保底 3 个，评测集和留出集召回仍是 100%，占比降到 37%；
+      再少（每库 8 个）留出集开始漏字段；少选库或表会漏跨库题的字段。
+    - 本地：保底从 4 降到 3，留出集召回从 55% 掉到 47.5%（每库 10–15 个时；规则抽词，可复现）。
+
+    所以只在真用上远端时收紧。配了远端、启动时调不通会退回本地向量，这里拿到的就是本地客户端，
+    参数跟着回到宽的一档。
+    """
+    if getattr(embedding_client, "backend", "local") == "remote":
+        return REMOTE_COLUMN_BUDGET
+    return LOCAL_COLUMN_BUDGET
+
 # CoT 规划在 Schema 不足以回答时输出的占位数据库名
 _MISSING_DATABASE = "缺失"
 
@@ -1601,6 +1628,8 @@ class Text2SQLPipeline:
                 )
             )
 
+        columns_per_database, min_columns_per_table = column_budget_for(embedding_client)
+
         return ThreeTierSchemaRetrievalService(
             cross_database_links=self.semantic.cross_database_links,
             metric_disambiguation=self.semantic.metric_disambiguation,
@@ -1614,16 +1643,13 @@ class Text2SQLPipeline:
                 column_config=HybridSchemaRetrievalConfig(
                     per_keyword_top_k=20,
                     include_join_columns=True,
-                    # 每表保底 4 个字段：多表关联时避免一张表占满 top-15 配额、
-                    # 另一张表只剩 join key。实测把 multi_join 召回从 14/25 拉到 17/25，
-                    # 再往上加（5/6）收益递减但 Schema 图明显变胖。
-                    min_columns_per_table=4,
+                    min_columns_per_table=min_columns_per_table,
                     rrf_config=RRFFusionConfig(
                         rrf_k=60,
                         truncate_multiplier=6,
                         min_fused_top_k=10,
                         max_fused_top_k=50,
-                        final_top_k=20,
+                        final_top_k=columns_per_database,
                         route_weights={
                             "keyword": 1.0,
                             "vector": 1.0,
