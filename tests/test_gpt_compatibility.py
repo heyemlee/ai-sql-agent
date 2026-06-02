@@ -480,3 +480,41 @@ class CleanSqlTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PromptRulesTest(unittest.TestCase):
+    """
+    换成 GPT 后评测里的两个固定毛病，各有规则对着：没要求汇总却求和（三轮 48 次错里占 16 次）、
+    自己补题目没写的筛选条件。生成 SQL 那一步看不到原问题，所以规则主要放在规划里，
+    生成提示词只做兜底。规则里的例子不能用评测集里的原题，否则测出来的提升不作数。
+    """
+
+    def test_planning_asks_for_detail_rows_unless_the_query_aggregates(self):
+        from ai_sql_agent.planning.prompt_builder import CotPromptBuilder
+
+        instruction = CotPromptBuilder()._build_task_instruction()
+        self.assertIn("不要汇总成一个总数", instruction)
+        self.assertIn("统计、合计、总额", instruction)
+        self.assertNotIn("板材类供应商", instruction, "例子不能是评测集原题")
+        self.assertIn("不要再加付款状态", instruction)
+        # 2026-10-14 门禁：「逐条列出」被理解成不去重，三类题里 6 次答错只差一个 DISTINCT
+        self.assertIn("不等于不去重", instruction)
+        # 重复来自取值本身（同一个工人有很多条工时记录），不只是一对多关联的扇出
+        self.assertIn("名称、编号这类取值", instruction)
+
+    def test_generation_keeps_rows_and_filters_as_asked(self):
+        from types import SimpleNamespace
+
+        from ai_sql_agent.generation.prompt_builder import SqlPromptBuilder
+
+        request = SimpleNamespace(
+            cot_step=SimpleNamespace(processing_objects="", operation_instruction="", output_target=""),
+            local_schema=SimpleNamespace(to_prompt_context=lambda: ""),
+            sql_dialect="sqlite",
+            certified_examples="",
+            previous_results="",
+        )
+        prompt = SqlPromptBuilder().build(request)
+        self.assertIn("操作指令没要求汇总，就逐条输出，不要聚合", prompt)
+        self.assertIn("不要自己补充操作指令没写的条件", prompt)
+        self.assertIn("「逐条」不等于不去重", prompt)
