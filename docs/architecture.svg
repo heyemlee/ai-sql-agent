@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 528" width="960" height="528" role="img" aria-labelledby="title desc">
+  <title id="title">AI SQL Agent architecture</title>
+  <desc id="desc">The web console and other agents send requests to one FastAPI process. Its agent workflow routes each request, finds the relevant tables with help from a YAML semantic layer, and asks the model provider for a plan and SQL, one step per data source. The tool gate checks every statement against the caller's permissions and runs it read-only, first on one source and then on the next with the earlier step's values written into the SQL; a failed statement goes back for repair, at most twice. The self-check, memory and an audit record per request go to the state store, and the answer goes back with its SQL and risk flags.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+    .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; fill: #8e8e93; }
+    .title { font-size: 16px; font-weight: 600; fill: #1d1d1f; }
+    .name { font-size: 14px; font-weight: 600; fill: #1d1d1f; }
+    .sub { font-size: 12.5px; fill: #6e6e73; }
+    .edge { font-size: 11px; fill: #8e8e93; }
+    .card { fill: #ffffff; stroke: #e3e3e8; stroke-width: 1; }
+    .wire { fill: none; stroke: #d6d6dc; stroke-width: 1.5; }
+    .pulse {
+      fill: none;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-dasharray: 0.14 1.3;
+      stroke-dashoffset: 0.14;
+      opacity: 0;
+      animation: travel 8s linear infinite;
+    }
+    .data { stroke: #0a7cff; }
+    .ai { stroke: #d97757; }
+    .service { stroke: #0d9488; }
+    .live { animation: breathe 2.4s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+    @keyframes travel {
+      0% { stroke-dashoffset: 0.14; opacity: 1; }
+      24% { stroke-dashoffset: -1; opacity: 1; }
+      25%, 100% { stroke-dashoffset: -1; opacity: 0; }
+    }
+    @keyframes breathe {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.8); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse { animation: none; }
+      .live { animation: none; }
+    }
+  </style>
+  <defs>
+    <filter id="lift" x="-10%" y="-10%" width="120%" height="140%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000000" flood-opacity="0.06" />
+    </filter>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+    </filter>
+  </defs>
+
+  <rect x="0.5" y="0.5" width="959" height="527" rx="16" fill="#ffffff" stroke="#ececf0" />
+
+  <!-- The service's frame goes under the wires, its cards over them -->
+  <rect x="280" y="36" width="320" height="460" rx="18" fill="#fafafb" stroke="#e3e3e8" />
+
+  <!-- Wires -->
+  <path class="wire" d="M208,116 C252,116 252,113 296,113" />
+  <path class="wire" d="M208,232 C252,232 252,128 296,128" />
+  <path class="wire" d="M208,348 C252,348 252,238 296,238" />
+  <path class="wire" d="M584,206 C648,206 648,114 712,114" />
+  <path class="wire" d="M584,322 C648,322 648,215 712,215" />
+  <path class="wire" d="M584,342 C648,342 648,259 712,259" />
+  <path class="wire" d="M584,435 C648,435 648,426 712,426" />
+
+  <text class="edge" x="252" y="104" text-anchor="middle">POST /query</text>
+  <text class="edge" x="214" y="368">at startup</text>
+  <text class="edge" x="606" y="226">plan · SQL</text>
+  <text class="edge" x="606" y="240">self-check</text>
+  <text class="edge" x="704" y="207" text-anchor="end">step 1</text>
+  <text class="edge" x="704" y="251" text-anchor="end">step 2</text>
+  <text class="edge" x="648" y="420" text-anchor="middle">trace_id</text>
+
+  <!-- Pulses, in the order of one two-step request: in, plan, step 1, step 2, self-check, audit, answer -->
+  <path class="pulse data" pathLength="1" filter="url(#glow)" d="M208,116 C252,116 252,113 296,113" style="animation-delay: 0s" />
+  <path class="pulse ai" pathLength="1" filter="url(#glow)" d="M584,206 C648,206 648,114 712,114" style="animation-delay: 1s" />
+  <path class="pulse data" pathLength="1" filter="url(#glow)" d="M584,322 C648,322 648,215 712,215" style="animation-delay: 2s" />
+  <path class="pulse data" pathLength="1" filter="url(#glow)" d="M584,342 C648,342 648,259 712,259" style="animation-delay: 3s" />
+  <path class="pulse ai" pathLength="1" filter="url(#glow)" d="M584,206 C648,206 648,114 712,114" style="animation-delay: 4s" />
+  <path class="pulse service" pathLength="1" filter="url(#glow)" d="M584,435 C648,435 648,426 712,426" style="animation-delay: 5s" />
+  <path class="pulse data" pathLength="1" filter="url(#glow)" d="M296,113 C252,113 252,116 208,116" style="animation-delay: 6s" />
+
+  <!-- Clients and configuration -->
+  <g filter="url(#lift)">
+    <rect class="card" x="32" y="68" width="176" height="104" rx="14" />
+    <rect class="card" x="32" y="192" width="176" height="80" rx="14" />
+    <rect class="card" x="32" y="296" width="176" height="104" rx="14" />
+  </g>
+  <text class="eyebrow" x="52" y="94">BROWSER</text>
+  <text class="title" x="52" y="118">Web console</text>
+  <text class="sub" x="52" y="142">Ask · Data · History</text>
+  <text class="sub" x="52" y="160">Vanilla JS, no build step</text>
+
+  <text class="eyebrow" x="52" y="218">AGENTS</text>
+  <text class="title" x="52" y="242">Other agents</text>
+  <text class="sub" x="52" y="262">A2A message/stream</text>
+
+  <text class="eyebrow" x="52" y="322">CONFIG</text>
+  <text class="title" x="52" y="346">Semantic layer</text>
+  <text class="sub" x="52" y="370">YAML per database</text>
+  <text class="sub" x="52" y="388">meanings · aliases · joins</text>
+
+  <!-- The service -->
+  <circle class="live" cx="302" cy="60" r="4.5" fill="#009688" />
+  <text class="name" x="314" y="65">FastAPI service</text>
+  <text class="edge" x="584" y="65" text-anchor="end">one process</text>
+  <g filter="url(#lift)">
+    <rect class="card" x="296" y="84" width="288" height="62" rx="12" />
+    <rect class="card" x="296" y="162" width="288" height="112" rx="12" />
+    <rect class="card" x="296" y="290" width="288" height="88" rx="12" />
+    <rect class="card" x="296" y="394" width="288" height="82" rx="12" />
+  </g>
+  <text class="name" x="314" y="110">HTTP API · A2A endpoint</text>
+  <text class="sub" x="314" y="130">API keys → table and column policy</text>
+
+  <text class="name" x="314" y="188">Agent workflow</text>
+  <text class="sub" x="314" y="210">route → plan → write SQL</text>
+  <text class="sub" x="314" y="230">run → repair ↺ (≤ 2) → check</text>
+  <text class="sub" x="314" y="250">hybrid retrieval, token budget</text>
+
+  <text class="name" x="314" y="316">Tool gate · read-only SQL</text>
+  <text class="sub" x="314" y="338">SQLGlot AST: tables, columns, read-only</text>
+  <text class="sub" x="314" y="358">1,000 rows · 10 s · 8 MiB per result</text>
+
+  <text class="name" x="314" y="420">Self-check · memory · audit</text>
+  <text class="sub" x="314" y="442">rule checks + model self-check</text>
+  <text class="sub" x="314" y="462">sessions, long-term memory, trace_id</text>
+
+  <!-- The model -->
+  <rect class="card" x="712" y="68" width="216" height="92" rx="14" filter="url(#lift)" />
+  <circle cx="732" cy="92" r="4.5" fill="#d97757" />
+  <text class="name" x="744" y="97">Model provider</text>
+  <text class="sub" x="732" y="122">OpenAI-compatible · Anthropic</text>
+  <text class="sub" x="732" y="142">self-hosted vLLM or Ollama</text>
+
+  <!-- Data sources: separate databases, no JOIN between them -->
+  <text class="name" x="820" y="188" text-anchor="middle">Data sources</text>
+  <g filter="url(#lift)">
+    <path d="M712,202 V228 A108,7 0 0 0 928,228 V202" fill="#ffffff" stroke="#e3e3e8" />
+    <ellipse cx="820" cy="202" rx="108" ry="7" fill="#fafafb" stroke="#e3e3e8" />
+    <path d="M712,246 V272 A108,7 0 0 0 928,272 V246" fill="#ffffff" stroke="#e3e3e8" />
+    <ellipse cx="820" cy="246" rx="108" ry="7" fill="#fafafb" stroke="#e3e3e8" />
+    <path d="M712,290 V316 A108,7 0 0 0 928,316 V290" fill="#ffffff" stroke="#e3e3e8" />
+    <ellipse cx="820" cy="290" rx="108" ry="7" fill="#fafafb" stroke="#e3e3e8" />
+  </g>
+  <text class="sub" x="820" y="224" text-anchor="middle">source A</text>
+  <text class="sub" x="820" y="268" text-anchor="middle">source B</text>
+  <text class="sub" x="820" y="312" text-anchor="middle">source C</text>
+  <text class="edge" x="820" y="346" text-anchor="middle">SQLite or PostgreSQL · read-only</text>
+
+  <!-- State -->
+  <g filter="url(#lift)">
+    <path d="M712,388 V464 A108,12 0 0 0 928,464 V388" fill="#ffffff" stroke="#e3e3e8" />
+    <ellipse cx="820" cy="388" rx="108" ry="12" fill="#fafafb" stroke="#e3e3e8" />
+  </g>
+  <text class="name" x="820" y="422" text-anchor="middle">State store</text>
+  <text class="sub" x="820" y="442" text-anchor="middle">SQLite or PostgreSQL + pgvector</text>
+  <text class="sub" x="820" y="460" text-anchor="middle">sessions · memory · audit</text>
+</svg>
