@@ -4,7 +4,7 @@
 
 ## About the benchmark numbers
 
-The README quotes the 2026-09-09 measurement: 150 demo cases, three-run aggregate, model identifier `claude-sonnet-5`, built-in demo metadata. **The release gate has not passed.**
+The README quotes the 2026-09-09 measurement: 150 demo cases, three-run aggregate, model identifier `claude-sonnet-5`, built-in demo metadata. **The release gate has not passed.** Next to it, the README shows one complete round on `gpt-6.1-sol` from 2026-10-15, recorded in the message of commit 091a7fd: every line was met in that round, but the round after it was cut off by the model service, so it is not a gate result, and it was taken with a different model and code.
 
 These numbers do not establish current-commit accuracy on real business databases. The three-run record used an earlier primary-key prompt rule; the current expanded rule has only one full run. Demo metadata also differs from a deployment's semantic layer. See the [measurement record](../benchmark/baseline/2026-09-09/README.md) for conditions, artifacts, and attribution.
 

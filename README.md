@@ -7,8 +7,8 @@
 **An LLM agent that routes, plans, acts through a guarded tool, repairs and checks its own work, and works with other agents.**
 
 Its one tool is read-only SQL over SQLite and PostgreSQL. Around it: model routing with structured output, multi-step
-planning, self-repair, self-verification, short- and long-term memory, A2A and MCP interfaces, evals and tracing, in
-one FastAPI service.
+planning, self-repair, self-verification, hybrid retrieval, short- and long-term memory, A2A and MCP interfaces, live
+model management, evals and tracing, in one FastAPI service.
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?style=flat-square&logo=fastapi&logoColor=white)](src/ai_sql_agent/api)
@@ -30,21 +30,21 @@ one FastAPI service.
 
 ## Highlights
 
-- **Routes and plans.** A model router with JSON-schema output decides whether a request needs the tool or can be
-  answered from memory; a planner splits the rest into steps and hands each step's results to the next. Cross-database
-  answers are 85.3% correct over three runs of the 150-task benchmark, single-database 93.3%.
+- **Routes and plans.** A model router with JSON-schema output decides between the tool and memory; a planner splits
+  the rest into steps and hands each step's results to the next. Cross-database accuracy: 85.3% over three benchmark
+  runs, 92% in the latest single round.
 - **One tool, behind one gate.** The agent acts only through read-only SQL. An SQLGlot AST gate checks every table and
   column against the caller's permissions and refuses what it can't parse, within 1,000 rows, 10 s and 8 MiB per call;
   213 tests cover it.
-- **Repairs and checks its own work.** Failed calls go through a log-driven repair loop, at most twice, and results
-  pass rule checks and a model self-check before they are returned. 5.3% of answers are wrong without a warning (gate:
-  ≤ 3%), and 5.6% of correct ones are flagged.
-- **Context and memory, engineered.** Hybrid retrieval (BM25 and vectors fused with RRF, re-ranked, trimmed to a token
-  budget) recalls 100% of the needed columns on 40 held-out phrasings while sending 43.6% of the schema; sessions,
-  optional pgvector long-term memory and verified past answers carry context forward.
-- **Interoperable, measured, traced.** Other agents call it over A2A (JSON-RPC 2.0 with SSE stage events, contract
-  tested in CI), and an MCP server offers its read-only SQL as tools. A release gate with eight thresholds measures it
-  over three runs, and every request carries a `trace_id`.
+- **Repairs and checks its own work.** A log-driven loop repairs failed calls, at most twice, and results pass rule
+  checks and a model self-check before they are returned. Wrong answers without a warning: 5.3% over three runs, 1.33%
+  in the latest round (gate: ≤ 3%).
+- **Context that keeps itself current.** Database → table → column retrieval fuses BM25 with local or remote embeddings
+  through RRF and re-ranks; the column budget follows the embedding in use, and a schema watcher rebuilds the index
+  when a database changes. 100% recall on 40 held-out phrasings with 43.6% of the schema sent.
+- **Interoperable and operable.** Other agents call it over A2A with the same keys, limits and audit as the HTTP API,
+  an MCP server offers its SQL as tools, model and embedding connections switch without a restart, and every request
+  carries a `trace_id`.
 
 ## Architecture
 
@@ -67,19 +67,21 @@ feedback and both vector indexes move to PostgreSQL + pgvector.
 
 ## Tech stack
 
-| Layer               | Technology                                                                 | Role                                                                                       |
-| ------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Runtime             | Python 3.11 · FastAPI · Uvicorn · Pydantic v2                              | One process hosts the agent, its HTTP and A2A endpoints and the console                    |
-| Models              | HTTPX · OpenAI-compatible and Anthropic APIs · vLLM · Ollama               | Routing, planning, SQL, repair and self-check calls, with a circuit breaker per model role |
-| Orchestration       | Model router with JSON-schema output · step planner · short path           | Decides what to do next and in which order; simple requests skip planning                  |
-| Tool and guardrails | SQLGlot AST gate · SQLite authorizer · read-only connections               | The agent's only action, authorized against the caller's policy and capped                 |
-| Context             | BM25 · NumPy vectors · RRF · reranker · token budget · YAML semantic layer | Finds the tables and columns a request needs                                               |
-| Memory              | Session memory · pgvector long-term memory · summarizer                    | Carries context across turns and sessions                                                  |
-| Interop             | A2A (JSON-RPC 2.0 + SSE) · MCP Python SDK                                  | Serves other agents; read-only SQL as MCP tools over stdio                                 |
-| Evals               | Release gate · 150 + 40 cases · eight thresholds, three runs               | Accuracy, silent errors, false alarms and recall against gate lines                        |
-| Observability       | `trace_id` audit · token accounting · Prometheus · JSON logs               | Every run traceable, every metric scrapeable                                               |
-| Console             | HTML · CSS · ES modules, no build step                                     | Ask, Data and History pages; learning mode shows each step                                 |
-| Delivery            | pytest · GitHub Actions · Docker Compose                                   | Tests, CI, image smoke test, deployment                                                    |
+| Layer               | Technology                                                                                                                        | Role                                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime             | Python 3.11 · FastAPI · Uvicorn · Pydantic v2                                                                                     | Hosts the agent, its HTTP, A2A and admin endpoints and the console                                                                 |
+| Models              | HTTPX · OpenAI-compatible and Anthropic APIs · vLLM · Ollama                                                                      | Routing, planning, SQL, repair and self-check, with a circuit breaker per model role                                               |
+| Orchestration       | Model router with JSON-schema output · step planner · short path                                                                  | Picks the next action and its order; simple requests skip planning                                                                 |
+| Tool and guardrails | SQLGlot AST gate · SQLite authorizer · read-only connections · read-only role tooling                                             | The only action, authorized per caller and capped                                                                                  |
+| Retrieval           | BM25 · local hash or OpenAI-compatible remote embeddings · RRF · reranker (qwen3-rerank when configured) · adaptive column budget | Three tiers; 10 columns per database with remote embeddings, 20 with local ones, which also stand in when the remote service fails |
+| Knowledge           | YAML semantic layer · `semantic` CLI (export, validate, show)                                                                     | Meanings, aliases, join keys and metrics, checked against the live schema                                                          |
+| Memory              | SQLite conversation store · long-term memory on local hash vectors · summarizer                                                   | Context across turns and sessions; the console's embedding setting does not apply here                                             |
+| Storage             | SQLite by default · PostgreSQL + pgvector with a DSN                                                                              | With a DSN, audit, feedback and the vector indexes move to PostgreSQL; conversations and memory records stay in SQLite             |
+| Interop             | A2A (JSON-RPC 2.0 + SSE) · MCP Python SDK                                                                                         | Serves other agents; SQL as MCP tools over stdio                                                                                   |
+| Operations          | Model admin API · schema watcher · per-key rate limits and token quotas                                                           | Live model and embedding switch; index rebuilt when a schema changes                                                               |
+| Evals and tracing   | Release gate (150 + 40 cases, eight thresholds) · `trace_id` audit · Prometheus · JSON logs                                       | Measured quality; every run traceable                                                                                              |
+| Console             | HTML · CSS · ES modules, no build step                                                                                            | Ask, Data, History and settings; learning mode shows each step                                                                     |
+| Delivery            | pytest · GitHub Actions · Docker Compose                                                                                          | Tests, CI, image smoke test, deployment                                                                                            |
 
 ## Features
 
@@ -91,41 +93,52 @@ feedback and both vector indexes move to PostgreSQL + pgvector.
 
 <p align="center"><sub>Made-up data. The plan, SQL and follow-up answer are replayed; the repair is the project's own repair loop run on that data, on its rule-based path.</sub></p>
 
-- **Understand.** The router chooses between querying and answering from the conversation. Before retrieval, pronouns
-  are resolved against earlier turns and phrases like "last quarter" become dates.
-- **Plan.** The model writes one step per data source. Each step gets the previous step's first 50 rows as ready-made
-  `IN` lists, which keeps prompts bounded and caps a hand-off at 50 rows.
-- **Act and repair.** The tool gate authorizes and runs each statement. On failure the error is parsed from the
-  execution log, and the failing clause is located and rewritten, by the model or by a nearest-name rule, at most twice.
-- **Check.** Empty results, row counts far from the plan, totals nobody asked for and shapes the plan can't produce are
-  flagged, then the model checks the result against the question. Findings travel with the answer as risk flags.
-- **Remember and learn.** Sessions and optional long-term memory carry context. Answers marked right become examples
-  for similar requests; answers marked wrong export as evaluation cases.
+- **Understand.** The router picks between querying and answering from the conversation; pronouns and phrases like
+  "last quarter" are resolved before retrieval.
+- **Plan.** One step per data source, kept to the columns and rows asked for. Each step gets the previous step's first
+  50 rows as ready-made `IN` lists, which bounds the prompt and caps a hand-off at 50 rows.
+- **Act and repair.** The tool gate authorizes and runs each statement; a failure is parsed from the execution log and
+  the failing clause is rewritten, by the model or a nearest-name rule, at most twice.
+- **Check.** Empty results, row counts far from the plan, unrequested totals and impossible shapes are flagged, then
+  the model checks the result against the question; findings travel with the answer as risk flags.
+- **Remember and learn.** Sessions and optional long-term memory carry context; answers marked right become examples,
+  wrong ones evaluation cases.
 
-Execution accuracy on the 150-task benchmark with the built-in demo databases and `claude-sonnet-5`, mean and range over
-three runs:
+Execution accuracy on the 150-task benchmark with the built-in demo databases: three runs on 2026-09-09 with
+`claude-sonnet-5`, and one round on 2026-10-15 with `gpt-6.1-sol`.
 
-| Metric                                 |             Result |  Gate |
-| -------------------------------------- | -----------------: | ----: |
-| Single-database accuracy               | 93.3% [92.8, 93.6] | ≥ 85% |
-| Cross-database accuracy                | 85.3% [84.0, 88.0] | ≥ 90% |
-| Silent errors (wrong, with no warning) |    5.3% [5.3, 5.3] |  ≤ 3% |
-| Correct answers flagged as risky       |    5.6% [4.3, 6.6] | ≤ 20% |
-| Column recall, 40 held-out phrasings   |    100% [100, 100] | ≥ 85% |
-| Share of columns sent to the model     | 43.6% [43.6, 43.8] | ≤ 40% |
+| Metric                                 | 3 runs, 2026-09-09 | 1 round, 2026-10-15 |  Gate |
+| -------------------------------------- | -----------------: | ------------------: | ----: |
+| Single-database accuracy               | 93.3% [92.8, 93.6] |                100% | ≥ 85% |
+| Cross-database accuracy                | 85.3% [84.0, 88.0] |                 92% | ≥ 90% |
+| Silent errors (wrong, with no warning) |    5.3% [5.3, 5.3] |               1.33% |  ≤ 3% |
+| Correct answers flagged as risky       |    5.6% [4.3, 6.6] |                 met | ≤ 20% |
+| Column recall, 40 held-out phrasings   |    100% [100, 100] |                100% | ≥ 85% |
+| Share of columns sent to the model     | 43.6% [43.6, 43.8] |               36.9% | ≤ 40% |
 
-Three lines are missed (cross-database accuracy, silent errors, column share), so this measurement fails the gate.
-Annotating JOIN cardinality and de-duplicating across one-to-many joins lifted cross-database accuracy from 73.3% and
-cut silent errors from 10.0%. The benchmark measures the agent on its own fixture, not on your data. Records: [accuracy](benchmark/baseline/2026-09-09/README.md) and
-[retrieval](benchmark/baseline/2026-09-08/README.md) (in Chinese), [how each threshold was set](benchmark/README.md),
-[known limits](docs/limitations.md).
+The three-run record misses three lines. The single round, run after the adaptive budget and the output-shape planning
+rules, met every line with 148 of 150 correct; the next round was cut off by the model service at question 130, so the
+gate has no verdict for this code. The columns differ in model and code and are not a before/after pair. Sources: the
+[three-run record](benchmark/baseline/2026-09-09/README.md) and [retrieval baseline](benchmark/baseline/2026-09-08/README.md)
+(in Chinese) and the message of commit
+[091a7fd](https://github.com/heyemlee/ai-sql-agent/commit/091a7fde427eec3201a1c331e64f2110c08e2ea1); see also
+[the thresholds](benchmark/README.md) and [known limits](docs/limitations.md).
+
+### Operations
+
+- **Live model management.** Administrators list a provider's models, test a connection and switch to it without a
+  restart; without sign-in, only the service's own machine may change it.
+- **Embedding swaps without a gap.** A new embedding model rebuilds the schema index first and is switched in only if
+  that succeeds; otherwise the running index stays.
+- **Schema changes picked up.** A watcher compares structure fingerprints (every 300 s in the Compose files, off by
+  default) and swaps in a rebuilt index; with pgvector, only the changed parts are embedded again.
 
 ### Interfaces
 
-- **Console.** Ask, Data and History pages in English and Chinese, with no build step. Learning mode explains each
-  request from its stage events, and the Data page shows only what the caller may see.
-- **A2A.** `message/send` returns a finished task, and `message/stream` sends stage events over SSE before the same
-  result as `POST /query`. The agent card is published, and the contract's cases run in CI at a pinned tag.
+- **Console.** Ask, Data and History pages and settings, in English and Chinese, with no build step; learning mode
+  explains each request from its stage events.
+- **A2A.** On by default at `POST /a2a`: `message/send` returns a finished task and `message/stream` sends stage events
+  over SSE first. `AI_SQL_A2A_STREAMING=false` turns streaming off and the agent card says so; contract cases run in CI.
 - **MCP and HTTP.** An MCP stdio server offers `list_databases` and `execute_sql` over the demo databases with the
   same caps; HTTP serves `/query`, `/catalog`, `/history` and `/metrics` ([API](docs/api.md)).
 
@@ -142,8 +155,9 @@ python -m ai_sql_agent.semantic validate semantic/  # check it against the live 
 ```
 
 Without model credentials the service answers from a mock model. Point `AI_SQL_SEMANTIC_DIR` at the semantic directory
-to query your own databases; setup is in [docs/deployment.md](docs/deployment.md#2-configuration), and another semantic
-layer with sample data is in [tools/simple_erp](tools/simple_erp/README.md) (in Chinese).
+to query your own databases; models, embeddings, rerank and storage are set up in
+[docs/deployment.md](docs/deployment.md#2-configuration), and another semantic layer with sample data is in
+[tools/simple_erp](tools/simple_erp/README.md) (in Chinese).
 
 ## Test
 
