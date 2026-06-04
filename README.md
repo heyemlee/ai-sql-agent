@@ -49,20 +49,21 @@ one FastAPI service.
 ## Architecture
 
 <p align="center">
-  <img src="docs/architecture.svg" width="960" alt="The web console and other agents send requests to one FastAPI process; its agent workflow routes each request, finds the tables through a YAML semantic layer and asks the model provider for a plan and SQL, one step per data source; the tool gate checks every statement against the caller's permissions and runs it read-only, first on one source and then on the next with the earlier step's values in its SQL, sending failures back for repair; the self-check, memory and an audit record per request go to the state store" />
+  <img src="docs/architecture.svg" width="960" alt="The web console and other agents call one FastAPI service, which maps API keys to table and column policies, applies rate limits and token quotas, and can switch the model and embedding connections live. Inside it an agent loop routes each question with an LLM router, retrieves tables and columns with BM25 and vectors fused by RRF, a reranker and a YAML semantic layer, plans one step per data source, writes SQL, runs it read-only through an SQLGlot gate, repairs it at most twice and checks the result with rules and an LLM self-check, keeping conversation memory and an audit trail under a trace_id. Model calls go to an OpenAI-compatible, Anthropic, vLLM or Ollama provider; SQL runs on SQLite or PostgreSQL data sources; memory, audit and vectors are kept in SQLite or pgvector. A separate MCP stdio server uses the same gate, Prometheus scrapes the metrics, and the project ships with Docker Compose, pytest, GitHub Actions and a release gate of 150 + 40 cases." />
 </p>
 
-One FastAPI process hosts the agent, its HTTP and A2A endpoints and the console. A request is routed, matched to
-tables through hybrid retrieval and the YAML semantic layer, planned into steps and turned into SQL; the tool gate runs
-each step read-only, failures go back for repair, results are checked, and the answer returns with its SQL, risk flags
-and `trace_id`.
+One FastAPI process hosts the agent, its HTTP, A2A and admin endpoints and the console. A question enters through the
+API; the agent loop has the model route it, retrieves the tables, has the model plan and write SQL, runs it through the
+gate and has the model check the answer, and each card lights up while the request is in it. Orange marks model calls,
+blue the request and its data, teal memory, audit and metrics. State lives in SQLite; with a PostgreSQL DSN, audit,
+feedback and both vector indexes move to PostgreSQL + pgvector.
 
-- **The model decides, code orchestrates.** The model routes, plans, writes and repairs SQL and judges the result; code
-  fixes the order of steps, the permission gate and the limits, such as one data source per step and two repairs at
-  most. Every run is bounded and can be replayed from its `trace_id`.
-- **One tool, one gate, fail closed.** Every path to data, from answers to previews to the MCP server, runs through the
-  same authorization gate. SQL it can't parse is refused, the service refuses all SQL without SQLGlot, and when the
-  model is down it reruns the user's last successful SQL for the same question, authorized again and marked degraded.
+- **The model decides, code orchestrates.** The model routes, plans, writes and repairs SQL and judges results; code
+  fixes the step order, the permission gate and the limits (one data source per step, two repairs at most), so every
+  run is bounded and can be replayed from its `trace_id`.
+- **One tool, one gate, fail closed.** Answers, previews and the MCP server all pass the same authorization gate.
+  Unparseable SQL is refused, and so is all SQL without SQLGlot; when the model is down, the user's last successful SQL
+  for the question is rerun, authorized again and marked degraded.
 
 ## Tech stack
 
