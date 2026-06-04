@@ -1,211 +1,170 @@
 <div align="center">
 
+<img src="docs/logo.svg" width="64" height="64" alt="" />
+
 # AI SQL Agent
 
-**Ask business questions in plain language. Keep every SQL query controlled and traceable.**
+**An LLM agent that routes, plans, acts through a guarded tool, repairs and checks its own work, and works with other agents.**
 
-A Text2SQL service for SQLite and PostgreSQL, with cross-database planning, business semantics, conversational memory, and result validation.
+Its one tool is read-only SQL over SQLite and PostgreSQL. Around it: model routing with structured output, multi-step
+planning, self-repair, self-verification, short- and long-term memory, A2A and MCP interfaces, evals and tracing, in
+one FastAPI service.
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
-[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](src/ai_sql_agent/api)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?style=flat-square&logo=postgresql&logoColor=white)](deploy/docker-compose.pgvector.yml)
-[![CI](https://github.com/heyemlee/ai-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/heyemlee/ai-sql-agent/actions/workflows/ci.yml)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?style=flat-square&logo=fastapi&logoColor=white)](src/ai_sql_agent/api)
+[![Agents](https://img.shields.io/badge/Agents-A2A_%2B_MCP-6E56CF?style=flat-square)](src/ai_sql_agent/a2a)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?style=flat-square&logo=postgresql&logoColor=white)](deploy/docker-compose.prod.yml)
+[![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?style=flat-square&logo=githubactions&logoColor=white)](https://github.com/heyemlee/ai-sql-agent/actions/workflows/ci.yml)
 
 **English** · [简体中文](README.zh-CN.md)
 
-[Quickstart](#quickstart) · [Architecture](#architecture) · [Tech stack](#tech-stack) · [Design decisions](#design-decisions) · [Evaluation](#evaluation-and-current-limits)
+[Highlights](#highlights) · [Architecture](#architecture) · [Tech stack](#tech-stack) · [Features](#features) · [Develop](#develop)
 
 </div>
 
-## Preview
-
-<!-- When ready, add docs/assets/screenshot.png and replace the src below with docs/assets/screenshot.png. -->
 <p align="center">
-  <img src="docs/assets/screenshot-placeholder.svg" alt="Reserved for a screenshot of the project console" width="960" />
+  <img src="docs/screenshots/ask.webp" width="960" alt="With learning mode on, the console asks which rush orders are still in production and when they are due; stage events stream in while the agent works, the answer lists six orders with customer, delivery date and contract amount, and the walkthrough shows step 1 reading one database and step 2 reading another with step 1's order numbers written into its SQL" />
 </p>
 
-> **“List suppliers whose on-time rate is below 0.9”** → retrieve the business schema → generate and execute read-only SQL → return results, SQL, and risk warnings.
+<p align="center"><sub>Made-up data in four SQLite databases. The plan and SQL are replayed for the recording; the rows come from running that SQL.</sub></p>
 
-- **Cross-database queries** — split a question into steps and pass intermediate results as filters to the next database.
-- **Conversational context** — distinguish fresh queries from explanations of previous results, with optional personal long-term memory.
-- **Controlled execution** — table/column permissions (views checked against their base tables), read-only connections, timeouts, and row and result-size caps; separate SQL repair from result risk checks.
-- **Reproducible evaluation** — four demo databases, offline mocks, a benchmark, and a release gate; run locally or on an internal network.
+## Highlights
+
+- **Routes and plans.** A model router with JSON-schema output decides whether a request needs the tool or can be
+  answered from memory; a planner splits the rest into steps and hands each step's results to the next. Cross-database
+  answers are 85.3% correct over three runs of the 150-task benchmark, single-database 93.3%.
+- **One tool, behind one gate.** The agent acts only through read-only SQL. An SQLGlot AST gate checks every table and
+  column against the caller's permissions and refuses what it can't parse, within 1,000 rows, 10 s and 8 MiB per call;
+  213 tests cover it.
+- **Repairs and checks its own work.** Failed calls go through a log-driven repair loop, at most twice, and results
+  pass rule checks and a model self-check before they are returned. 5.3% of answers are wrong without a warning (gate:
+  ≤ 3%), and 5.6% of correct ones are flagged.
+- **Context and memory, engineered.** Hybrid retrieval (BM25 and vectors fused with RRF, re-ranked, trimmed to a token
+  budget) recalls 100% of the needed columns on 40 held-out phrasings while sending 43.6% of the schema; sessions,
+  optional pgvector long-term memory and verified past answers carry context forward.
+- **Interoperable, measured, traced.** Other agents call it over A2A (JSON-RPC 2.0 with SSE stage events, contract
+  tested in CI), and an MCP server offers its read-only SQL as tools. A release gate with eight thresholds measures it
+  over three runs, and every request carries a `trace_id`.
 
 ## Architecture
 
-![AI SQL Agent architecture, with Chinese labels](docs/assets/architecture.svg)
+<p align="center">
+  <img src="docs/architecture.svg" width="960" alt="The web console and other agents send requests to one FastAPI process; its agent workflow routes each request, finds the tables through a YAML semantic layer and asks the model provider for a plan and SQL, one step per data source; the tool gate checks every statement against the caller's permissions and runs it read-only, first on one source and then on the next with the earlier step's values in its SQL, sending failures back for repair; the self-check, memory and an audit record per request go to the state store" />
+</p>
 
-Created with [Archify](https://github.com/tt-a1i/archify) · [Interactive HTML](docs/diagrams/architecture.html) (download and open in a browser) · [Editable JSON](docs/diagrams/architecture.json)
+One FastAPI process hosts the agent, its HTTP and A2A endpoints and the console. A request is routed, matched to
+tables through hybrid retrieval and the YAML semantic layer, planned into steps and turned into SQL; the tool gate runs
+each step read-only, failures go back for repair, results are checked, and the answer returns with its SQL, risk flags
+and `trace_id`.
 
-The diagram shows logical modules, primarily within one Python service. Model calls are shared across retrieval, planning, and generation. Session, memory, and audit storage use SQLite or PostgreSQL according to configuration; vector indexing can use pgvector.
-
-A fresh query follows **normalization → database / table / column retrieval → planning → SQL generation → guarded execution → result validation**. Questions about past results use the memory-based answer path; simple single-database queries can skip a separate planning call. Executors run in-process by default, with an optional MCP stdio execution path.
+- **The model decides, code orchestrates.** The model routes, plans, writes and repairs SQL and judges the result; code
+  fixes the order of steps, the permission gate and the limits, such as one data source per step and two repairs at
+  most. Every run is bounded and can be replayed from its `trace_id`.
+- **One tool, one gate, fail closed.** Every path to data, from answers to previews to the MCP server, runs through the
+  same authorization gate. SQL it can't parse is refused, the service refuses all SQL without SQLGlot, and when the
+  model is down it reruns the user's last successful SQL for the same question, authorized again and marked degraded.
 
 ## Tech stack
 
-| Layer | Technology | Role |
-| --- | --- | --- |
-| Runtime & API | Python 3.11+ · FastAPI · Uvicorn · Pydantic v2 | Typed requests/responses, service endpoints, configuration validation |
-| Web console | Vanilla HTML · CSS · ES modules (no build step) | Ask in plain language, browse the data catalog, review history; served by FastAPI |
-| Model transport | HTTPX · OpenAI-compatible protocol · Anthropic protocol | Planning, SQL generation, and answers; compatible endpoints include vLLM / Ollama |
-| Schema retrieval | Custom BM25 · NumPy vector index · RRF · Rerank client | Fuse lexical and semantic recall across databases, tables, and columns |
-| Business semantics | PyYAML · SchemaGraph | Field meanings, aliases, metrics, join keys, and JOIN cardinality |
-| SQL & storage | SQLite · PostgreSQL · psycopg · pgvector | Business queries, persistent state, and optional vector search |
-| Authorization & integration | SQLGlot · MCP Python SDK · A2A / SSE | SQL AST authorization, read-only tools, and agent streaming endpoints |
-| Engineering & operations | pytest / unittest · GitHub Actions · Docker Compose | Automated verification and image builds; structured logs and Prometheus-format metrics |
+| Layer               | Technology                                                                 | Role                                                                                       |
+| ------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Runtime             | Python 3.11 · FastAPI · Uvicorn · Pydantic v2                              | One process hosts the agent, its HTTP and A2A endpoints and the console                    |
+| Models              | HTTPX · OpenAI-compatible and Anthropic APIs · vLLM · Ollama               | Routing, planning, SQL, repair and self-check calls, with a circuit breaker per model role |
+| Orchestration       | Model router with JSON-schema output · step planner · short path           | Decides what to do next and in which order; simple requests skip planning                  |
+| Tool and guardrails | SQLGlot AST gate · SQLite authorizer · read-only connections               | The agent's only action, authorized against the caller's policy and capped                 |
+| Context             | BM25 · NumPy vectors · RRF · reranker · token budget · YAML semantic layer | Finds the tables and columns a request needs                                               |
+| Memory              | Session memory · pgvector long-term memory · summarizer                    | Carries context across turns and sessions                                                  |
+| Interop             | A2A (JSON-RPC 2.0 + SSE) · MCP Python SDK                                  | Serves other agents; read-only SQL as MCP tools over stdio                                 |
+| Evals               | Release gate · 150 + 40 cases · eight thresholds, three runs               | Accuracy, silent errors, false alarms and recall against gate lines                        |
+| Observability       | `trace_id` audit · token accounting · Prometheus · JSON logs               | Every run traceable, every metric scrapeable                                               |
+| Console             | HTML · CSS · ES modules, no build step                                     | Ask, Data and History pages; learning mode shows each step                                 |
+| Delivery            | pytest · GitHub Actions · Docker Compose                                   | Tests, CI, image smoke test, deployment                                                    |
 
-Pinned dependencies live in [pyproject.toml](pyproject.toml). A vector database is optional. Without model credentials, mocks exercise the pipeline; real natural-language querying requires a model.
+## Features
 
-## Design decisions
+### The agent loop
 
-| Engineering problem | Implementation | Source |
-| --- | --- | --- |
-| Business language differs from column names | Editable YAML descriptions, aliases, and metric definitions shared by retrieval, planning, and metric explanations | [semantic](src/ai_sql_agent/semantic) |
-| Large schemas exceed prompt budgets | Database → table → column retrieval; BM25 + vectors, RRF fusion, and reranking; trim SchemaGraph by relevance while prioritizing join keys | [retrieval](src/ai_sql_agent/retrieval) · [schema budget](src/ai_sql_agent/pipeline/schema_budget.py) |
-| One SQL JOIN cannot span independent databases | Bind each step to a database, inline intermediate results as filters, check plan/database consistency, and reject references outside the step's database | [pipeline](src/ai_sql_agent/pipeline/text2sql_pipeline.py) |
-| Valid SQL can return the wrong answer | Annotate JOIN cardinality, prompt for de-duplication and primary-key projection, then check empty results, cardinality, and semantic consistency | [graph_builder](src/ai_sql_agent/retrieval/graph_builder.py) · [validation](src/ai_sql_agent/validation) |
-| Generated SQL exceeds the user's permissions | Filter model-visible schema; analyze tables/columns/scopes with SQLGlot, expand views to their base tables, and deny unparseable SQL; then a read-only guard on the SQLGlot AST, a default-deny SQLite authorizer, and read-only connections | [AST analysis](src/ai_sql_agent/auth/sql_analysis.py) · [views](src/ai_sql_agent/auth/views.py) · [execution](src/ai_sql_agent/execution) |
-| SQL execution or model calls fail | Localized SQL repair, at most 2 attempts by default; on model failure, try the same user's previously successful SQL for the same question, reauthorize it, and explicitly report degradation | [repair](src/ai_sql_agent/repair) · [fallback logic](src/ai_sql_agent/pipeline/text2sql_pipeline.py) |
-| Failures are hard to reproduce | Link SQL, databases/tables, latency, repairs, and token usage through `trace_id`; export user feedback as eval cases and use confirmed queries as generation examples | [audit](src/ai_sql_agent/audit) · [feedback](src/ai_sql_agent/feedback) |
+<p align="center">
+  <img src="docs/screenshots/agent.webp" width="960" alt="After an answer about rush orders, the follow-up “Which of these is due first?” is answered from the conversation without a new query; then a question about materials below safety stock fails on a column the table does not have, is repaired, and the query process shows the SQL before and after the repair" />
+</p>
 
-Default execution limits are **1,000 rows, 10 seconds, and 8 MiB per result** (SQLite also caps a single value at 8 MiB), configurable through [PipelineConfig](src/ai_sql_agent/pipeline/objects.py) and the `AI_SQL_MAX_*` variables; see [Execution limits](docs/deployment.md#execution-limits). Result checks surface risk; they do not guarantee business correctness.
+<p align="center"><sub>Made-up data. The plan, SQL and follow-up answer are replayed; the repair is the project's own repair loop run on that data, on its rule-based path.</sub></p>
 
-## Quickstart
+- **Understand.** The router chooses between querying and answering from the conversation. Before retrieval, pronouns
+  are resolved against earlier turns and phrases like "last quarter" become dates.
+- **Plan.** The model writes one step per data source. Each step gets the previous step's first 50 rows as ready-made
+  `IN` lists, which keeps prompts bounded and caps a hand-off at 50 rows.
+- **Act and repair.** The tool gate authorizes and runs each statement. On failure the error is parsed from the
+  execution log, and the failing clause is located and rewritten, by the model or by a nearest-name rule, at most twice.
+- **Check.** Empty results, row counts far from the plan, totals nobody asked for and shapes the plan can't produce are
+  flagged, then the model checks the result against the question. Findings travel with the answer as risk flags.
+- **Remember and learn.** Sessions and optional long-term memory carry context. Answers marked right become examples
+  for similar requests; answers marked wrong export as evaluation cases.
 
-Requires **Python 3.11+**. Start in a fresh directory:
+Execution accuracy on the 150-task benchmark with the built-in demo databases and `claude-sonnet-5`, mean and range over
+three runs:
 
-```bash
-git clone https://github.com/heyemlee/ai-sql-agent.git
-cd ai-sql-agent
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+| Metric                                 |             Result |  Gate |
+| -------------------------------------- | -----------------: | ----: |
+| Single-database accuracy               | 93.3% [92.8, 93.6] | ≥ 85% |
+| Cross-database accuracy                | 85.3% [84.0, 88.0] | ≥ 90% |
+| Silent errors (wrong, with no warning) |    5.3% [5.3, 5.3] |  ≤ 3% |
+| Correct answers flagged as risky       |    5.6% [4.3, 6.6] | ≤ 20% |
+| Column recall, 40 held-out phrasings   |    100% [100, 100] | ≥ 85% |
+| Share of columns sent to the model     | 43.6% [43.6, 43.8] | ≤ 40% |
 
-# Mocks are used when model credentials are absent
-python examples/end_to_end.py
-./scripts/run_api.sh
-```
+Three lines are missed (cross-database accuracy, silent errors, column share), so this measurement fails the gate.
+Annotating JOIN cardinality and de-duplicating across one-to-many joins lifted cross-database accuracy from 73.3% and
+cut silent errors from 10.0%. The benchmark measures the agent on its own fixture, not on your data. Records: [accuracy](benchmark/baseline/2026-09-09/README.md) and
+[retrieval](benchmark/baseline/2026-09-08/README.md) (in Chinese), [how each threshold was set](benchmark/README.md),
+[known limits](docs/limitations.md).
 
-Open [http://localhost:8000](http://localhost:8000), or call the API:
+### Interfaces
 
-```bash
-curl -X POST http://localhost:8000/query \
-  -H 'Content-Type: application/json' \
-  -d '{"user_id":"u1","session_id":"s1","query":"list suppliers whose on-time rate is below 0.9"}'
-```
+- **Console.** Ask, Data and History pages in English and Chinese, with no build step. Learning mode explains each
+  request from its stage events, and the Data page shows only what the caller may see.
+- **A2A.** `message/send` returns a finished task, and `message/stream` sends stage events over SSE before the same
+  result as `POST /query`. The agent card is published, and the contract's cases run in CI at a pinned tag.
+- **MCP and HTTP.** An MCP stdio server offers `list_databases` and `execute_sql` over the demo databases with the
+  same caps; HTTP serves `/query`, `/catalog`, `/history` and `/metrics` ([API](docs/api.md)).
 
-### Connect a model
-
-For first-time setup, copy `.env.example` to `.env` and fill in your provider's credentials, endpoint, and model names. Edit an existing `.env` directly.
-
-```dotenv
-AI_SQL_MODEL_PROVIDER=openai
-OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=https://api.openai.com/v1
-AI_SQL_CHAT_MODEL=your-chat-model
-AI_SQL_CODER_MODEL=your-coder-model
-```
-
-For Anthropic, use `AI_SQL_MODEL_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. Embedding and reranking have separate credential/endpoint settings; see [.env.example](.env.example) and the [deployment guide](docs/deployment.md). Restart after editing `.env`.
-
-The connection can also be changed in the console without a restart: **Settings → Advanced settings → Model connection** (admin key required; on an instance without sign-in, only from the machine it runs on). Test it there, save, and it applies to the next question. A connection saved this way outranks `.env` until you restore the server configuration — see [Changing the model connection from the console](docs/deployment.md#changing-the-model-connection-from-the-console).
-
-Schema retrieval uses local hash vectors unless you configure a real embedding model, either with `AI_SQL_EMBEDDING_BACKEND=remote` in `.env` or under **Settings → Advanced settings → Embedding**. Saving there tests the endpoint, rebuilds the retrieval index with the new model and only then switches to it. With OpenAI reasoning models (gpt-5 and later) requests carry `reasoning_effort` (`AI_SQL_REASONING_EFFORT`, default `low`) and `max_completion_tokens` instead of a temperature, and intent routing uses a strict JSON schema.
-
-### Connect your databases
+## Develop
 
 ```bash
-python -m ai_sql_agent.semantic export semantic/
-# Edit semantic/*.yaml: connections, tables/columns, aliases, join keys, and metrics
-python -m ai_sql_agent.semantic validate semantic/
+python3 -m venv .venv && source .venv/bin/activate  # a virtual environment for Python 3.11+
+pip install -e ".[dev]"                             # the service, its pinned dependencies and test tools
+python examples/end_to_end.py                       # single- and cross-database questions, mock model
+./scripts/run_api.sh                                # console and API on http://localhost:8000, demo data
+cp .env.example .env                                # then set the model provider, key and model names
+python -m ai_sql_agent.semantic export semantic/    # a semantic-layer template for your databases
+python -m ai_sql_agent.semantic validate semantic/  # check it against the live schema
 ```
 
-Set `AI_SQL_SEMANTIC_DIR=semantic/` and restart. Validation compares metadata with the live database schema. Without a configured directory, the built-in demo semantic layer is used.
+Without model credentials the service answers from a mock model. Point `AI_SQL_SEMANTIC_DIR` at the semantic directory
+to query your own databases; setup is in [docs/deployment.md](docs/deployment.md#2-configuration), and another semantic
+layer with sample data is in [tools/simple_erp](tools/simple_erp/README.md) (in Chinese).
 
-The simplified cabinet-shop example uses four databases, nine tables, and 60 columns linked by order number.
-Generate its data and set `AI_SQL_SEMANTIC_DIR=tools/simple_erp/semantic`; see the [simplified database guide](tools/simple_erp/README.md).
-
-For shared deployments, enable `AI_SQL_AUTH_MODE=api_key` and configure permissions and read-only database accounts. See the [deployment guide](docs/deployment.md) for Docker Compose, pgvector, and private vLLM setups.
-
-## Evaluation and current limits
-
-**Historical baseline, 2026-09-09:** 150 demo cases, three-run aggregate, model identifier `claude-sonnet-5`, built-in demo metadata. **The release gate has not passed.**
-
-| Metric | Result | Gate |
-| --- | --- | --- |
-| Single-database execution accuracy | **93.3%** | ≥ 85% |
-| Cross-database execution accuracy | **85.3%** | ≥ 90%; below target |
-| Silent-error rate | **5.3%** | ≤ 3%; above target |
-| Risk-warning false-alarm rate | **5.6%** | ≤ 20% |
-| Overall execution accuracy | **92.0%** | — |
-
-These numbers do not establish current-commit accuracy on real business databases. The three-run record used an earlier primary-key prompt rule; the current expanded rule has only one full run. Demo metadata also differs from a deployment's semantic layer. See the [measurement record](benchmark/baseline/2026-09-09/README.md) for conditions, artifacts, and attribution.
+## Test
 
 ```bash
-python -m pytest tests -q   # Some integration cases need services / the contract repo
-make gate-smoke            # Offline smoke coverage, not full release acceptance
-make gate                  # Full release gate; requires model credentials
+make test        # 1,199 tests with pytest; the 24 that need PostgreSQL skip without AI_SQL_PGVECTOR_DSN
+make test-ci     # the unittest entry point CI uses
+make gate-smoke  # the release gate on its offline smoke sample
+make gate        # the full gate: 150 + 40 tasks, three runs; needs a model and spends tokens
 ```
 
-CI is configured for unit tests, pgvector integration, a pinned A2A contract, demos, and container smoke tests. See the [workflow](.github/workflows/ci.yml) and [benchmark guide](benchmark/README.md).
+CI runs the tests against a PostgreSQL 16 + pgvector service, the A2A contract cases at the pinned tag, the demos, the
+offline gate and its negative check, the read-only role tool both ways, and a Docker image smoke test with API keys on.
 
-### Known limits and unfinished verification (updated 2026-10-14)
+## Deploy
 
-- **Conversation-summary input limits are verified offline only.** The model reads bounded per-message excerpts while stored results remain complete. There is no total prompt budget, and the explicit save-to-knowledge-base summary path remains unbounded. Real multi-turn summary quality has not been verified. See [memory verification and limits](docs/modules/memory.md#verification-and-remaining-limits-2026-10-06).
-- **Model regression for the English adaptation is incomplete.** Two full gate rounds per side plus a partial third were run before the model key was disabled; the gate fails on the same three metrics before and after, and no full gate has been run on the final code. Record: [benchmark/baseline/2026-10-04](benchmark/baseline/2026-10-04/README.md). Do not cite those numbers as a baseline.
-- **PostgreSQL is not verified on a real database** for anything added here: the identifier-case rules in authorization, the preview SQL (not schema-qualified; structure is read from `public`, names resolve through `search_path`), and the least-privilege binding; and, from the 2026-10-14 authorization fixes, the view catalog scan and view expansion, whole-row references (`e.*`), and the refusal of functions that run a string as SQL (`query_to_xml`, `dblink`, `set_config`, …). Unit tests only.
-- **`AI_SQL_MAX_ROWS`, `AI_SQL_MAX_EXECUTION_SECONDS`, `AI_SQL_MAX_RESULT_BYTES` and `AI_SQL_MAX_VALUE_BYTES` are applied only to the API's in-process executors** (defaults 1000 rows / 10 s / 8 MiB / 8 MiB; the first two are the limits that were already in force while the variables were ignored). That is verified on SQLite; the PostgreSQL branch has unit tests against a stubbed driver only. On PostgreSQL the byte budget bounds what is returned, not what the driver has already received, and there is no per-value limit. The MCP stdio server keeps a fixed 1000 rows / 10 s / 8 MiB. Preview pages shrink to the row cap when it is lower than the page size.
-- **Views under a restricted policy:** for a role with any deny rule, reading a view counts as reading all its base tables, so it is refused if a base table is denied, has column restrictions, or the view definition cannot be parsed. A table or view created after the last scan is refused until the next schema poll or `POST /admin/schema/reload`; while a database's scan is failing, such roles are refused everything in that database. An output alias that matches a denied column (`1 AS salary … ORDER BY salary`) is refused too. See [authorization model §3.1–3.2 (中文)](docs/authz-model.md).
-- **The catalog reads table structure before checking the caller's policy** (cached, single-flight); nothing is returned to a caller who may not see it.
-- **Handling of a rejected model credential is verified with mock transports only.** The wording lists that recognise "quota exhausted", "key disabled" and "model not permitted" are heuristics; state is per process; requests already in flight when the first rejection arrives cannot be recalled.
-- **English UI:** dictionary text is shown as written when the semantic metadata has no English keys, and server-side free text (routing reason, validator notes, error messages) is Chinese.
-- **Routing fallback:** when the routing model is unavailable, the rule-based fallback sends most colloquial Chinese questions (30 of the 40 hold-out phrasings) to conversation instead of a query.
-- **Joint integration with the Helpdesk over A2A has not been run** for this change set.
-
-<details>
-<summary><strong>API reference</strong></summary>
-
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /query` | Answer, per-step SQL/results, risk flags, and trace information |
-| `GET /history` | Query history; own records by default |
-| `GET /whoami` | The identity this request resolves to (same resolution as `/query`) and what the service supports |
-| `GET /catalog` | Data catalog the caller may see: domains, tables, fields, units, business terms |
-| `POST /catalog/{database}/{table}/rows` | Read-only, paginated preview with search / filter / sort; no SQL accepted |
-| `POST /catalog/{database}/{table}/profile` | Aggregates only, never rows: record count, how many values each field has, value breakdowns, records per month; same filters as the preview |
-| `POST /memory/save` | Save personal long-term memory |
-| `POST /feedback` · `GET /feedback/stats` | Answer feedback and administrator statistics |
-| `GET /health` · `GET /readyz` | Liveness and readiness |
-| `GET /metrics` | Prometheus-format metrics |
-| `POST /admin/schema/reload` | Administrator-triggered schema index rebuild |
-
-`POST /query` includes `answer`, `has_risk`, `degraded`, `trace_id`, and per-step execution information.
-
-The catalog endpoints reuse the caller identity and table/column policy of `/query`. A preview is built server-side from an allowlist of real, visible columns, binds every value as a parameter, and runs through the same read-only executor and authorization gate as generated SQL. What it fetches is bounded in the database, not afterwards: long text is cut at 2,000 characters and binary fields return only their size. The profile behind the Data page's charts follows the same rules and returns aggregates only; a field's breakdown ignores that field's own filter, so a chosen value can be swapped for another.
-
-</details>
-
-<details>
-<summary><strong>Repository map</strong></summary>
-
-```text
-src/ai_sql_agent/
-  api/ · a2a/ · mcp_server/       Web console, HTTP API, and agent interfaces
-  pipeline/ · normalization/     Routing, question normalization, orchestration
-  semantic/ · retrieval/         Business semantics and SchemaGraph retrieval
-  indexing/ · memory/            Vector indexes, sessions, long-term memory
-  planning/ · generation/        Cross-database plans and SQL generation
-  execution/ · repair/           Guarded execution and SQL repair
-  validation/ · feedback/        Result checks and feedback loop
-  auth/ · audit/ · core/ · ops/   Permissions, audit, runtime, read-only role tools
-tests/ · benchmark/              Tests, datasets, baselines, release gate
-examples/ · tools/sim_erp/        Runnable examples and simulated multi-database ERP
-deploy/                         Docker image and Compose stacks
-docs/                           Deep dives, architecture, and screenshot assets
+```bash
+cp deploy/api_keys.example.json deploy/api_keys.json  # API keys, roles and table and column policies
+make up                                               # the app and PostgreSQL + pgvector, in Docker Compose
+make vllm-up                                          # the same with a self-hosted vLLM model server
 ```
 
-</details>
-
-## Further reading
-
-[Project walkthrough (中文)](docs/walkthrough.zh-CN.md) · [Deployment](docs/deployment.md) · [Authorization model (中文)](docs/authz-model.md) · [Least privilege (中文)](docs/least-privilege-runbook.md) · [Schema retrieval](docs/modules/retrieval.md) · [Execution](docs/modules/execution.md) · [A2A contract feedback (中文)](docs/contract-feedback.md)
+Model credentials, read-only database roles, metrics and backups are in [docs/deployment.md](docs/deployment.md).
+Design decisions: [docs/design.md](docs/design.md) · API: [docs/api.md](docs/api.md) · Known limits:
+[docs/limitations.md](docs/limitations.md) · Walkthrough: [docs/walkthrough.zh-CN.md](docs/walkthrough.zh-CN.md) (in
+Chinese).
