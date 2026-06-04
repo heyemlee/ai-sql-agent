@@ -1,22 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 566" width="960" height="566" role="img" aria-labelledby="title desc">
   <title id="title">AI SQL Agent architecture</title>
-  <desc id="desc">The web console and other agents call one FastAPI service, which maps API keys to table and column policies, applies rate limits and token quotas, and can switch the model and embedding connections live. Inside it an agent loop routes each question with an LLM router, retrieves tables and columns with BM25 and vectors fused by RRF, a reranker and a YAML semantic layer, plans one step per data source, writes SQL, runs it read-only through an SQLGlot gate, repairs it at most twice and checks the result with rules and an LLM self-check, keeping conversation memory and an audit trail under a trace_id. Model calls go to an OpenAI-compatible, Anthropic, vLLM or Ollama provider; SQL runs on SQLite or PostgreSQL data sources; memory, audit and vectors are kept in SQLite or pgvector. A separate MCP stdio server uses the same gate, Prometheus scrapes the metrics, and the project ships with Docker Compose, pytest, GitHub Actions and a release gate of 150 + 40 cases.</desc>
+  <desc id="desc">The web console and other agents call one FastAPI service, which checks API keys and quotas and can switch the model and embedding connections live. Inside it an agent loop routes each question with an LLM router and JSON-schema output, finds tables and columns with hybrid retrieval (BM25 and vectors fused by RRF, re-ranked, over a YAML semantic layer), plans, writes SQL, runs it read-only through an SQLGlot gate, repairs failures and checks the result with an LLM self-check, keeping memory and an audit trail under a trace_id. Model calls go to an OpenAI-compatible, Anthropic, vLLM or Ollama provider; SQL runs on SQLite or PostgreSQL data sources; memory, audit and vectors are kept in SQLite or pgvector. A separate MCP server uses the same gate, Prometheus scrapes the metrics, and the project ships with Docker Compose, pytest, GitHub Actions and a release gate of 150 + 40 cases.</desc>
   <style>
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif; }
     .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; fill: #8e8e93; }
-    .title { font-size: 15px; font-weight: 600; fill: #1d1d1f; }
     .name { font-size: 14px; font-weight: 600; fill: #1d1d1f; }
-    .tech { font-size: 12.5px; fill: #48484a; }
+    .tech { font-size: 12px; fill: #6e6e73; }
     .note { font-size: 11px; fill: #8e8e93; }
     .edge { font-size: 11px; fill: #8e8e93; }
-    .card { fill: #ffffff; stroke: #e3e3e8; stroke-width: 1; }
-    .frame { fill: #fafafb; stroke: #e3e3e8; stroke-width: 1; }
+    .card { fill: #ffffff; stroke: #e5e5ea; stroke-width: 1; }
+    .frame { fill: #f9f9fb; stroke: #e5e5ea; stroke-width: 1; }
     .wire { fill: none; stroke: #d6d6dc; stroke-width: 1.5; }
     .icon { fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-    .i-data { stroke: #0a7cff; }
-    .i-ai { stroke: #d97757; }
-    .i-svc { stroke: #0d9488; }
-    .dot-data { fill: #0a7cff; stroke: none; }
     .pulse {
       fill: none;
       stroke-width: 3;
@@ -75,199 +70,149 @@
 
   <rect x="0.5" y="0.5" width="959" height="565" rx="16" fill="#ffffff" stroke="#ececf0"/>
 
-  <!-- The container goes under the wires, its cards over them -->
-  <rect class="frame" x="304" y="36" width="328" height="466" rx="18"/>
-
-  <!-- Wires -->
-  <path class="wire" d="M232,127 C276,127 276,110 320,110"/>
-  <path class="wire" d="M232,230 C276,230 276,136 320,136"/>
-  <path class="wire" stroke-dasharray="4 5" d="M232,377 H320"/>
-  <path class="wire" d="M232,467 C276,467 276,453 320,453"/>
-  <path class="wire" d="M616,216 H732"/>
-  <path class="wire" d="M616,301 H732"/>
-  <path class="wire" d="M616,377 H732"/>
-  <path class="wire" d="M616,453 C674,453 674,470 732,470"/>
-
-  <text class="edge" x="268" y="368" text-anchor="middle">same gate</text>
-  <text class="edge" x="674" y="194" text-anchor="middle">route · plan</text>
-  <text class="edge" x="674" y="208" text-anchor="middle">SQL · check</text>
-  <text class="edge" x="674" y="293" text-anchor="middle">embed · rerank</text>
-  <text class="edge" x="674" y="368" text-anchor="middle">read-only SQL</text>
-
-  <!-- Pulses: a question from the console goes through the agent loop. The model routes it, retrieval embeds and
-       re-ranks, the model plans and writes SQL, the gate runs it, the model checks the result, memory and audit are
-       written, and the answer goes back. -->
-  <path class="pulse p-data" pathLength="1" filter="url(#glow)" d="M232,127 C276,127 276,110 320,110" style="animation-delay: 0s"/>
-  <path class="pulse p-ai" pathLength="1" filter="url(#glow)" d="M616,216 H732" style="animation-delay: 0.85s"/>
-  <path class="pulse p-ai" pathLength="1" filter="url(#glow)" d="M616,301 H732" style="animation-delay: 1.7s"/>
-  <path class="pulse p-ai" pathLength="1" filter="url(#glow)" d="M616,216 H732" style="animation-delay: 2.55s"/>
-  <path class="pulse p-data" pathLength="1" filter="url(#glow)" d="M616,377 H732" style="animation-delay: 3.4s"/>
-  <path class="pulse p-data" pathLength="1" filter="url(#glow)" d="M732,377 H616" style="animation-delay: 4.25s"/>
-  <path class="pulse p-ai" pathLength="1" filter="url(#glow)" d="M616,216 H732" style="animation-delay: 5.1s"/>
-  <path class="pulse p-svc" pathLength="1" filter="url(#glow)" d="M616,453 C674,453 674,470 732,470" style="animation-delay: 5.95s"/>
-  <path class="pulse p-data" pathLength="1" filter="url(#glow)" d="M320,110 C276,110 276,127 232,127" style="animation-delay: 6.8s"/>
-
-  <!-- Callers -->
-  <g filter="url(#lift)">
-    <rect class="card" x="32" y="80" width="200" height="94" rx="14"/>
-    <rect class="card" x="32" y="190" width="200" height="80" rx="14"/>
-    <rect class="card" x="32" y="337" width="200" height="80" rx="14"/>
-    <rect class="card" x="32" y="427" width="200" height="80" rx="14"/>
-  </g>
-  <use href="#si-javascript" x="50" y="93" width="15" height="15"/>
-  <text class="eyebrow" x="73" y="104">BROWSER</text>
-  <text class="title" x="50" y="127">Web console</text>
-  <text class="tech" x="50" y="147">Vanilla JS · ES modules</text>
-  <text class="note" x="50" y="163">no build step</text>
-
-  <g class="icon i-data" transform="translate(50 203)">
-    <rect x="1" y="4" width="14" height="10" rx="3"/>
-    <path d="M8 4 V1"/>
-    <circle class="dot-data" cx="5.5" cy="9" r="0.9"/>
-    <circle class="dot-data" cx="10.5" cy="9" r="0.9"/>
-  </g>
-  <text class="eyebrow" x="73" y="214">AGENTS</text>
-  <text class="title" x="50" y="237">Other agents</text>
-  <text class="tech" x="50" y="257">A2A · JSON-RPC 2.0 + SSE</text>
-
-  <use href="#si-modelcontextprotocol" x="50" y="350" width="15" height="15" fill="#1d1d1f"/>
-  <text class="eyebrow" x="73" y="361">SEPARATE PROCESS</text>
-  <text class="title" x="50" y="384">MCP stdio server</text>
-  <text class="tech" x="50" y="404">MCP Python SDK</text>
-
-  <use href="#si-prometheus" x="50" y="440" width="15" height="15" fill="#E6522C"/>
-  <text class="eyebrow" x="73" y="451">MONITORING</text>
-  <text class="title" x="50" y="474">Prometheus</text>
-  <text class="tech" x="50" y="494">scrapes GET /metrics</text>
-
-  <!-- The FastAPI process -->
-  <use href="#si-fastapi" x="316" y="49" width="18" height="18" fill="#009688"/>
-  <text class="name" x="340" y="63">FastAPI service</text>
-  <g class="row">
-    <use class="logo" href="#si-python" fill="#3776AB" x="465.0" y="53.0" width="12" height="12"/>
-    <text class="edge" x="481.0" y="63">Python 3.11</text>
-    <text class="edge sep" x="546.1" y="63">·</text>
-    <use class="logo" href="#si-pydantic" fill="#E92063" x="554.4" y="53.0" width="12" height="12"/>
-    <text class="edge" x="570.4" y="63">Pydantic</text>
-  </g>
-  <g filter="url(#lift)">
-    <rect class="card" x="320" y="80" width="296" height="84" rx="12"/>
-    <rect class="card" x="320" y="174" width="296" height="84" rx="12"/>
-    <rect class="card" x="320" y="268" width="296" height="66" rx="12"/>
-    <rect class="card" x="320" y="344" width="296" height="66" rx="12"/>
-    <rect class="card" x="320" y="420" width="296" height="66" rx="12"/>
-  </g>
-
-  <!-- Each card lights up while the request is in it -->
-  <rect class="lit l-data" x="320" y="80" width="296" height="84" rx="12" style="animation-delay: 0.7s"/>
-  <rect class="lit l-data" x="320" y="80" width="296" height="84" rx="12" style="animation-delay: 6.7s"/>
-  <rect class="lit l-ai" x="320" y="174" width="296" height="84" rx="12" style="animation-delay: 0.85s"/>
-  <rect class="lit l-ai" x="320" y="174" width="296" height="84" rx="12" style="animation-delay: 2.55s"/>
-  <rect class="lit l-ai" x="320" y="174" width="296" height="84" rx="12" style="animation-delay: 5.1s"/>
-  <rect class="lit l-ai" x="320" y="268" width="296" height="66" rx="12" style="animation-delay: 1.7s"/>
-  <rect class="lit l-data" x="320" y="344" width="296" height="66" rx="12" style="animation-delay: 3.4s"/>
-  <rect class="lit l-data" x="320" y="344" width="296" height="66" rx="12" style="animation-delay: 4.25s"/>
-  <rect class="lit l-svc" x="320" y="420" width="296" height="66" rx="12" style="animation-delay: 5.95s"/>
-
-  <g class="icon i-data" transform="translate(338 91)">
-    <circle cx="5" cy="11" r="3.5"/>
-    <path d="M7.5 8.5 L14.5 1.5 M12.2 3.8 L14.2 5.8 M10.2 5.8 L11.7 7.3"/>
-  </g>
-  <text class="name" x="362" y="103">HTTP · A2A · admin</text>
-  <text class="tech" x="338" y="123">API keys → table and column policy</text>
-  <text class="tech" x="338" y="139">rate limits · token quotas</text>
-  <text class="tech" x="338" y="155">live model and embedding switch</text>
-
-  <g class="icon i-ai" transform="translate(338 185)">
-    <path d="M14 8.5 A6 6 0 1 1 11 3.3"/>
-    <path d="M9.9 0.3 L11 3.3 L7.85 3.86"/>
-  </g>
-  <text class="name" x="362" y="197">Agent loop</text>
-  <text class="tech" x="338" y="217">LLM router · JSON-schema output</text>
-  <text class="tech" x="338" y="233">planner · SQL writer · repair ≤ 2</text>
-  <text class="tech" x="338" y="249">rule checks · LLM self-check</text>
-
-  <g class="icon i-data" transform="translate(338 279)">
-    <circle cx="6.5" cy="6.5" r="5"/>
-    <path d="M10.2 10.2 L15 15"/>
-  </g>
-  <text class="name" x="362" y="291">Hybrid retrieval</text>
-  <text class="tech" x="338" y="311">BM25 · vectors · RRF · rerank</text>
-  <text class="tech" x="338" y="327">YAML semantic layer · schema watcher</text>
-
-  <g class="icon i-data" transform="translate(338 355)">
-    <path d="M8 1 L14 3.5 V8 C14 11.6 11.4 14.2 8 15.2 C4.6 14.2 2 11.6 2 8 V3.5 Z"/>
-    <path d="M5.3 8.2 L7.2 10 L10.8 6.4"/>
-  </g>
-  <text class="name" x="362" y="367">SQL tool gate</text>
-  <text class="tech" x="338" y="387">SQLGlot AST authorization</text>
-  <text class="tech" x="338" y="403">read-only · one source per step</text>
-
-  <g class="icon i-svc" transform="translate(338 431)">
-    <circle cx="8" cy="8" r="6.5"/>
-    <path d="M8 4.5 V8 L10.5 9.5"/>
-  </g>
-  <text class="name" x="362" y="443">Memory · audit</text>
-  <text class="tech" x="338" y="463">conversation memory · summaries</text>
-  <text class="tech" x="338" y="479">trace_id audit · metrics</text>
-
-  <!-- What the agent calls -->
-  <rect class="card" x="732" y="196" width="196" height="130" rx="14" filter="url(#lift)"/>
-  <g class="icon i-ai" transform="translate(752 208)">
-    <path d="M8 0.5 C8.6 5 10.9 7.3 15.5 8 C10.9 8.7 8.6 11 8 15.5 C7.4 11 5.1 8.7 0.5 8 C5.1 7.3 7.4 5 8 0.5 Z"/>
-  </g>
-  <text class="name" x="776" y="220">LLM provider</text>
-  <text class="tech" x="752" y="242">OpenAI-compatible</text>
-  <g class="row">
-    <use class="logo" href="#si-anthropic" fill="#1d1d1f" x="752.0" y="249.5" width="13" height="13"/>
-    <text class="tech" x="769.0" y="260">Anthropic</text>
-  </g>
-  <g class="row">
-    <use class="logo" href="#si-vllm" fill="#30A2FF" x="752.0" y="267.5" width="13" height="13"/>
-    <text class="tech" x="769.0" y="278">vLLM</text>
-    <text class="tech sep" x="805.8" y="278">·</text>
-    <use class="logo" href="#si-ollama" fill="#1d1d1f" x="814.5" y="267.5" width="13" height="13"/>
-    <text class="tech" x="831.5" y="278">Ollama</text>
-  </g>
-  <text class="tech" x="752" y="296">embeddings · rerank</text>
-  <text class="note" x="752" y="316">a circuit breaker per role</text>
+  <!-- Container, wires and pulses go under the cards -->
+  <rect class="frame" x="330.0" y="32" width="300" height="458" rx="18"/>
+  <path class="wire" d="M248,129 C297,129 297,112 346,112"/>
+  <path class="wire" d="M248,217 C297,217 297,130 346,130"/>
+  <path class="wire" stroke-dasharray="4 5" d="M248,305 C297,305 297,380 346,380"/>
+  <path class="wire" d="M248,393 C297,393 297,446 346,446"/>
+  <path class="wire" d="M614,216 C663,216 663,145 712,145"/>
+  <path class="wire" d="M614,306 C663,306 663,185 712,185"/>
+  <path class="wire" d="M614,380 C663,380 663,270 712,270"/>
+  <path class="wire" d="M614,446 C663,446 663,375 712,375"/>
+  <text class="edge" x="256" y="297">same gate</text>
+  <path class="pulse p-data" pathLength="1" filter="url(#glow)" d="M248,129 C297,129 297,112 346,112" style="animation-delay: 0s"/>
+  <path class="pulse p-ai" pathLength="1" filter="url(#glow)" d="M614,216 C663,216 663,145 712,145" style="animation-delay: 0.85s"/>
+  <path class="pulse p-ai" pathLength="1" filter="url(#glow)" d="M614,306 C663,306 663,185 712,185" style="animation-delay: 1.7s"/>
+  <path class="pulse p-ai" pathLength="1" filter="url(#glow)" d="M614,216 C663,216 663,145 712,145" style="animation-delay: 2.55s"/>
+  <path class="pulse p-data" pathLength="1" filter="url(#glow)" d="M614,380 C663,380 663,270 712,270" style="animation-delay: 3.4s"/>
+  <path class="pulse p-data" pathLength="1" filter="url(#glow)" d="M712,270 C663,270 663,380 614,380" style="animation-delay: 4.25s"/>
+  <path class="pulse p-ai" pathLength="1" filter="url(#glow)" d="M614,216 C663,216 663,145 712,145" style="animation-delay: 5.1s"/>
+  <path class="pulse p-svc" pathLength="1" filter="url(#glow)" d="M614,446 C663,446 663,375 712,375" style="animation-delay: 5.95s"/>
+  <path class="pulse p-data" pathLength="1" filter="url(#glow)" d="M346,112 C297,112 297,129 248,129" style="animation-delay: 6.8s"/>
 
   <g filter="url(#lift)">
-    <path class="cyl" d="M732,345 V409 A98,12 0 0 0 928,409 V345" fill="#ffffff" stroke="#e3e3e8"/>
-    <ellipse cx="830" cy="345" rx="98" ry="12" fill="#eef5ff" stroke="#d3e4fb"/>
-    <path class="cyl" d="M732,445 V505 A98,12 0 0 0 928,505 V445" fill="#ffffff" stroke="#e3e3e8"/>
-    <ellipse cx="830" cy="445" rx="98" ry="12" fill="#eaf7f5" stroke="#c9ebe6"/>
+    <rect class="card" x="346.0" y="90" width="268.0" height="72" rx="14"/>
+    <rect class="card" x="346.0" y="172" width="268.0" height="88" rx="14"/>
+    <rect class="card" x="346.0" y="270" width="268.0" height="72" rx="14"/>
+    <rect class="card" x="346.0" y="352" width="268.0" height="56" rx="14"/>
+    <rect class="card" x="346.0" y="418" width="268.0" height="56" rx="14"/>
+    <rect class="card" x="32" y="101.0" width="216" height="56" rx="14"/>
+    <rect class="card" x="32" y="189.0" width="216" height="56" rx="14"/>
+    <rect class="card" x="32" y="277.0" width="216" height="56" rx="14"/>
+    <rect class="card" x="32" y="365.0" width="216" height="56" rx="14"/>
+    <rect class="card" x="712.0" y="101.0" width="216" height="104" rx="14"/>
+    <path class="cyl" d="M712.0,238.0 V298.0 A108.0,12 0 0 0 928.0,298.0 V238.0" fill="#ffffff" stroke="#e5e5ea"/>
+    <ellipse cx="820.0" cy="238.0" rx="108.0" ry="12" fill="#eef5ff" stroke="#d3e4fb"/>
+    <path class="cyl" d="M712.0,343.0 V409.0 A108.0,12 0 0 0 928.0,409.0 V343.0" fill="#ffffff" stroke="#e5e5ea"/>
+    <ellipse cx="820.0" cy="343.0" rx="108.0" ry="12" fill="#e8f6f4" stroke="#c9ebe6"/>
   </g>
-  <text class="name" x="830" y="382" text-anchor="middle">Data sources</text>
-  <g class="row">
-    <use class="logo" href="#si-sqlite" fill="#003B57" x="751.7" y="390.5" width="13" height="13"/>
-    <text class="tech" x="768.7" y="401">SQLite</text>
-    <text class="tech sep" x="812.9" y="401">·</text>
-    <use class="logo" href="#si-postgresql" fill="#4169E1" x="821.5" y="390.5" width="13" height="13"/>
-    <text class="tech" x="838.5" y="401">PostgreSQL</text>
-  </g>
-  <text class="name" x="830" y="470" text-anchor="middle">State</text>
-  <g class="row">
-    <use class="logo" href="#si-sqlite" fill="#003B57" x="760.4" y="477.5" width="13" height="13"/>
-    <text class="tech" x="777.4" y="488">SQLite</text>
-    <text class="tech sep" x="821.6" y="488">·</text>
-    <use class="logo" href="#si-postgresql" fill="#4169E1" x="830.3" y="477.5" width="13" height="13"/>
-    <text class="tech" x="847.3" y="488">pgvector</text>
-  </g>
-  <text class="note" x="830" y="503" text-anchor="middle">memory · audit · vectors</text>
 
-  <!-- Delivery -->
-  <text class="eyebrow" x="32" y="546">SHIPPED WITH</text>
+  <!-- Each module lights up while the request is in it -->
+  <rect class="lit l-data" x="346.0" y="90" width="268.0" height="72" rx="14" style="animation-delay: 0.7s"/>
+  <rect class="lit l-data" x="346.0" y="90" width="268.0" height="72" rx="14" style="animation-delay: 6.7s"/>
+  <rect class="lit l-ai" x="346.0" y="172" width="268.0" height="88" rx="14" style="animation-delay: 0.85s"/>
+  <rect class="lit l-ai" x="346.0" y="172" width="268.0" height="88" rx="14" style="animation-delay: 2.55s"/>
+  <rect class="lit l-ai" x="346.0" y="172" width="268.0" height="88" rx="14" style="animation-delay: 5.1s"/>
+  <rect class="lit l-ai" x="346.0" y="270" width="268.0" height="72" rx="14" style="animation-delay: 1.7s"/>
+  <rect class="lit l-data" x="346.0" y="352" width="268.0" height="56" rx="14" style="animation-delay: 3.4s"/>
+  <rect class="lit l-data" x="346.0" y="352" width="268.0" height="56" rx="14" style="animation-delay: 4.25s"/>
+  <rect class="lit l-svc" x="346.0" y="418" width="268.0" height="56" rx="14" style="animation-delay: 5.95s"/>
+
+  <rect x="360.0" y="104" width="28" height="28" rx="8" fill="#eef5ff"/>
+  <g class="icon" stroke="#0a7cff" color="#0a7cff" transform="translate(366.0 110.0)"><circle cx="5" cy="11" r="3.5"/><path d="M7.5 8.5 L14.5 1.5 M12.2 3.8 L14.2 5.8 M10.2 5.8 L11.7 7.3"/></g>
+  <text class="name" x="400.0" y="115">HTTP · A2A · admin</text>
+  <text class="tech" x="400.0" y="132">keys · rate limits · quotas</text>
+  <text class="tech" x="400.0" y="148">live model + embedding switch</text>
+  <rect x="360.0" y="186" width="28" height="28" rx="8" fill="#fdf0ea"/>
+  <g class="icon" stroke="#d97757" color="#d97757" transform="translate(366.0 192.0)"><path d="M14 8.5 A6 6 0 1 1 11 3.3"/><path d="M9.9 0.3 L11 3.3 L7.85 3.86"/></g>
+  <text class="name" x="400.0" y="197">Agent loop</text>
+  <text class="tech" x="400.0" y="214">LLM router · JSON schema</text>
+  <text class="tech" x="400.0" y="230">planner · SQL writer</text>
+  <text class="tech" x="400.0" y="246">repair · self-check</text>
+  <rect x="360.0" y="284" width="28" height="28" rx="8" fill="#eef5ff"/>
+  <g class="icon" stroke="#0a7cff" color="#0a7cff" transform="translate(366.0 290.0)"><circle cx="6.5" cy="6.5" r="5"/><path d="M10.2 10.2 L15 15"/></g>
+  <text class="name" x="400.0" y="295">Hybrid retrieval</text>
+  <text class="tech" x="400.0" y="312">BM25 · vectors · RRF · rerank</text>
+  <text class="tech" x="400.0" y="328">YAML semantic layer</text>
+  <rect x="360.0" y="366" width="28" height="28" rx="8" fill="#eef5ff"/>
+  <g class="icon" stroke="#0a7cff" color="#0a7cff" transform="translate(366.0 372.0)"><path d="M8 1 L14 3.5 V8 C14 11.6 11.4 14.2 8 15.2 C4.6 14.2 2 11.6 2 8 V3.5 Z"/><path d="M5.3 8.2 L7.2 10 L10.8 6.4"/></g>
+  <text class="name" x="400.0" y="377">SQL tool gate</text>
+  <text class="tech" x="400.0" y="394">SQLGlot AST · read-only</text>
+  <rect x="360.0" y="432" width="28" height="28" rx="8" fill="#e8f6f4"/>
+  <g class="icon" stroke="#0d9488" color="#0d9488" transform="translate(366.0 438.0)"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5 V8 L10.5 9.5"/></g>
+  <text class="name" x="400.0" y="443">Memory · audit</text>
+  <text class="tech" x="400.0" y="460">memory · trace_id · metrics</text>
+  <rect x="346.0" y="46" width="28" height="28" rx="8" fill="#f4f4f6"/>
+  <use href="#si-fastapi" x="352.0" y="52.0" width="16" height="16" fill="#009688"/>
+  <text class="name" x="386.0" y="58">FastAPI service</text>
   <g class="row">
-    <use class="logo" href="#si-docker" fill="#2496ED" x="128.0" y="535.5" width="13" height="13"/>
-    <text class="tech" x="145.0" y="546">Docker Compose</text>
-    <text class="tech sep" x="250.8" y="546">·</text>
-    <use class="logo" href="#si-pytest" fill="#0A9EDC" x="259.5" y="535.5" width="13" height="13"/>
-    <text class="tech" x="276.5" y="546">pytest</text>
-    <text class="tech sep" x="318.0" y="546">·</text>
-    <use class="logo" href="#si-githubactions" fill="#2088FF" x="326.7" y="535.5" width="13" height="13"/>
-    <text class="tech" x="343.7" y="546">GitHub Actions</text>
-    <text class="tech sep" x="437.0" y="546">·</text>
-    <text class="tech" x="445.7" y="546">release gate of 150 + 40 cases</text>
+    <use class="logo" href="#si-python" fill="#3776AB" x="386.0" y="64.5" width="13" height="13"/>
+    <text class="edge" x="403.0" y="75">Python 3.11</text>
+    <text class="edge sep" x="468.0" y="75">·</text>
+    <use class="logo" href="#si-pydantic" fill="#E92063" x="476.4" y="64.5" width="13" height="13"/>
+    <text class="edge" x="493.4" y="75">Pydantic</text>
+  </g>
+  <rect x="46" y="115.0" width="28" height="28" rx="8" fill="#f4f4f6"/>
+  <use href="#si-javascript" x="52.0" y="121.0" width="16" height="16"/>
+  <text class="name" x="86" y="126.0">Web console</text>
+  <text class="tech" x="86" y="143.0">Vanilla JS · ES modules</text>
+  <rect x="46" y="203.0" width="28" height="28" rx="8" fill="#eef5ff"/>
+  <g class="icon" stroke="#0a7cff" color="#0a7cff" transform="translate(52.0 209.0)"><rect x="1" y="4" width="14" height="10" rx="3"/><path d="M8 4 V1"/><circle cx="5.5" cy="9" r="0.9" fill="currentColor" stroke="none"/><circle cx="10.5" cy="9" r="0.9" fill="currentColor" stroke="none"/></g>
+  <text class="name" x="86" y="214.0">Other agents</text>
+  <text class="tech" x="86" y="231.0">A2A · JSON-RPC + SSE</text>
+  <rect x="46" y="291.0" width="28" height="28" rx="8" fill="#f4f4f6"/>
+  <use href="#si-modelcontextprotocol" x="52.0" y="297.0" width="16" height="16" fill="#1d1d1f"/>
+  <text class="name" x="86" y="302.0">MCP server</text>
+  <text class="tech" x="86" y="319.0">stdio · MCP Python SDK</text>
+  <rect x="46" y="379.0" width="28" height="28" rx="8" fill="#f4f4f6"/>
+  <use href="#si-prometheus" x="52.0" y="385.0" width="16" height="16" fill="#E6522C"/>
+  <text class="name" x="86" y="390.0">Prometheus</text>
+  <text class="tech" x="86" y="407.0">scrapes GET /metrics</text>
+  <rect x="726.0" y="115.0" width="28" height="28" rx="8" fill="#fdf0ea"/>
+  <g class="icon" stroke="#d97757" color="#d97757" transform="translate(732.0 121.0)"><path d="M8 0.5 C8.6 5 10.9 7.3 15.5 8 C10.9 8.7 8.6 11 8 15.5 C7.4 11 5.1 8.7 0.5 8 C5.1 7.3 7.4 5 8 0.5 Z"/></g>
+  <text class="name" x="766.0" y="126.0">LLM provider</text>
+  <text class="tech" x="766.0" y="143.0">OpenAI-compatible</text>
+  <g class="row">
+    <use class="logo" href="#si-anthropic" fill="#1d1d1f" x="766.0" y="148.5" width="13" height="13"/>
+    <text class="tech" x="783.0" y="159">Anthropic</text>
+  </g>
+  <g class="row">
+    <use class="logo" href="#si-vllm" fill="#30A2FF" x="766.0" y="164.5" width="13" height="13"/>
+    <text class="tech" x="783.0" y="175">vLLM</text>
+    <text class="tech sep" x="818.6" y="175">·</text>
+    <use class="logo" href="#si-ollama" fill="#1d1d1f" x="827.2" y="164.5" width="13" height="13"/>
+    <text class="tech" x="844.2" y="175">Ollama</text>
+  </g>
+  <text class="tech" x="766.0" y="191.0">embeddings · rerank</text>
+  <text class="name" x="820.0" y="268.0" text-anchor="middle">Data sources</text>
+  <g class="row">
+    <use class="logo" href="#si-sqlite" fill="#003B57" x="743.7" y="275.5" width="13" height="13"/>
+    <text class="tech" x="760.7" y="286">SQLite</text>
+    <text class="tech sep" x="803.5" y="286">·</text>
+    <use class="logo" href="#si-postgresql" fill="#4169E1" x="812.0" y="275.5" width="13" height="13"/>
+    <text class="tech" x="829.0" y="286">PostgreSQL</text>
+  </g>
+  <text class="name" x="820.0" y="373.0" text-anchor="middle">State</text>
+  <g class="row">
+    <use class="logo" href="#si-sqlite" fill="#003B57" x="752.0" y="380.5" width="13" height="13"/>
+    <text class="tech" x="769.0" y="391">SQLite</text>
+    <text class="tech sep" x="811.9" y="391">·</text>
+    <use class="logo" href="#si-postgresql" fill="#4169E1" x="820.4" y="380.5" width="13" height="13"/>
+    <text class="tech" x="837.4" y="391">pgvector</text>
+  </g>
+  <text class="note" x="820.0" y="406.0" text-anchor="middle">memory · audit · vectors</text>
+  <g class="row">
+    <text class="eyebrow" x="191.9" y="536">SHIPPED WITH</text>
+    <use class="logo" href="#si-docker" fill="#2496ED" x="292.7" y="525.5" width="13" height="13"/>
+    <text class="tech" x="309.7" y="536">Docker Compose</text>
+    <text class="tech sep" x="411.9" y="536">·</text>
+    <use class="logo" href="#si-pytest" fill="#0A9EDC" x="420.5" y="525.5" width="13" height="13"/>
+    <text class="tech" x="437.5" y="536">pytest</text>
+    <text class="tech sep" x="477.8" y="536">·</text>
+    <use class="logo" href="#si-githubactions" fill="#2088FF" x="486.4" y="525.5" width="13" height="13"/>
+    <text class="tech" x="503.4" y="536">GitHub Actions</text>
+    <text class="tech sep" x="593.6" y="536">·</text>
+    <text class="tech" x="602.2" y="536">release gate · 150 + 40 cases</text>
   </g>
 </svg>
