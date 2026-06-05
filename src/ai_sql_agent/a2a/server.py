@@ -492,9 +492,12 @@ async def _stream_events(request: Request, req_id: Any, principal, parsed: Parse
             _push(("error", None, exc), droppable=False)
 
     worker = asyncio.create_task(run())
-    yield _envelope(req_id, _task_frame(task_id, context_id, "submitted"))
 
+    # 首帧也要在 try 里：客户端恰好在首帧之后断开时，生成器在这个 yield 上被关掉——
+    # 放在 try 外面的话 finally 不会跑，并发名额永远不还（满 8 次之后新流全被 429），
+    # 断开处理也不会发生。
     try:
+        yield _envelope(req_id, _task_frame(task_id, context_id, "submitted"))
         while True:
             kind, a, b = await events.get()
             if kind == "stage":

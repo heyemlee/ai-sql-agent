@@ -130,6 +130,32 @@ class BackpressureTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"completed"', emitted[-1])
 
 
+class EarlyDisconnectTest(unittest.IsolatedAsyncioTestCase):
+    """
+    客户端在首帧之后立刻断开：并发名额必须还回去。
+
+    首帧的 yield 以前写在 try/finally 外面，生成器在那个 yield 上被关掉时 finally 不会跑——
+    名额永远不还，满 `a2a_stream_max_concurrent` 次之后新流全被 429。
+    """
+
+    async def test_disconnect_right_after_the_first_frame_releases_the_permit(self):
+        def slow_run(request, principal, parsed, began):
+            time.sleep(0.05)
+            return _Summary()
+
+        permit = a2a._admission()
+        self.assertTrue(permit.try_acquire())
+        generator = a2a._stream_events(
+            None, "id", _Principal(), a2a.ParsedMessage("q", "ctx", "u", "m"), "task", permit,
+        )
+        with patch.object(a2a, "_run_and_audit", slow_run):
+            first = await generator.__anext__()
+            await generator.aclose()  # 客户端此刻断开
+
+        self.assertIn('"kind": "task"', first)
+        self.assertEqual(permit.active, 0)
+
+
 class _Summary:
     answer = "ok"
 
