@@ -4,8 +4,9 @@ import json
 import logging
 import re
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from ai_sql_agent.auth import (
     ViewCatalog,
@@ -157,6 +158,27 @@ _MISSING_DATABASE = "缺失"
 _logger = get_logger("pipeline")
 
 
+class _ModelUnavailable(Exception):
+    """规划 / 生成 / 修复时模型不可用：交给 `_run` 走降级出口（`_degrade`）。"""
+
+    def __init__(self, failed_stage: str, error: ModelCallError):
+        super().__init__(str(error))
+        self.failed_stage = failed_stage
+        self.error = error
+
+
+@dataclass
+class _PreparedQuery:
+    """准备阶段的产物：规划、逐步执行、收尾都从这里取。"""
+
+    normalization: Any
+    effective_query: str
+    keywords: List[str]
+    contextual_query: str
+    retrieval_result: Any
+    schema_context: str
+
+
 class Text2SQLPipeline:
     """
     AI SQL Agent Text2SQL 端到端流程。
@@ -306,9 +328,48 @@ class Text2SQLPipeline:
         user_id: str = "",
         history_queries: Optional[List[str]] = None,
     ) -> PipelineResult:
-        """`run()` 的实现体，用量上下文由 `run()` 负责。"""
-        access = access or ALLOW_ALL
+        """
+        `run()` 的实现体，用量上下文由 `run()` 负责。
 
+        顺序由代码固定：准备（归一化 → 抽词 → 检索）→ 规划 → 逐步（生成 → 执行 → 修复 → 校验）
+        → 收尾。规划、生成、修复里模型不可用时，统一从这里走降级出口（`_degrade`）。
+        """
+        access = access or ALLOW_ALL
+        prepared = self._prepare(
+            query,
+            keywords=keywords,
+            conversation_context=conversation_context,
+            history_queries=history_queries,
+            access=access,
+        )
+        try:
+            cot_result = self._plan(prepared)
+            step_logs = self._run_steps(
+                query, prepared, cot_result, access=access, user_id=user_id
+            )
+        except _ModelUnavailable as unavailable:
+            return self._degrade(
+                query=query,
+                keywords=prepared.keywords,
+                schema_context=prepared.schema_context,
+                retrieval_result=prepared.retrieval_result,
+                access=access,
+                user_id=user_id,
+                failed_stage=unavailable.failed_stage,
+                error=unavailable.error,
+            )
+        return self._finish(query, prepared, cot_result, step_logs)
+
+    def _prepare(
+        self,
+        query: str,
+        *,
+        keywords: Optional[List[str]],
+        conversation_context: str,
+        history_queries: Optional[List[str]],
+        access: SchemaAccessFilter,
+    ) -> "_PreparedQuery":
+        """归一化 → 抽词 → 拼会话记忆 → 三层检索与预算裁剪。"""
         # ① 问题归一化：代词消解 + 相对时间表达式 → 绝对区间
         #
         # 这里以前是一条裸 log_event，而且**只在 changed 为真时才记**。两个后果：
@@ -393,6 +454,22 @@ class Text2SQLPipeline:
                 schema_context_chars=len(schema_context),
             )
 
+        return _PreparedQuery(
+            normalization=normalization,
+            effective_query=effective_query,
+            keywords=resolved_keywords,
+            contextual_query=contextual_query,
+            retrieval_result=retrieval_result,
+            schema_context=schema_context,
+        )
+
+    def _plan(self, prepared: "_PreparedQuery"):
+        """短路径判定 + 规划（计划与库冲突时带着冲突重新规划一次）。模型不可用时抛 `_ModelUnavailable`。"""
+        effective_query = prepared.effective_query
+        contextual_query = prepared.contextual_query
+        retrieval_result = prepared.retrieval_result
+        schema_context = prepared.schema_context
+
         routing = decide_short_path(
             effective_query,
             selected_tables={
@@ -460,22 +537,315 @@ class Text2SQLPipeline:
                     replanned=replan_adopted,
                 )
         except ModelCallError as exc:
-            return self._degrade(
-                query=query,
-                keywords=resolved_keywords,
-                schema_context=schema_context,
-                retrieval_result=retrieval_result,
-                access=access,
-                user_id=user_id,
-                failed_stage="planning",
-                error=exc,
-            )
+            raise _ModelUnavailable("planning", exc) from exc
 
+        return cot_result
+
+    def _run_steps(
+        self,
+        query: str,
+        prepared: "_PreparedQuery",
+        cot_result,
+        *,
+        access: SchemaAccessFilter,
+        user_id: str,
+    ) -> List[StepExecutionLog]:
+        """按计划逐步执行；每一步拿上一步的结果回填（见 `_serialize_step_result`）。"""
+        retrieval_result = prepared.retrieval_result
         schema_stores = {
             database: LocalSchemaStore.from_schema_graph(graph)
             for database, graph in retrieval_result.schema_graphs.items()
         }
 
+        step_logs: List[StepExecutionLog] = []
+        previous_results = ""
+
+        for cot_step in cot_result.steps:
+            step_log, execution_result = self._run_step(
+                query,
+                prepared.effective_query,
+                cot_step,
+                cot_result,
+                step_index=len(step_logs) + 1,
+                schema_stores=schema_stores,
+                previous_results=previous_results,
+                access=access,
+                user_id=user_id,
+            )
+            step_logs.append(step_log)
+            if execution_result is not None:
+                previous_results = self._serialize_step_result(execution_result)
+
+        return step_logs
+
+    def _run_step(
+        self,
+        query: str,
+        effective_query: str,
+        cot_step,
+        cot_result,
+        *,
+        step_index: int,
+        schema_stores,
+        previous_results: str,
+        access: SchemaAccessFilter,
+        user_id: str,
+    ):
+        """
+        一步：生成 → 跨库检查 → 执行 → 修复 → 校验。
+
+        返回 `(步骤日志, 执行结果)`；Schema 不足、没有走到执行的步骤，执行结果为 None，
+        下一步的回填保持不变。模型在生成或修复时不可用就抛 `_ModelUnavailable`。
+        """
+        sql_cot_step = CotStep(
+            database=cot_step.database,
+            processing_objects=cot_step.processing_objects,
+            operation_instruction=cot_step.operation_instruction,
+            output_target=cot_step.output_target,
+            expected_cardinality=getattr(cot_step, "expected_cardinality", ""),
+        )
+
+        schema_store = self._resolve_schema_store(
+            schema_stores, sql_cot_step
+        )
+
+        # 权限收紧到一张表都不剩时，检索结果是空的。以前这里会一路走到
+        # `next(iter({}))` 抛 StopIteration，HTTP 层翻成 500——权限不足
+        # 是个正常业务结论，不是服务故障。deny by default 之后这条路更容易
+        # 走到（角色没配策略就是这个形态），所以必须先判掉。
+        if schema_store is None:
+            return self._schema_insufficient_step(sql_cot_step, step_index), None
+
+        sql_generator = SqlGenerator(
+            schema_store=schema_store,
+            coder_client=CoderModelClient(
+                CoderModelConfig(
+                    use_mock_when_no_api_key=True,
+                )
+            ),
+        )
+
+        # 规划阶段判定 Schema 不足（无相关表，或相关表不在当前用户权限内）：
+        # 直接给出人能看懂的结论，不要退化成“找不到执行器”这种内部错误
+        if sql_cot_step.database not in self.dialects:
+            return self._schema_insufficient_step(sql_cot_step, step_index), None
+
+        step_dialect = self.dialects.get(sql_cot_step.database, "sqlite")
+
+        local_schema = schema_store.extract_local_schema(sql_cot_step)
+
+        certified_examples = self._certified_examples(
+            query=effective_query,
+            database=sql_cot_step.database,
+            user_id=user_id,
+            access=access,
+        )
+
+        with stage(
+            "sql_generation",
+            _logger,
+            step=step_index,
+            database=sql_cot_step.database,
+            dialect=step_dialect,
+            with_backfill=bool(previous_results),
+            certified_examples=bool(certified_examples),
+        ) as generation_stage:
+            try:
+                sql_result = sql_generator.generate(
+                    sql_cot_step,
+                    sql_dialect=step_dialect,
+                    previous_results=previous_results,
+                    certified_examples=certified_examples,
+                )
+            except ModelCallError as exc:
+                generation_error = exc
+                sql_result = None
+            else:
+                generation_error = None
+                generation_stage.set(sql=sql_result.sql)
+
+        # 跨库静态校验：生成的 SQL 只能引用**当前步骤目标库**里的表。
+        #
+        # 跨库问题里模型很容易把两个库压进一条 SQL（在 erp 的步骤里写
+        # `... IN (SELECT project_code FROM project)`），执行时报
+        # 「no such table」。这类错误静态就能判出来，不必等数据库报错——
+        # 而且带着「哪张表不在这个库」的提示重生成，比让修复回路去猜有效。
+        if sql_result is not None and self.config.enable_cross_db_guard:
+            sql_result = self._enforce_step_database(
+                sql_result=sql_result,
+                cot_step=sql_cot_step,
+                generator=sql_generator,
+                dialect=step_dialect,
+                previous_results=previous_results,
+                step_index=step_index,
+                certified_examples=certified_examples,
+            )
+
+        if generation_error is not None:
+            raise _ModelUnavailable("sql_generation", generation_error)
+
+        execution_request = sql_result.to_execution_request()
+
+        with stage(
+            "execution",
+            _logger,
+            step=step_index,
+            database=sql_cot_step.database,
+        ) as execution_stage:
+            denied = self._check_table_access(
+                database=sql_cot_step.database,
+                sql=sql_result.sql,
+                access=access,
+            )
+            if denied:
+                execution_result = MCPExecutionResult(
+                    database=sql_cot_step.database,
+                    sql=sql_result.sql,
+                    success=False,
+                    error=(
+                        f"没有访问权限：{', '.join(denied)}。"
+                        "请联系管理员申请该表的查询权限。"
+                    ),
+                )
+                ACCESS_DENIED.inc(database=sql_cot_step.database)
+                SQL_EXECUTIONS.inc(
+                    database=sql_cot_step.database, status="denied"
+                )
+                execution_stage.set(
+                    success=False,
+                    row_count=0,
+                    denied_tables=denied,
+                    error=execution_result.error,
+                )
+            else:
+                execution_result = self.mcp_router.execute(execution_request)
+                SQL_EXECUTIONS.inc(
+                    database=sql_cot_step.database,
+                    status="ok" if execution_result.success else "error",
+                )
+                execution_stage.set(
+                    success=execution_result.success,
+                    row_count=execution_result.row_count,
+                    truncated=execution_result.truncated,
+                    error=execution_result.error,
+                )
+
+        final_sql = sql_result.sql
+        repair_attempts: List[dict] = []
+
+        if not execution_result.success and self.config.enable_repair and not denied:
+            try:
+                with stage(
+                    "repair",
+                    _logger,
+                    step=step_index,
+                    database=sql_cot_step.database,
+                    error=execution_result.error,
+                ) as repair_stage:
+                    outcome = self.sql_repair.repair(
+                        database=sql_cot_step.database,
+                        sql=sql_result.sql,
+                        error_message=execution_result.error or "",
+                        local_schema=local_schema,
+                        sql_dialect=step_dialect,
+                        execute=lambda database, sql: self.mcp_router.execute(
+                            {"database": database, "sql": sql}
+                        ),
+                    )
+                    repair_attempts = [
+                        attempt.to_dict() for attempt in outcome.attempts
+                    ]
+                    SQL_REPAIRS.inc(
+                        result="repaired" if outcome.repaired else "failed"
+                    )
+                    repair_stage.set(
+                        attempts=len(repair_attempts),
+                        repaired=outcome.repaired,
+                        final_sql=outcome.final_sql,
+                    )
+            except ModelCallError as exc:
+                # 修复要靠模型重写 SQL。模型不可用时这里以前没有接住，异常一路冒到
+                # HTTP 层变成 500——规划、生成阶段遇到同一个错误都是走降级的，
+                # 修复不该是例外。
+                SQL_REPAIRS.inc(result="model_unavailable")
+                raise _ModelUnavailable("repair", exc) from exc
+            if outcome.repaired and outcome.final_result is not None:
+                execution_result = outcome.final_result
+                final_sql = outcome.final_sql
+
+        # 单位先算出来：语义自检要拿它当已知事实（见 self_check._UNIT_FACTS）
+        units, records = self._provenance(
+            database=sql_cot_step.database,
+            sql=final_sql,
+            execution_result=execution_result,
+        )
+
+        # 软异常校验：SQL 跑通了，但结果未必对
+        validation_payload: dict = {}
+        if execution_result.success and self.config.enable_validation and not denied:
+            with stage(
+                "validation",
+                _logger,
+                step=step_index,
+                database=sql_cot_step.database,
+            ) as validation_stage:
+                outcome = self.result_validator.validate(
+                    query=query,
+                    sql=final_sql,
+                    row_count=execution_result.row_count,
+                    expected_cardinality=getattr(
+                        sql_cot_step, "expected_cardinality", ""
+                    ),
+                    is_final_step=(step_index == len(cot_result.steps)),
+                    preceding_summary=self._preceding_summary(
+                        cot_result.steps, step_index
+                    ),
+                    step_objective=(
+                        f"{sql_cot_step.operation_instruction}"
+                        f"（输出：{sql_cot_step.output_target}）"
+                        if self.config.enable_intermediate_self_check
+                        else ""
+                    ),
+                    column_units=units,
+                )
+                validation_payload = outcome.to_dict()
+                for finding in outcome.findings:
+                    RESULT_ANOMALIES.inc(
+                        anomaly=finding.anomaly.value,
+                        severity=finding.severity,
+                    )
+                validation_stage.set(
+                    passed=outcome.passed,
+                    findings=[f.anomaly.value for f in outcome.findings],
+                )
+
+        step_log = StepExecutionLog(
+            database=sql_cot_step.database,
+            cot_step=sql_cot_step,
+            local_schema=local_schema.to_prompt_context(),
+            sql=sql_result.sql,
+            execution_request=execution_request,
+            execution_result=execution_result.to_dict(),
+            repair_attempts=repair_attempts,
+            final_sql=final_sql,
+            validation=validation_payload,
+            column_units=units,
+            source_records=records,
+        )
+        return step_log, execution_result
+
+    def _finish(
+        self,
+        query: str,
+        prepared: "_PreparedQuery",
+        cot_result,
+        step_logs: List[StepExecutionLog],
+    ) -> PipelineResult:
+        """完成日志与结果组装。"""
+        retrieval_result = prepared.retrieval_result
+        normalization = prepared.normalization
+        resolved_keywords = prepared.keywords
+        schema_context = prepared.schema_context
         retrieved_columns = [
             f"{database}.{table_name}.{getattr(column, 'column_name', '')}"
             for database, graph in retrieval_result.schema_graphs.items()
@@ -483,275 +853,6 @@ class Text2SQLPipeline:
             for column in columns
             if getattr(column, "column_name", "")
         ]
-
-        step_logs: List[StepExecutionLog] = []
-        previous_results = ""
-
-        for cot_step in cot_result.steps:
-            sql_cot_step = CotStep(
-                database=cot_step.database,
-                processing_objects=cot_step.processing_objects,
-                operation_instruction=cot_step.operation_instruction,
-                output_target=cot_step.output_target,
-                expected_cardinality=getattr(cot_step, "expected_cardinality", ""),
-            )
-
-            schema_store = self._resolve_schema_store(
-                schema_stores, sql_cot_step
-            )
-            step_index = len(step_logs) + 1
-
-            # 权限收紧到一张表都不剩时，检索结果是空的。以前这里会一路走到
-            # `next(iter({}))` 抛 StopIteration，HTTP 层翻成 500——权限不足
-            # 是个正常业务结论，不是服务故障。deny by default 之后这条路更容易
-            # 走到（角色没配策略就是这个形态），所以必须先判掉。
-            if schema_store is None:
-                step_logs.append(
-                    self._schema_insufficient_step(sql_cot_step, step_index)
-                )
-                continue
-
-            sql_generator = SqlGenerator(
-                schema_store=schema_store,
-                coder_client=CoderModelClient(
-                    CoderModelConfig(
-                        use_mock_when_no_api_key=True,
-                    )
-                ),
-            )
-
-            # 规划阶段判定 Schema 不足（无相关表，或相关表不在当前用户权限内）：
-            # 直接给出人能看懂的结论，不要退化成“找不到执行器”这种内部错误
-            if sql_cot_step.database not in self.dialects:
-                step_logs.append(
-                    self._schema_insufficient_step(sql_cot_step, step_index)
-                )
-                continue
-
-            step_dialect = self.dialects.get(sql_cot_step.database, "sqlite")
-
-            local_schema = schema_store.extract_local_schema(sql_cot_step)
-
-            certified_examples = self._certified_examples(
-                query=effective_query,
-                database=sql_cot_step.database,
-                user_id=user_id,
-                access=access,
-            )
-
-            with stage(
-                "sql_generation",
-                _logger,
-                step=step_index,
-                database=sql_cot_step.database,
-                dialect=step_dialect,
-                with_backfill=bool(previous_results),
-                certified_examples=bool(certified_examples),
-            ) as generation_stage:
-                try:
-                    sql_result = sql_generator.generate(
-                        sql_cot_step,
-                        sql_dialect=step_dialect,
-                        previous_results=previous_results,
-                        certified_examples=certified_examples,
-                    )
-                except ModelCallError as exc:
-                    generation_error = exc
-                    sql_result = None
-                else:
-                    generation_error = None
-                    generation_stage.set(sql=sql_result.sql)
-
-            # 跨库静态校验：生成的 SQL 只能引用**当前步骤目标库**里的表。
-            #
-            # 跨库问题里模型很容易把两个库压进一条 SQL（在 erp 的步骤里写
-            # `... IN (SELECT project_code FROM project)`），执行时报
-            # 「no such table」。这类错误静态就能判出来，不必等数据库报错——
-            # 而且带着「哪张表不在这个库」的提示重生成，比让修复回路去猜有效。
-            if sql_result is not None and self.config.enable_cross_db_guard:
-                sql_result = self._enforce_step_database(
-                    sql_result=sql_result,
-                    cot_step=sql_cot_step,
-                    generator=sql_generator,
-                    dialect=step_dialect,
-                    previous_results=previous_results,
-                    step_index=step_index,
-                    certified_examples=certified_examples,
-                )
-
-            if generation_error is not None:
-                return self._degrade(
-                    query=query,
-                    keywords=resolved_keywords,
-                    schema_context=schema_context,
-                    retrieval_result=retrieval_result,
-                    access=access,
-                    user_id=user_id,
-                    failed_stage="sql_generation",
-                    error=generation_error,
-                )
-
-            execution_request = sql_result.to_execution_request()
-
-            with stage(
-                "execution",
-                _logger,
-                step=step_index,
-                database=sql_cot_step.database,
-            ) as execution_stage:
-                denied = self._check_table_access(
-                    database=sql_cot_step.database,
-                    sql=sql_result.sql,
-                    access=access,
-                )
-                if denied:
-                    execution_result = MCPExecutionResult(
-                        database=sql_cot_step.database,
-                        sql=sql_result.sql,
-                        success=False,
-                        error=(
-                            f"没有访问权限：{', '.join(denied)}。"
-                            "请联系管理员申请该表的查询权限。"
-                        ),
-                    )
-                    ACCESS_DENIED.inc(database=sql_cot_step.database)
-                    SQL_EXECUTIONS.inc(
-                        database=sql_cot_step.database, status="denied"
-                    )
-                    execution_stage.set(
-                        success=False,
-                        row_count=0,
-                        denied_tables=denied,
-                        error=execution_result.error,
-                    )
-                else:
-                    execution_result = self.mcp_router.execute(execution_request)
-                    SQL_EXECUTIONS.inc(
-                        database=sql_cot_step.database,
-                        status="ok" if execution_result.success else "error",
-                    )
-                    execution_stage.set(
-                        success=execution_result.success,
-                        row_count=execution_result.row_count,
-                        truncated=execution_result.truncated,
-                        error=execution_result.error,
-                    )
-
-            final_sql = sql_result.sql
-            repair_attempts: List[dict] = []
-
-            if not execution_result.success and self.config.enable_repair and not denied:
-                try:
-                    with stage(
-                        "repair",
-                        _logger,
-                        step=step_index,
-                        database=sql_cot_step.database,
-                        error=execution_result.error,
-                    ) as repair_stage:
-                        outcome = self.sql_repair.repair(
-                            database=sql_cot_step.database,
-                            sql=sql_result.sql,
-                            error_message=execution_result.error or "",
-                            local_schema=local_schema,
-                            sql_dialect=step_dialect,
-                            execute=lambda database, sql: self.mcp_router.execute(
-                                {"database": database, "sql": sql}
-                            ),
-                        )
-                        repair_attempts = [
-                            attempt.to_dict() for attempt in outcome.attempts
-                        ]
-                        SQL_REPAIRS.inc(
-                            result="repaired" if outcome.repaired else "failed"
-                        )
-                        repair_stage.set(
-                            attempts=len(repair_attempts),
-                            repaired=outcome.repaired,
-                            final_sql=outcome.final_sql,
-                        )
-                except ModelCallError as exc:
-                    # 修复要靠模型重写 SQL。模型不可用时这里以前没有接住，异常一路冒到
-                    # HTTP 层变成 500——规划、生成阶段遇到同一个错误都是走降级的，
-                    # 修复不该是例外。
-                    SQL_REPAIRS.inc(result="model_unavailable")
-                    return self._degrade(
-                        query=query,
-                        keywords=resolved_keywords,
-                        schema_context=schema_context,
-                        retrieval_result=retrieval_result,
-                        access=access,
-                        user_id=user_id,
-                        failed_stage="repair",
-                        error=exc,
-                    )
-                if outcome.repaired and outcome.final_result is not None:
-                    execution_result = outcome.final_result
-                    final_sql = outcome.final_sql
-
-            # 单位先算出来：语义自检要拿它当已知事实（见 self_check._UNIT_FACTS）
-            units, records = self._provenance(
-                database=sql_cot_step.database,
-                sql=final_sql,
-                execution_result=execution_result,
-            )
-
-            # 软异常校验：SQL 跑通了，但结果未必对
-            validation_payload: dict = {}
-            if execution_result.success and self.config.enable_validation and not denied:
-                with stage(
-                    "validation",
-                    _logger,
-                    step=step_index,
-                    database=sql_cot_step.database,
-                ) as validation_stage:
-                    outcome = self.result_validator.validate(
-                        query=query,
-                        sql=final_sql,
-                        row_count=execution_result.row_count,
-                        expected_cardinality=getattr(
-                            sql_cot_step, "expected_cardinality", ""
-                        ),
-                        is_final_step=(step_index == len(cot_result.steps)),
-                        preceding_summary=self._preceding_summary(
-                            cot_result.steps, step_index
-                        ),
-                        step_objective=(
-                            f"{sql_cot_step.operation_instruction}"
-                            f"（输出：{sql_cot_step.output_target}）"
-                            if self.config.enable_intermediate_self_check
-                            else ""
-                        ),
-                        column_units=units,
-                    )
-                    validation_payload = outcome.to_dict()
-                    for finding in outcome.findings:
-                        RESULT_ANOMALIES.inc(
-                            anomaly=finding.anomaly.value,
-                            severity=finding.severity,
-                        )
-                    validation_stage.set(
-                        passed=outcome.passed,
-                        findings=[f.anomaly.value for f in outcome.findings],
-                    )
-
-            step_logs.append(
-                StepExecutionLog(
-                    database=sql_cot_step.database,
-                    cot_step=sql_cot_step,
-                    local_schema=local_schema.to_prompt_context(),
-                    sql=sql_result.sql,
-                    execution_request=execution_request,
-                    execution_result=execution_result.to_dict(),
-                    repair_attempts=repair_attempts,
-                    final_sql=final_sql,
-                    validation=validation_payload,
-                    column_units=units,
-                    source_records=records,
-                )
-            )
-
-            previous_results = self._serialize_step_result(execution_result)
 
         log_event(
             _logger,
