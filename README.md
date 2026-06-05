@@ -88,10 +88,10 @@ feedback and both vector indexes move to PostgreSQL + pgvector.
 ### The agent loop
 
 <p align="center">
-  <img src="docs/screenshots/agent.webp" width="960" alt="After an answer about rush orders, the follow-up “Which of these is due first?” is answered from the conversation without a new query; then a question about materials below safety stock fails on a column the table does not have, is repaired, and the query process shows the SQL before and after the repair" />
+  <img src="docs/screenshots/agent.webp" width="960" alt="In learning mode, after an answer about rush orders, the follow-up “Which of these is due first?” is answered from the conversation, and the Understand step explains that the router chose the conversation and no query ran; then a question about materials below safety stock fails on a column the table does not have and is repaired, and the Write the SQL and Run it steps show the SQL before and after the repair and the repair attempt" />
 </p>
 
-<p align="center"><sub>Made-up data. The plan, SQL and follow-up answer are replayed; the repair is the project's own repair loop run on that data, on its rule-based path.</sub></p>
+<p align="center"><sub>Made-up data, with learning mode on. The plan, SQL and follow-up answer are replayed; the repair is the project's own repair loop run on that data, on its rule-based path.</sub></p>
 
 - **Understand.** The router picks between querying and answering from the conversation; pronouns and phrases like
   "last quarter" are resolved before retrieval.
