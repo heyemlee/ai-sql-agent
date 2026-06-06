@@ -25,6 +25,12 @@ class AuditRecord:
     session_id: str
     query: str
 
+    run_id: str = ""
+    """
+    这次请求的 run（`ai_sql_agent.runs`）。trace_id 可以由调用方透传、不保证唯一，
+    run_id 一定唯一，拿它能取到这次请求按顺序的事件日志（`GET /runs/{run_id}/events`）。
+    """
+
     route: str = ""
     databases: List[str] = field(default_factory=list)
     tables: List[str] = field(default_factory=list)

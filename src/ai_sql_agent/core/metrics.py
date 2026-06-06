@@ -291,6 +291,31 @@ FEEDBACK_SUBMITTED = REGISTRY.register(
         ("verdict", "had_risk"),
     )
 )
+RUNS_TOTAL = REGISTRY.register(
+    Counter(
+        "ai_sql_runs_total",
+        "结束的 run 数（entry：http_query / a2a_send / a2a_stream）",
+        ("entry", "status"),
+    )
+)
+RUN_EVENTS_DROPPED = REGISTRY.register(
+    Counter(
+        "ai_sql_run_events_dropped_total",
+        "因存储故障没能落库的 run 事件数（查询本身不受影响）",
+        (),
+    )
+)
+RUN_CANCELLATIONS = REGISTRY.register(
+    Counter("ai_sql_run_cancellations_total", "收到的取消请求", ("reason",))
+)
+RUN_CANCEL_LATENCY = REGISTRY.register(
+    Histogram(
+        "ai_sql_run_cancel_latency_seconds",
+        "从收到取消到 run 真正停下的耗时（检查点的实际粒度）",
+        ("reason",),
+        buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 15.0, 30.0, 60.0, 120.0),
+    )
+)
 BUILD_INFO = REGISTRY.register(Gauge("ai_sql_up", "服务存活标记"))
 BUILD_INFO.set(1)
 

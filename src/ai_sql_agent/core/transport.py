@@ -43,6 +43,8 @@ from .model_access import (
     credential_fingerprint,
     endpoint_of,
 )
+from .run_context import cancellable_sleep, check_cancelled
+from .run_context import emit as emit_run_event
 from .settings import get_settings
 from .trace import record_usage
 
@@ -507,6 +509,9 @@ class ModelTransport:
         attempt = 0
 
         while True:
+            # 取消检查点：每次尝试之前。正在进行的那一次打断不了（同步 httpx、共享客户端），
+            # 最坏等它返回，结果丢弃。
+            check_cancelled()
             if attempt:
                 # 退避的这段时间里，别的调用可能已经确认这把凭证不能用了：
                 # 重试之前再问一次，不要把一个已知的拒绝再发一遍。
@@ -569,6 +574,8 @@ class ModelTransport:
                     duration_ms=duration_ms,
                     **usage,
                 )
+                emit_run_event("model.call", component=self.component, model=model,
+                               status="ok", attempt=attempt, duration_ms=duration_ms, **usage)
                 return result
 
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -597,12 +604,17 @@ class ModelTransport:
                 will_retry=can_retry,
                 error=str(error),
             )
+            emit_run_event("model.call", component=self.component, model=model,
+                           status="error", attempt=attempt, duration_ms=duration_ms,
+                           error_category=error.category, status_code=error.status_code,
+                           will_retry=can_retry, error=str(error))
 
             if not can_retry:
                 self._record_circuit_outcome(error)
                 raise error
 
-            self._sleep(self.retry_policy.delay_for(attempt, error.retry_after))
+            # 退避可被取消打断
+            cancellable_sleep(self.retry_policy.delay_for(attempt, error.retry_after), self._sleep)
             attempt += 1
 
     def stream_sse(
@@ -626,6 +638,7 @@ class ModelTransport:
         attempt = 0
 
         while True:
+            check_cancelled()
             if attempt:
                 self._guard_access(access_key, model)
             started = time.perf_counter()
@@ -647,6 +660,8 @@ class ModelTransport:
                             api_key=self.api_key,
                         )
                     for chunk in _iter_sse_content(response.iter_lines()):
+                        # 流式调用能在片段之间停下：退出 with 就关掉了这条连接
+                        check_cancelled()
                         emitted += 1
                         yield chunk
 
@@ -667,6 +682,7 @@ class ModelTransport:
             else:
                 self.circuit.record_success()
                 self.access.record_success(access_key, model)
+                duration_ms = round((time.perf_counter() - started) * 1000, 2)
                 log_event(
                     _logger,
                     logging.INFO,
@@ -675,8 +691,11 @@ class ModelTransport:
                     model=model,
                     status="ok",
                     attempt=attempt,
-                    duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                    duration_ms=duration_ms,
                 )
+                emit_run_event("model.call", component=self.component, model=model,
+                               status="ok", attempt=attempt, duration_ms=duration_ms,
+                               streamed=True)
                 return
 
             # 已经吐过内容的流不能重放，否则调用方会看到重复片段
@@ -687,6 +706,7 @@ class ModelTransport:
                 and self._can_wait_for(error)
             )
             self._record_access_outcome(access_key, model, error)
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
             log_event(
                 _logger,
                 logging.WARNING if can_retry else logging.ERROR,
@@ -695,17 +715,22 @@ class ModelTransport:
                 model=model,
                 status="error",
                 attempt=attempt,
-                duration_ms=round((time.perf_counter() - started) * 1000, 2),
+                duration_ms=duration_ms,
                 error_category=error.category,
                 status_code=error.status_code,
                 will_retry=can_retry,
                 error=str(error),
             )
+            emit_run_event("model.call", component=self.component, model=model,
+                           status="error", attempt=attempt, duration_ms=duration_ms,
+                           streamed=True, error_category=error.category,
+                           status_code=error.status_code, will_retry=can_retry,
+                           error=str(error))
             if not can_retry:
                 self._record_circuit_outcome(error)
                 raise error
 
-            self._sleep(self.retry_policy.delay_for(attempt, error.retry_after))
+            cancellable_sleep(self.retry_policy.delay_for(attempt, error.retry_after), self._sleep)
             attempt += 1
 
     # ------------------------------------------------------------------

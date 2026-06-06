@@ -64,6 +64,7 @@ class SQLiteAuditStore:
                 CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     trace_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     caller TEXT NOT NULL,
                     user_id TEXT NOT NULL,
@@ -106,6 +107,7 @@ class SQLiteAuditStore:
             ("degraded", "INTEGER NOT NULL DEFAULT 0"),
             ("has_risk", "INTEGER NOT NULL DEFAULT 0"),
             ("execution_status", "TEXT NOT NULL DEFAULT ''"),
+            ("run_id", "TEXT NOT NULL DEFAULT ''"),
         ):
             if column not in existing:
                 conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {column} {ddl}")
@@ -119,8 +121,8 @@ class SQLiteAuditStore:
                     route, databases, tables, sqls, denied_tables,
                     success, status_code, failed_steps, repaired_steps,
                     duration_ms, prompt_tokens, completion_tokens, degraded,
-                    has_risk, execution_status, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    has_risk, execution_status, error, run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.trace_id,
@@ -145,6 +147,7 @@ class SQLiteAuditStore:
                     int(record.has_risk),
                     record.execution_status,
                     record.error,
+                    record.run_id,
                 ),
             )
 
@@ -222,6 +225,7 @@ class PostgresAuditStore:
             CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
                 id BIGSERIAL PRIMARY KEY,
                 trace_id TEXT NOT NULL,
+                run_id TEXT NOT NULL DEFAULT '',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 caller TEXT NOT NULL,
                 user_id TEXT NOT NULL,
@@ -260,6 +264,10 @@ class PostgresAuditStore:
             f"ADD COLUMN IF NOT EXISTS execution_status TEXT NOT NULL DEFAULT ''"
         )
         self.conn.execute(
+            f"ALTER TABLE {TABLE_NAME} "
+            f"ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT ''"
+        )
+        self.conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_audit_user_time "
             f"ON {TABLE_NAME} (user_id, created_at)"
         )
@@ -280,10 +288,10 @@ class PostgresAuditStore:
                     route, databases, tables, sqls, denied_tables,
                     success, status_code, failed_steps, repaired_steps,
                     duration_ms, prompt_tokens, completion_tokens, degraded,
-                    has_risk, execution_status, error
+                    has_risk, execution_status, error, run_id
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -309,6 +317,7 @@ class PostgresAuditStore:
                     record.has_risk,
                     record.execution_status,
                     record.error,
+                    record.run_id,
                 ),
             )
 

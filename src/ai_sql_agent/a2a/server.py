@@ -9,6 +9,7 @@ import time
 import uuid
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, Optional, Tuple
@@ -19,7 +20,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ai_sql_agent.audit import AuditRecord
 from ai_sql_agent.core import get_settings, get_trace_id, log_event
 from ai_sql_agent.core.logging_setup import get_logger
+from ai_sql_agent.core.run_context import RunCancelled, RunContext, current_run
 from ai_sql_agent.core.trace import use_stage_sink
+from ai_sql_agent.runs import runs_of
+from ai_sql_agent.runs.disconnect import watch_disconnect
 
 # ai_sql_agent.api 在导入本包（app.include_router），所以这里的反向导入必须延迟到调用时，
 # 否则是循环导入。函数级 import 在这里不是坏味道，是方向使然。
@@ -290,10 +294,17 @@ def _terminal_frame(task_id: str, context_id: str, state: str, trace_id: str,
 
 def _run_and_audit(request: Request, principal, parsed: ParsedMessage, started: float):
     """同步跑 pipeline 并写审计。一次 stream = 一次 /query = 一条审计（契约 §5.5）。"""
-    from ai_sql_agent.api.result_summary import apply_summary_to_audit, summarize_result, write_audit
+    from ai_sql_agent.api.result_summary import (
+        apply_summary_to_audit,
+        run_outcome,
+        summarize_result,
+        write_audit,
+    )
 
+    run = current_run()
     audit = AuditRecord(trace_id=get_trace_id(), caller=principal.caller,
-                        user_id=principal.user_id, session_id=parsed.session_id, query=parsed.query)
+                        user_id=principal.user_id, session_id=parsed.session_id, query=parsed.query,
+                        run_id=run.run_id if run is not None else "")
     try:
         result = request.app.state.service.run(
             user_id=principal.user_id, session_id=parsed.session_id, query=parsed.query,
@@ -301,14 +312,47 @@ def _run_and_audit(request: Request, principal, parsed: ParsedMessage, started: 
         )
     except Exception as exc:
         audit.success = False
-        audit.status_code = 400 if isinstance(exc, ValueError) else 500
-        audit.error = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, RunCancelled):
+            # 取消不是故障：499（客户端关闭请求），配额照计（契约 §5.5）
+            audit.status_code, audit.error = 499, str(exc)
+        else:
+            audit.status_code = 400 if isinstance(exc, ValueError) else 500
+            audit.error = f"{type(exc).__name__}: {exc}"
         write_audit(request.app, audit, started, principal)
         raise
     summary = summarize_result(result)
     apply_summary_to_audit(summary, audit)
     write_audit(request.app, audit, started, principal)
+    if run is not None:
+        run.set_outcome(**run_outcome(summary))
     return summary
+
+
+def _start_run(request: Optional[Request], principal, parsed: ParsedMessage, task_id: str,
+               entry: str) -> Optional[RunContext]:
+    """
+    登记这次 run，run_id 就用 taskId（值仍是 uuid4 hex，线上看不出区别）。
+
+    先登记、后执行：在发首帧之前登记，调用方拿到 taskId 立刻取消也找得到。
+    没有 RunManager 时（单测直接调 `_stream_events`、request 为 None）返回 None，一切照旧。
+    """
+    runs = runs_of(getattr(request, "app", None))
+    if runs is None:
+        return None
+    return runs.start(entry=entry, caller=principal.caller, user_id=principal.user_id,
+                      session_id=parsed.session_id, query=parsed.query, run_id=task_id)
+
+
+def _running(request: Optional[Request], run: Optional[RunContext]):
+    runs = runs_of(getattr(request, "app", None))
+    return runs.running(run) if runs is not None and run is not None else nullcontext()
+
+
+def _run_bound(request: Request, run: Optional[RunContext], principal, parsed: ParsedMessage,
+               started: float):
+    """在 run 里跑 `_run_and_audit`（message/send 的工作线程入口）。"""
+    with _running(request, run):
+        return _run_and_audit(request, principal, parsed, started)
 
 
 def _task_result(task_id: str, context_id: str, state: str, artifact: Optional[Dict[str, Any]],
@@ -325,8 +369,15 @@ async def _handle_send(request: Request, req_id: Any, params: Any) -> JSONRespon
     parsed = _parse_message(params)
     principal = _admit(request, parsed.user_id)
     task_id, trace_id, started = uuid.uuid4().hex, get_trace_id(), time.perf_counter()
+    run = _start_run(request, principal, parsed, task_id, "a2a_send")
+    work = asyncio.to_thread(_run_bound, request, run, principal, parsed, started)
+    runs = runs_of(request.app)
+    if run is not None and runs is not None and get_settings().cancel_on_disconnect:
+        # 断开即取消（默认关，契约 §5.4）：调用方走了就在下一个检查点停
+        work = watch_disconnect(request, work,
+                                lambda: runs.cancel(run.run_id, "client_disconnected"))
     try:
-        summary = await asyncio.to_thread(_run_and_audit, request, principal, parsed, started)
+        summary = await work
     except ValueError as exc:
         raise JsonRpcError(E_INVALID_PARAMS, str(exc)) from exc
     except Exception as exc:
@@ -474,10 +525,15 @@ async def _stream_events(request: Request, req_id: Any, principal, parsed: Parse
         if stage is not None:              # memory_context 等内部 stage 刻意不发
             _push(("stage", stage, fields), droppable=True)
 
+    # 先登记、后执行：首帧发出之前 run 已经在登记表里。
+    # 落库是一次很短的同步写入，和 `_admit` 读配额一样直接在事件循环里做：放进默认线程池
+    # 会和 message/send 的 pipeline 抢线程，正是 §5.5 那次饥饿的老路。
+    run_ctx = _start_run(request, principal, parsed, task_id, "a2a_stream")
+
     def work():
         # contextvars 不会自动跟着 run_in_executor 走（asyncio.to_thread 会，
         # 这里不是）。trace_id、用量上下文、授权作用域都在 context 里，必须显式带过去。
-        with use_stage_sink(sink):
+        with use_stage_sink(sink), _running(request, run_ctx):
             return _run_and_audit(request, principal, parsed, started)
 
     context = contextvars.copy_context()
@@ -520,13 +576,23 @@ async def _stream_events(request: Request, req_id: Any, principal, parsed: Parse
             log_event(_logger, logging.WARNING, "a2a.progress_dropped",
                       trace_id=trace_id, dropped=dropped["count"])
         if not worker.done():
-            # **诚实说明**：cancel() 停得掉那个 await，停不掉已经在跑的同步线程。
-            # pipeline 没有取消点（契约 §5.4 已经写明这一点），SQL 会跑完、
-            # 审计照写、配额照扣，只是没人接收结果。这里把它记下来，
+            # cancel() 停得掉那个 await，停不掉已经在跑的同步线程；要停下 pipeline，
+            # 得给 run 置取消标记，它在下一个检查点停（SQL 立即中断，在途的模型调用跑完）。
+            #
+            # 默认不这么做：契约 v1.12 §5.4 写的是"断开后我方不中止"——SQL 跑完、审计照写、
+            # 配额照扣，只是没人接收结果。改它是一次双边契约变更，开关
+            # AI_SQL_CANCEL_ON_DISCONNECT 等契约出新版再开。这里把两种情况都记下来，
             # 免得「客户端断开后服务端还在烧钱」变成一件没人知道的事。
-            log_event(_logger, logging.INFO, "a2a.stream_abandoned",
-                      trace_id=trace_id, user_id=principal.user_id,
-                      note="客户端已断开，同步 pipeline 无取消点，后台继续跑完")
+            runs = runs_of(getattr(request, "app", None))
+            if run_ctx is not None and runs is not None and get_settings().cancel_on_disconnect:
+                runs.cancel(run_ctx.run_id, "client_disconnected")
+                log_event(_logger, logging.INFO, "a2a.stream_cancelled",
+                          trace_id=trace_id, run_id=run_ctx.run_id, user_id=principal.user_id)
+            else:
+                log_event(_logger, logging.INFO, "a2a.stream_abandoned",
+                          trace_id=trace_id, user_id=principal.user_id,
+                          run_id=run_ctx.run_id if run_ctx is not None else "",
+                          note="客户端已断开；断开即取消未开启（契约 §5.4），后台继续跑完")
 
 
 async def _handle_stream(request: Request, req_id: Any, params: Any):

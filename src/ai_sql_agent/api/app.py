@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from ai_sql_agent import __version__
 from ai_sql_agent.audit import AuditRecord, create_audit_store
@@ -36,9 +37,18 @@ from ai_sql_agent.core import (
 )
 from ai_sql_agent.memory import create_memory_service
 from ai_sql_agent.pipeline import PipelineConfig, Text2SQLPipeline, DynamicSqlAgentService
+from ai_sql_agent.core.run_context import RunCancelled
+from ai_sql_agent.runs import RunManager, create_run_store, runs_of
+from ai_sql_agent.runs.disconnect import watch_disconnect
 
 from .limits import RequestLimiter
-from .result_summary import StepLogResponse, parse_denied_tables, summarize_result, apply_summary_to_audit
+from .result_summary import (
+    StepLogResponse,
+    apply_summary_to_audit,
+    parse_denied_tables,
+    run_outcome,
+    summarize_result,
+)
 from .schema_watcher import SchemaWatcher
 from .security import AuthGuard, require_admin, require_api_key
 
@@ -203,6 +213,17 @@ async def lifespan(app: FastAPI):
     app.state.auth = AuthGuard()
     app.state.audit = create_audit_store()
     app.state.limiter = RequestLimiter(app.state.audit)
+
+    # 每次请求一条 run 记录 + 事件日志。上一个进程没收尾的 run 在这里标成 interrupted。
+    app.state.runs = RunManager(
+        create_run_store(),
+        max_attr_bytes=settings.run_event_attr_max_bytes,
+        retention_days=settings.runs_retention_days,
+        deadline_seconds=settings.run_deadline_seconds,
+    )
+    app.state.runs.sweep_orphans()
+    app.state.runs.purge_expired()
+    app.state.runs.start_maintenance()
 
     # 行数上限与执行超时取配置（AI_SQL_MAX_ROWS / AI_SQL_MAX_EXECUTION_SECONDS），经这份
     # PipelineConfig 交给执行器。启动日志也从它读：日志打出来的数就是执行器在用的数。
@@ -610,6 +631,10 @@ def _shutdown(app: FastAPI) -> None:
     if memory is not None:
         memory.close(wait=True)
 
+    runs = runs_of(app)
+    if runs is not None:
+        runs.shutdown()
+
     close_http_client()
 
     log_event(_logger, logging.INFO, "api.shutdown", stage="done")
@@ -639,6 +664,11 @@ app.include_router(_catalog_router)
 from .model_admin import router as _model_admin_router  # noqa: E402
 
 app.include_router(_model_admin_router)
+
+# 运行记录：GET /runs/{id}、/runs/{id}/events，POST /runs/{id}/cancel。只看得到自己的 run。
+from .runs import router as _runs_router  # noqa: E402
+
+app.include_router(_runs_router)
 
 
 class _ConsoleStaticFiles(StaticFiles):
@@ -908,19 +938,55 @@ def schema_status(principal=Depends(require_admin)) -> Dict[str, Any]:
 
 
 @app.post("/query", response_model=QueryResponse)
-def query(
+async def query(
     request: QueryRequest,
+    response: Response,
+    http_request: Request,
     api_key: Optional[ApiKeyRecord] = Depends(require_api_key),
 ) -> QueryResponse:
     """
     自然语言查询入口。
 
     动态路由决定进入 Text2SQL 链路还是对话问答链路。
-    每次调用都会落一条审计记录（含 trace_id、SQL、命中表、token 用量）。
-    """
-    principal = app.state.auth.resolve_principal(api_key, request.user_id)
-    app.state.limiter.check(principal)
+    每次调用都会落一条审计记录（含 trace_id、SQL、命中表、token 用量），
+    和一条 run 记录（响应头 `X-Run-Id`，事件日志见 `GET /runs/{run_id}/events`）。
 
+    主体仍是同步的，放在线程池里跑（和以前 `def` 端点一样）；这一层只多做一件事：
+    开了 `AI_SQL_CANCEL_ON_DISCONNECT` 时盯着客户端，断开就取消这次 run。
+    """
+    principal = await run_in_threadpool(_admit_query, api_key, request.user_id)
+
+    runs = runs_of(app)
+    run = None
+    if runs is not None:
+        run = await run_in_threadpool(
+            runs.start,
+            entry="http_query",
+            caller=principal.caller,
+            user_id=principal.user_id,
+            session_id=request.session_id,
+            query=request.query,
+        )
+        response.headers["X-Run-Id"] = run.run_id
+
+    work = run_in_threadpool(_answer_query, request, principal, run)
+    if run is None or not get_settings().cancel_on_disconnect:
+        return await work
+    return await watch_disconnect(
+        http_request, work, lambda: runs.cancel(run.run_id, "client_disconnected")
+    )
+
+
+def _admit_query(api_key: Optional[ApiKeyRecord], user_id: str):
+    """身份解析 + 限流配额（同步，读审计库算配额）。"""
+    principal = app.state.auth.resolve_principal(api_key, user_id)
+    app.state.limiter.check(principal)
+    return principal
+
+
+def _answer_query(request: QueryRequest, principal, run) -> QueryResponse:
+    """`/query` 的同步主体：跑 service、写审计、组装响应。"""
+    runs = runs_of(app)
     started = time.perf_counter()
     audit = AuditRecord(
         trace_id=get_trace_id(),
@@ -928,39 +994,50 @@ def query(
         user_id=principal.user_id,
         session_id=request.session_id,
         query=request.query,
+        run_id=run.run_id if run is not None else "",
     )
 
-    try:
-        result = app.state.service.run(
-            user_id=principal.user_id,
-            session_id=request.session_id,
-            query=request.query,
-            enable_long_term=request.enable_long_term,
-            access=principal.policy,
-        )
-    except ValueError as exc:
-        audit.success = False
-        audit.status_code = 400
-        audit.error = str(exc)
-        _write_audit(audit, started, principal)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        audit.success = False
-        audit.status_code = 500
-        audit.error = f"{type(exc).__name__}: {exc}"
-        _write_audit(audit, started, principal)
-        raise
+    with runs.running(run) if runs is not None and run is not None else nullcontext():
+        try:
+            result = app.state.service.run(
+                user_id=principal.user_id,
+                session_id=request.session_id,
+                query=request.query,
+                enable_long_term=request.enable_long_term,
+                access=principal.policy,
+            )
+        except RunCancelled as exc:
+            # 取消不是故障：审计照写（配额照计，契约 §5.5），状态码用 499（客户端关闭请求）
+            audit.success = False
+            audit.status_code = 499
+            audit.error = str(exc)
+            _write_audit(audit, started, principal)
+            raise HTTPException(status_code=499, detail="查询已取消。") from exc
+        except ValueError as exc:
+            audit.success = False
+            audit.status_code = 400
+            audit.error = str(exc)
+            _write_audit(audit, started, principal)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            audit.success = False
+            audit.status_code = 500
+            audit.error = f"{type(exc).__name__}: {exc}"
+            _write_audit(audit, started, principal)
+            raise
 
-    summary = summarize_result(result)
-    apply_summary_to_audit(summary, audit)
-    step_logs = summary.step_logs
-    selected_databases = summary.selected_databases
-    failed_steps = summary.failed_steps
-    repaired_steps = summary.repaired_steps
-    has_risk = summary.has_risk
-    degraded = summary.degraded
-    degrade_reason = summary.degrade_reason
-    _write_audit(audit, started, principal)
+        summary = summarize_result(result)
+        apply_summary_to_audit(summary, audit)
+        step_logs = summary.step_logs
+        selected_databases = summary.selected_databases
+        failed_steps = summary.failed_steps
+        repaired_steps = summary.repaired_steps
+        has_risk = summary.has_risk
+        degraded = summary.degraded
+        degrade_reason = summary.degrade_reason
+        _write_audit(audit, started, principal)
+        if run is not None:
+            run.set_outcome(**run_outcome(summary))
 
     log_event(
         _logger,

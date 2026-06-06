@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import time
 from typing import Dict
+
+from ai_sql_agent.core.run_context import cancel_token
+from ai_sql_agent.core.run_context import emit as emit_run_event
 
 from .objects import MCPExecutionRequest, MCPExecutionResult
 
@@ -43,4 +47,24 @@ class MCPRouter:
                 error=f"未找到数据库 {request.database} 对应的 MCP 执行器。",
             )
 
-        return executor.execute(request)
+        started = time.perf_counter()
+        result = executor.execute(request)
+        # 运行日志：每次执行一条。用途（首次执行 / 修复 / 降级重放）看事件的 stage 字段。
+        token = cancel_token()
+        if result.success:
+            status = "ok"
+        elif token is not None and token.cancelled:
+            status = "cancelled"
+        else:
+            status = "error"
+        emit_run_event(
+            "tool.sql",
+            database=request.database,
+            status=status,
+            row_count=result.row_count,
+            truncated=result.truncated,
+            duration_ms=round((time.perf_counter() - started) * 1000, 2),
+            sql=request.sql,
+            error=result.error,
+        )
+        return result

@@ -303,6 +303,38 @@ class SqlAgentSettings(BaseSettings):
     audit_db_path: str = "runtime_data/audit.db"
     """未配置 pgvector DSN 时审计落这个 SQLite 文件。"""
 
+    # ---- 运行记录（run）与事件日志 ----
+    runs_enabled: bool = True
+    """
+    每次请求落一条 run 记录和一份事件日志（`ai_sql_agent.runs`）。关掉时事件只在进程内流转，
+    `/runs` 查不到历史。这份数据丢了不影响查询。
+    """
+
+    runs_db_path: str = "runtime_data/runs.db"
+    """未配置 pgvector DSN 时 run 记录落这个 SQLite 文件（与审计一样，配了 DSN 就落 PostgreSQL）。"""
+
+    runs_retention_days: float = 7.0
+    """run 结束多少天后连同事件一起删掉。"""
+
+    run_event_attr_max_bytes: int = 16384
+    """单条事件 attrs 序列化后的上限；SQL 最多留 8 KiB，其余字符串 1 KiB，超出部分截断。"""
+
+    cancel_on_disconnect: bool = False
+    """
+    调用方断开连接时取消这次 run（三条入口：`/query`、A2A send、A2A stream）。
+
+    默认关：a2a-contract v1.12 §5.4 写的是"断开后我方不中止"，改这条是一次双边的契约变更，
+    契约出新版之前服务端不单方面改。控制台的停止按钮走 `POST /runs/{id}/cancel`，不受这个开关影响。
+    """
+
+    run_deadline_seconds: float = 0.0
+    """
+    一次 run 的总时长上限，超过就在下一个检查点取消。0 = 不限（默认）。
+
+    要开的话必须大于调用方的硬上限（今天 90 s）：契约 §5.3 说我方不会为了塞进调用方的预算
+    而截断查询，这个上限是保护服务自己的资源，不是替调用方计时。
+    """
+
     # ---- 熔断 ----
     circuit_breaker_enabled: bool = True
     circuit_failure_threshold: int = 5

@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from .logging_setup import get_logger, log_event
 from .metrics import STAGE_DURATION
+from .run_context import RunCancelled, check_cancelled, current_run, stage_frame
 
 _trace_id: ContextVar[str] = ContextVar("ai_sql_trace_id", default="")
 
@@ -183,10 +184,18 @@ def stage(
             st.set(databases=result.selected_databases)
 
     正常结束记 INFO（status=ok），抛异常记 ERROR（status=error）后原样向上抛。
+    这次请求被取消时记 INFO（status=cancelled）——取消不是故障。
+
+    在一次 run 里（见 `run_context`）还会做两件事：进入前检查取消（已取消就不进这个阶段，
+    也不发它的进度事件），进入和退出各向 run 的事件日志发一条 `stage.started` /
+    `stage.finished`。不在 run 里时这两件事都是空操作。
     """
     active_logger = logger or _logger
     recorder = StageRecorder()
     recorder.fields.update(initial_fields)
+
+    # 取消检查点：所有阶段都穿过这里，一处覆盖全部阶段边界
+    check_cancelled()
     started = time.perf_counter()
 
     # 进入即推。sink 抛错不能把 pipeline 带崩——进度是附加物，查询才是主体。
@@ -198,37 +207,75 @@ def stage(
             log_event(active_logger, logging.WARNING, "stage.sink_failed",
                       stage=name, error=f"{type(exc).__name__}: {exc}")
 
-    try:
-        yield recorder
-    except Exception as exc:
-        STAGE_DURATION.observe(
-            time.perf_counter() - started, stage=name, status="error"
-        )
-        log_event(
-            active_logger,
-            logging.ERROR,
-            f"stage.{name}",
-            status="error",
-            duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            error_type=type(exc).__name__,
-            error=str(exc),
-            **_without_reserved(
-                recorder.fields, ("status", "duration_ms", "error_type", "error")
-            ),
-        )
-        raise
-    else:
-        STAGE_DURATION.observe(
-            time.perf_counter() - started, stage=name, status="ok"
-        )
-        log_event(
-            active_logger,
-            logging.INFO,
-            f"stage.{name}",
-            status="ok",
-            duration_ms=round((time.perf_counter() - started) * 1000, 2),
-            **_without_reserved(recorder.fields, ("status", "duration_ms")),
-        )
+    run = current_run()
+    step = initial_fields.get("step")
+    step = step if isinstance(step, int) and not isinstance(step, bool) else None
+    if run is not None:
+        # step 进事件的信封，不在 attrs 里重复
+        run.emit("stage.started", stage=name, step=step,
+                 **{key: value for key, value in initial_fields.items() if key not in ("stage", "step")})
+
+    with stage_frame(name, step):
+        try:
+            yield recorder
+        except RunCancelled as exc:
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            STAGE_DURATION.observe(
+                time.perf_counter() - started, stage=name, status="cancelled"
+            )
+            log_event(
+                active_logger,
+                logging.INFO,
+                f"stage.{name}",
+                status="cancelled",
+                duration_ms=duration_ms,
+                cancel_reason=exc.reason,
+                **_without_reserved(
+                    recorder.fields, ("status", "duration_ms", "cancel_reason")
+                ),
+            )
+            if run is not None:
+                run.emit("stage.finished", stage=name, step=step, status="cancelled",
+                         duration_ms=duration_ms, fields=recorder.fields)
+            raise
+        except Exception as exc:
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            STAGE_DURATION.observe(
+                time.perf_counter() - started, stage=name, status="error"
+            )
+            log_event(
+                active_logger,
+                logging.ERROR,
+                f"stage.{name}",
+                status="error",
+                duration_ms=duration_ms,
+                error_type=type(exc).__name__,
+                error=str(exc),
+                **_without_reserved(
+                    recorder.fields, ("status", "duration_ms", "error_type", "error")
+                ),
+            )
+            if run is not None:
+                run.emit("stage.finished", stage=name, step=step, status="error",
+                         duration_ms=duration_ms, error_type=type(exc).__name__,
+                         error=str(exc), fields=recorder.fields)
+            raise
+        else:
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            STAGE_DURATION.observe(
+                time.perf_counter() - started, stage=name, status="ok"
+            )
+            log_event(
+                active_logger,
+                logging.INFO,
+                f"stage.{name}",
+                status="ok",
+                duration_ms=duration_ms,
+                **_without_reserved(recorder.fields, ("status", "duration_ms")),
+            )
+            if run is not None:
+                run.emit("stage.finished", stage=name, step=step, status="ok",
+                         duration_ms=duration_ms, fields=recorder.fields)
 
 
 def _without_reserved(fields: Dict[str, Any], reserved: tuple) -> Dict[str, Any]:

@@ -271,6 +271,20 @@ def apply_summary_to_audit(summary: ResultSummary, audit: AuditRecord) -> None:
     audit.repaired_steps = summary.repaired_steps
 
 
+def run_outcome(summary: "ResultSummary") -> Dict[str, Any]:
+    """写进 run.finished 的业务结论，与审计同一份来源——两边各算一份就会各说各话。"""
+    return {
+        "route": summary.route,
+        "degraded": summary.degraded,
+        "degrade_reason": summary.degrade_reason,
+        "execution_status": summary.execution_status,
+        "steps": len(summary.step_logs),
+        "failed_steps": summary.failed_steps,
+        "repaired_steps": summary.repaired_steps,
+        "has_risk": summary.has_risk,
+    }
+
+
 def write_audit(app, audit: AuditRecord, started: float, principal) -> None:
     """写审计记录；审计失败绝不影响查询本身。（与 /query 的 _write_audit 同一实现）"""
     usage = usage_summary()
