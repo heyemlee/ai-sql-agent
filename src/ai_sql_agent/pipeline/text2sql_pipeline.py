@@ -16,6 +16,7 @@ from ai_sql_agent.auth import (
 )
 from ai_sql_agent.auth.identifiers import bind_dialect
 from ai_sql_agent.core.errors import ModelCallError
+from ai_sql_agent.core.run_context import check_cancelled
 from ai_sql_agent.core import (
     get_logger,
     get_settings,
@@ -1247,6 +1248,8 @@ class Text2SQLPipeline:
 
         step_logs: List[StepExecutionLog] = []
         for index, (database, sql) in enumerate(history, start=1):
+            # 取消检查点：降级重放的每一步之前
+            check_cancelled()
             if not sql.strip():
                 return []
 

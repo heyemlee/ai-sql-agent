@@ -6,6 +6,7 @@ import re
 from typing import List, Optional
 
 from ai_sql_agent.core import get_logger, log_event
+from ai_sql_agent.core.run_context import check_cancelled
 from ai_sql_agent.execution.dialects import get_dialect
 
 from .clause_localizer import SqlClauseLocalizer
@@ -63,6 +64,8 @@ class SqlRepairService:
         current_error = error_message
 
         for attempt_no in range(1, self.max_attempts + 1):
+            # 取消检查点：每一轮修复之前（模型调用和 SQL 执行各自也会检查，这里写明是为了好读）
+            check_cancelled()
             error = self.log_parser.parse(current_error)
             clause = self.localizer.localize(current_sql, error)
 

@@ -4,6 +4,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from ai_sql_agent.core import get_settings
+from ai_sql_agent.core.run_context import cancel_token, check_cancelled
 
 from .authorization import enforce
 from .data_time import QUERY_TIME, now_rfc3339
@@ -20,6 +21,17 @@ def _current_user_id() -> str:
 
     scope = current_scope()
     return scope.user_id if scope is not None else ""
+
+
+def _canceller(conn):
+    """
+    向服务端发取消请求的回调（取消令牌在别的线程里触发它）。
+
+    psycopg 3.2 起推荐 `cancel_safe()`（不阻塞事件循环、走新的取消协议），老版本只有 `cancel()`。
+    服务端收到后以 `canceling statement due to user request` 中断语句，执行线程在 except 里收尾。
+    """
+    method = getattr(conn, "cancel_safe", None) or getattr(conn, "cancel", None)
+    return method if callable(method) else (lambda: None)
 
 
 class PostgresMCPExecutor:
@@ -125,11 +137,19 @@ class PostgresMCPExecutor:
         max_rows = request.row_cap(self.max_rows)
         max_seconds = request.time_cap(self.max_execution_seconds)
 
+        # 取消检查点：已经取消就不借连接、不发语句
+        check_cancelled()
+        token = cancel_token()
+        stop_watching = lambda: None  # noqa: E731
+
         conn = None
         pooled = False
         reusable = True
         try:
             conn, pooled = self._pool.acquire()
+            if token is not None:
+                # 执行期间被取消：让服务端中断这条语句，不等它自己跑完
+                stop_watching = token.on_cancel(_canceller(conn))
             timeout_ms = int(max_seconds * 1000)
             conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             if self.readonly:
@@ -206,14 +226,16 @@ class PostgresMCPExecutor:
             # 出过错的连接不还回池：它可能停在一个半死的事务里，
             # 下一个人拿到它会收到一条与自己无关的错误，最难排查的那种。
             reusable = False
+            cancelled = token is not None and token.cancelled
             return MCPExecutionResult(
                 database=request.database,
                 sql=sql,
                 success=False,
-                error=self._describe_error(exc, max_seconds),
+                error="查询已取消。" if cancelled else self._describe_error(exc, max_seconds),
             )
 
         finally:
+            stop_watching()
             if conn is not None:
                 # 事务级设置（statement_timeout / READ ONLY）随 rollback 一起还原，
                 # 所以归还的连接是干净的，下一次执行会重新设一遍。

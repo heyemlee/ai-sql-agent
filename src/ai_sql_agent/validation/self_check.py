@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Protocol
 
 from ai_sql_agent.core.model_text import plain_text
+from ai_sql_agent.core.run_context import RunCancelled
 
 from .objects import (
     SELF_CHECK_MISMATCH,
@@ -180,6 +181,9 @@ class SemanticSelfChecker:
                     query=query, paraphrase=paraphrase, facts=facts
                 )
             verdict_raw = self.client.generate(compare_prompt)
+        except RunCancelled:
+            # 请求被取消：照实往上抛，不能记成"自检没做"再把答案交出去
+            raise
         except Exception as exc:
             # 自检是增强项，不能因为它挂掉就让整条查询失败——但也不能假装它做过了。
             return SelfCheckResult(status=SELF_CHECK_NOT_RUN, error=type(exc).__name__)

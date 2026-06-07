@@ -6,6 +6,8 @@ from typing import List
 
 import numpy as np
 
+from ai_sql_agent.core.run_context import RunCancelled
+
 
 class LocalHashEmbeddingClient:
     """
@@ -315,6 +317,9 @@ class HybridKeywordExtractor:
                         if extra not in merged and extra != query:
                             merged.append(extra)
                     return merged
+            except RunCancelled:
+                # 这次请求被取消了，不是模型坏了：不能因此在本进程里永久关掉模型抽词
+                raise
             except Exception:
                 # 模型不可用时静默回退，不能因为抽词失败让整条查询挂掉
                 self._model_failed = True

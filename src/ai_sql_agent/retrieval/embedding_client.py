@@ -10,6 +10,7 @@ import numpy as np
 
 from ai_sql_agent.core import ModelTransport, get_settings
 from ai_sql_agent.core.errors import ModelCircuitOpenError, ModelResponseError
+from ai_sql_agent.core.run_context import RunCancelled
 
 
 @dataclass
@@ -221,6 +222,9 @@ class RemoteEmbeddingClient:
                 )
             try:
                 vectors = self._request(missing)
+            except RunCancelled:
+                # 请求被取消不是服务故障，不进冷却——否则一次取消会让远程 embedding 停 30 秒
+                raise
             except Exception:
                 self._down_until = self._clock() + self.COOLDOWN_SECONDS
                 raise

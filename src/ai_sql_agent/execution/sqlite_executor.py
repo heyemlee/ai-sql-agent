@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from ai_sql_agent.core.run_context import cancel_token, check_cancelled
+
 from .authorization import enforce
 from .data_time import QUERY_TIME, now_rfc3339
 from .objects import MCPExecutionRequest, MCPExecutionResult
@@ -95,12 +97,16 @@ class SQLiteMCPExecutor:
         max_seconds = request.time_cap(self.max_execution_seconds)
         deadline = time.monotonic() + max_seconds
 
+        # 取消检查点：已经取消就不连库；执行期间被取消，进度回调下一次就中断语句
+        check_cancelled()
+        token = cancel_token()
+
         conn = None
         try:
             conn = self._connect()
             conn.row_factory = sqlite3.Row
             conn.set_progress_handler(
-                lambda: 1 if time.monotonic() > deadline else 0,
+                lambda: 1 if time.monotonic() > deadline or (token is not None and token.cancelled) else 0,
                 self._PROGRESS_HANDLER_INTERVAL,
             )
 
@@ -148,7 +154,9 @@ class SQLiteMCPExecutor:
 
         except sqlite3.OperationalError as exc:
             message = str(exc)
-            if "interrupt" in message.lower():
+            if "interrupt" in message.lower() and token is not None and token.cancelled:
+                message = "查询已取消。"
+            elif "interrupt" in message.lower():
                 message = f"查询执行超时（超过 {max_seconds} 秒），已中止。"
             else:
                 message = self._describe_error(exc)
