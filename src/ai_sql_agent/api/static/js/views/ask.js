@@ -349,6 +349,7 @@ async function ask(question, extra = {}) {
         const streamed = await api.stream(text, {
           signal: turn.controller.signal,
           onStage: (stage) => { turn.stages.push(stage); turn.stageNow = stage; drawStage(turn); },
+          onTask: (runId) => { turn.runId = runId; },
         });
         payload = streamed.payload;
       } catch (error) {
@@ -398,6 +399,15 @@ async function ask(question, extra = {}) {
 
   if (turn.status === 'done') backfill(turn);
   else if (turn.status === 'stopped') loadHistory();
+}
+
+/* 停止：先请服务端停下这次运行，再断开连接。只断开的话服务端照样把查询跑完、
+   照样扣配额。运行号只有流式请求在首帧里拿得到；请求失败（已经结束、网络问题）
+   不影响本地的停止。 */
+function stopTurn(turn) {
+  if (!turn || !turn.controller) return;
+  if (turn.runId) api.cancelRun(turn.runId).catch(() => {});
+  turn.controller.abort();
 }
 
 /* 答案回来时把这一轮顶到视口上方。等待态只有几行，答案比它长得多，
@@ -537,12 +547,9 @@ export function initAsk() {
       shell();
       focusComposer();
     },
-    stop: (target) => {
-      const turn = turnOf(target);
-      if (turn && turn.controller) turn.controller.abort();
-    },
+    stop: (target) => stopTurn(turnOf(target)),
     'stop-current': () => {
-      if (busy && busy.controller && performance.now() - busy.startedAt > STOP_GUARD_MS) busy.controller.abort();
+      if (busy && busy.controller && performance.now() - busy.startedAt > STOP_GUARD_MS) stopTurn(busy);
     },
     'ask-again': (target) => {
       const turn = turnOf(target);

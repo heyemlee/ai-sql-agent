@@ -136,6 +136,9 @@ export const api = {
   clearEmbedding: () => request('DELETE', '/admin/model/embedding'),
 
   stream: streamQuery,
+  // 请服务端停下一次正在跑的运行；运行已经结束会回 409，调用方不必理会
+  cancelRun: (runId) =>
+    request('POST', `/runs/${encodeURIComponent(runId)}/cancel`, { params: actAs() }),
 };
 
 /* A2A message/stream：POST + SSE。
@@ -147,7 +150,7 @@ export const api = {
    帧的顺序由契约保证：task → 若干 status-update(working) → artifact-update →
    status-update(final)。onStage 收到的是服务端真实发出的阶段事件，一条不多一条不少。
    返回 { payload, stages }，payload 与 /query 的响应体同构（少一个 reason）。 */
-async function streamQuery(question, { signal, onStage } = {}) {
+async function streamQuery(question, { signal, onStage, onTask } = {}) {
   let response;
   try {
     response = await fetch(url('/a2a'), {
@@ -202,6 +205,8 @@ async function streamQuery(question, { signal, onStage } = {}) {
     const stamp = Date.parse(frame.status && frame.status.timestamp);
     if (frame.kind === 'task') {
       if (!Number.isNaN(stamp)) startedAt = stamp;
+      // taskId 就是服务端这次运行的编号：停止按钮拿它去请服务端停下（POST /runs/{id}/cancel）
+      if (onTask && frame.id) onTask(frame.id);
     } else if (frame.kind === 'status-update' && !frame.final) {
       const meta = frame.metadata || {};
       const stage = {
