@@ -10,6 +10,8 @@
 | `POST /a2a` | A2A JSON-RPC: `message/send` returns a finished task; `message/stream` sends stage events over SSE, then the same fields as `/query` except `reason` |
 | `GET /.well-known/agent.json` · `GET /a2a/databases` | A2A agent card, and the business databases it currently serves |
 | `GET /history` | Query history; own records by default |
+| `GET /runs/{run_id}` · `GET /runs/{run_id}/events` | One request's run: status, entry, usage and outcome, and its numbered event log (stages, model calls, SQL executions); own runs only, administrators excepted |
+| `POST /runs/{run_id}/cancel` | Stop a run that is still going; `409` once it has finished, `404` for a run that is not yours |
 | `GET /whoami` | The identity this request resolves to (same resolution as `/query`) and what the service supports |
 | `GET /catalog` | Data catalog the caller may see: domains, tables, fields, units, business terms |
 | `POST /catalog/{database}/{table}/rows` | Read-only, paginated preview with search / filter / sort; no SQL accepted |
@@ -22,6 +24,14 @@
 | `/admin/model` · `/admin/model/embedding` | Administrator: test, save or clear the model and embedding connections used by the console's settings |
 
 `POST /query` includes `answer`, `has_risk`, `degraded`, `trace_id`, and per-step execution information.
+
+Every `/query` and A2A request is one run. `/query` returns its id in the `X-Run-Id` header, and an A2A task id is the run id. The run's event log goes up to `GET /runs/{run_id}/events?after=<seq>&limit=<n>`. A cancel takes effect at the next checkpoint:
+
+- SQL stops at once.
+- A model call already in flight is let finish (at most the model timeout), its result is discarded, and no further call is made.
+- The audit row is still written, with status `499`, and it still counts toward the daily quota.
+
+Cancelling when the caller disconnects is off by default (`AI_SQL_CANCEL_ON_DISCONNECT`). The A2A contract at v1.12 promises that a disconnect does not stop the query, and changing that promise needs a contract update first.
 
 The catalog endpoints reuse the caller identity and table/column policy of `/query`. A preview is built server-side from an allowlist of real, visible columns, binds every value as a parameter, and runs through the same read-only executor and authorization gate as generated SQL. What it fetches is bounded in the database, not afterwards: long text is cut at 2,000 characters and binary fields return only their size. The profile behind the Data page's charts follows the same rules and returns aggregates only; a field's breakdown ignores that field's own filter, so a chosen value can be swapped for another.
 
@@ -49,6 +59,7 @@ src/ai_sql_agent/
   execution/ · repair/                   Guarded execution and SQL repair
   validation/ · feedback/                Result checks and feedback loop
   auth/ · audit/ · core/ · ops/          Permissions, audit, runtime, read-only role tools
+  runs/                                  Per-request run records, event log and cancellation
 tests/ · benchmark/                      Tests, datasets, baselines, release gate
 examples/ · tools/                       Runnable examples and simulated ERP data (sim_erp, simple_erp)
 deploy/                                  Docker image and Compose stacks

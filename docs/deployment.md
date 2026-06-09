@@ -58,6 +58,10 @@ it is mounted read-only instead. Rotating a key means editing the file and runni
 | `AI_SQL_DEFAULT_RATE_LIMIT_PER_MINUTE` | `60` | Default when a key has no override |
 | `AI_SQL_DEFAULT_DAILY_TOKEN_QUOTA` | per budget | 0 means unlimited; set a cap to protect the model bill |
 | `AI_SQL_SCHEMA_REFRESH_SECONDS` | `300` | Schema-change poll interval; 0 disables it |
+| `AI_SQL_RUNS_ENABLED` | `true` | One run record and numbered event log per request (`GET /runs/{id}/events`). It goes to PostgreSQL when `AI_SQL_PGVECTOR_DSN` is set, otherwise to `AI_SQL_RUNS_DB_PATH` (default `runtime_data/runs.db`). Losing it loses history only |
+| `AI_SQL_RUNS_RETENTION_DAYS` | `7` | Runs and their events are deleted this many days after they finish |
+| `AI_SQL_CANCEL_ON_DISCONNECT` | `false` | Cancel a run when the caller disconnects. Leave it off until the A2A contract changes §5.4; the console's stop button cancels through `/runs` either way |
+| `AI_SQL_RUN_DEADLINE_SECONDS` | `0` | Hard cap on one run, enforced at the next checkpoint; 0 = none. Keep it above the caller's own limit |
 | `AI_SQL_LOG_FORMAT` | `json` | For log collectors |
 
 ### Execution limits
@@ -419,6 +423,10 @@ in-project with no external dependency:
 | `ai_sql_schema_reloads_total{result}` | counter | Schema index rebuilds |
 | `ai_sql_circuit_state{component}` | gauge | Circuit state: 0=closed, 1=half-open, 2=open |
 | `ai_sql_circuit_trips_total{component}` | counter | Circuit trips |
+| `ai_sql_runs_total{entry,status}` | counter | Finished runs by entry (`http_query`, `a2a_send`, `a2a_stream`) and status (`completed`, `failed`, `cancelled`, `interrupted`) |
+| `ai_sql_run_cancellations_total{reason}` | counter | Cancel requests: `api`, `client_disconnected`, `deadline`, `shutdown` |
+| `ai_sql_run_cancel_latency_seconds{reason}` | histogram | From a cancel request to the run actually stopping, i.e. how coarse the checkpoints really are |
+| `ai_sql_run_events_dropped_total` | counter | Events that could not be stored. The queries themselves are unaffected |
 
 Useful PromQL:
 
@@ -463,6 +471,17 @@ The logs show each stage: `stage.retrieval` (which databases and tables matched)
 `stage.planning` (how many steps), `stage.sql_generation` (the SQL produced),
 `stage.execution` (success and row count), `repair.attempt` (the repair process)
 and `model.call` (model latency and retries).
+
+The same story, in order and without grepping, is in the run's event log. The audit
+row's `run_id` column (or the `X-Run-Id` header, or an A2A task id) leads to it:
+
+```bash
+curl -s http://localhost:8000/runs/<run_id>/events -H 'X-API-Key: …' | jq '.events[] | [.seq, .type, .stage, .step]'
+```
+
+Each event is one of `run.started`, `stage.started` / `stage.finished`, `model.call`,
+`tool.sql`, `run.cancel_requested` and `run.finished`. Prompts, model output and
+result rows are never stored in events; SQL text is kept up to 8 KiB.
 
 ## 7. Everyday operational queries
 

@@ -56,6 +56,10 @@ curl -s localhost:8000/readyz | python -m json.tool
 | `AI_SQL_DEFAULT_RATE_LIMIT_PER_MINUTE` | `60` | 未在 Key 上单独配置时的默认限流 |
 | `AI_SQL_DEFAULT_DAILY_TOKEN_QUOTA` | 按预算设 | 0 表示不限，建议设上限保护模型账单 |
 | `AI_SQL_SCHEMA_REFRESH_SECONDS` | `300` | Schema 变更轮询间隔，0 为关闭 |
+| `AI_SQL_RUNS_ENABLED` | `true` | 每次请求一条运行记录和一份按序号的事件日志（`GET /runs/{id}/events`）。配了 `AI_SQL_PGVECTOR_DSN` 就落 PostgreSQL，否则落 `AI_SQL_RUNS_DB_PATH`（默认 `runtime_data/runs.db`）。丢了只是没有历史，不影响查询 |
+| `AI_SQL_RUNS_RETENTION_DAYS` | `7` | 运行结束多少天后连同事件一起删掉 |
+| `AI_SQL_CANCEL_ON_DISCONNECT` | `false` | 调用方断开时取消这次运行。A2A 契约改 §5.4 之前保持关闭；控制台的停止按钮走 `/runs`，不受它影响 |
+| `AI_SQL_RUN_DEADLINE_SECONDS` | `0` | 一次运行的总时长上限，在下一个检查点生效；0 = 不限。要开就比调用方自己的上限大 |
 | `AI_SQL_LOG_FORMAT` | `json` | 便于日志系统采集 |
 
 ### 执行上限
@@ -368,6 +372,10 @@ Pipeline 与 Schema 索引在进程内共享，多 worker 会各建一份。
 | `ai_sql_schema_reloads_total{result}` | counter | Schema 索引重建 |
 | `ai_sql_circuit_state{component}` | gauge | 熔断状态 0=闭合 1=半开 2=断开 |
 | `ai_sql_circuit_trips_total{component}` | counter | 熔断跳闸次数 |
+| `ai_sql_runs_total{entry,status}` | counter | 结束的运行，按入口（`http_query` / `a2a_send` / `a2a_stream`）与状态（`completed` / `failed` / `cancelled` / `interrupted`） |
+| `ai_sql_run_cancellations_total{reason}` | counter | 取消请求：`api`、`client_disconnected`、`deadline`、`shutdown` |
+| `ai_sql_run_cancel_latency_seconds{reason}` | histogram | 从收到取消到真正停下的耗时，即检查点的实际粒度 |
+| `ai_sql_run_events_dropped_total` | counter | 没能落库的事件数，查询本身不受影响 |
 
 常用 PromQL：
 
@@ -409,6 +417,16 @@ docker compose --project-directory . -f deploy/docker-compose.prod.yml exec post
 日志里能看到每一段：`stage.retrieval`（命中哪些库表）、`stage.planning`
 （拆了几步）、`stage.sql_generation`（生成的 SQL）、`stage.execution`
 （成功与否、行数）、`repair.attempt`（修复过程）、`model.call`（模型耗时与重试）。
+
+不想翻日志的话，可以直接看这次运行的事件日志，所有事件按顺序排好。审计行的 `run_id` 列、响应头 `X-Run-Id`、
+A2A 的 taskId，都能找到它：
+
+```bash
+curl -s http://localhost:8000/runs/<run_id>/events -H 'X-API-Key: …' | jq '.events[] | [.seq, .type, .stage, .step]'
+```
+
+事件类型有：`run.started`、`stage.started` / `stage.finished`、`model.call`、`tool.sql`、
+`run.cancel_requested`、`run.finished`。事件里不存提示词、模型原始输出和结果行；SQL 文本最多保留 8 KiB。
 
 ## 七、常用运维查询
 

@@ -31,6 +31,10 @@ Both executors share the same constraints:
   call, so `hex(randomblob(150000000))` is stopped here, before it allocates;
 - **Execution timeout**: after `max_execution_seconds` (default 10s) a progress
   handler aborts the query;
+- **Cancellation** (inside a run, see [runs](runs.md)): a cancelled run never reaches
+  the database. A statement already running is interrupted at once: SQLite through the
+  same progress handler, PostgreSQL through a server-side cancel request
+  (`cancel_safe()`). The error reads "查询已取消。", so it is never mistaken for a timeout;
 - **Database-layer authorizer** (SQLite, read-only executors): a default-deny
   `set_authorizer` that allows only `SELECT` / `READ` / `RECURSIVE` and non-denied
   functions. `ATTACH`, `VACUUM INTO`, `PRAGMA`, writes, `sqlite_*` / `pragma_*` /
