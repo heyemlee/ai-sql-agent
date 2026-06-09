@@ -114,8 +114,10 @@ class SimpleKeywordExtractor:
                         ):
                             values.add(text)
 
-        # 长值优先，避免「一车间」被「车间」抢先匹配
-        cls._value_vocabulary = sorted(values, key=len, reverse=True)
+        # 长值优先，避免「一车间」被「车间」抢先匹配。等长的按字面排：只按长度排，
+        # 「一车间」「二车间」谁在前就看集合的遍历顺序，而它随 PYTHONHASHSEED 变——
+        # 同一个问题抽出的关键词顺序会因进程而异，检索结果跟着变。
+        cls._value_vocabulary = sorted(values, key=lambda value: (-len(value), value))
         return cls._value_vocabulary
 
     @staticmethod

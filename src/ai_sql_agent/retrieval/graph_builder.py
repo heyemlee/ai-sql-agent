@@ -33,7 +33,10 @@ def build_schema_graph(
     给每张选中表一个保底配额可以避免这种失衡。
     """
 
-    selected_tables = {hit.column.table_name for hit in hits}
+    # 表的先后就是相关性：hits 已按检索得分排好，每张表排在它最靠前的那个字段的位置。
+    # 不能拿 set 去重——字符串集合的遍历顺序随 PYTHONHASHSEED 变，同一个问题换一个
+    # 进程，Schema 上下文里的表就换了顺序：提示词复现不了，前缀缓存也命不中。
+    selected_tables = list(dict.fromkeys(hit.column.table_name for hit in hits))
 
     selected_columns = defaultdict(dict)
 
