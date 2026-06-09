@@ -51,7 +51,7 @@
     }
    ],
    "schema_graph": {
-    "sha256": "3ed99b1b091a46ff",
+    "sha256": "4913bea043ba704b",
     "len": 6742
    },
    "user_query": "以下是与当前问题相关的会话记忆：\n[近期对话]\n用户：查询准时率低于0.9的供应商名称\n\n当前用户问题：查询准时率低于0.9的供应商名称"
@@ -61,7 +61,7 @@
   "call": "ThinkingModelClient.generate",
   "args": [
    {
-    "sha256": "6662d4b9734b499f",
+    "sha256": "55d3bff3abe2b8ec",
     "len": 9746
    }
   ],
@@ -186,7 +186,7 @@
     }
    ],
    "schema_graph": {
-    "sha256": "b2386c1571f07aa6",
+    "sha256": "5d604c635bb3cd5c",
     "len": 5319
    },
    "user_query": {
@@ -199,7 +199,7 @@
   "call": "ThinkingModelClient.generate",
   "args": [
    {
-    "sha256": "36a146345ce5dc80",
+    "sha256": "ce06838c87acdd13",
     "len": 8728
    }
   ],
@@ -287,7 +287,7 @@
    {
     "__type__": "ConversationMemoryContext",
     "prompt": {
-     "sha256": "faa4f225f365b35c",
+     "sha256": "4b00d1d94f700730",
      "len": 4596
     }
    }
@@ -312,7 +312,7 @@
     "采购"
    ],
    "query": {
-    "sha256": "e604378e6a1637cc",
+    "sha256": "07b8a1bec4315bbe",
     "len": 4643
    }
   }
@@ -336,11 +336,11 @@
     }
    ],
    "schema_graph": {
-    "sha256": "882babb881357361",
-    "len": 5957
+    "sha256": "ff112bfc608be6ab",
+    "len": 5581
    },
    "user_query": {
-    "sha256": "e604378e6a1637cc",
+    "sha256": "07b8a1bec4315bbe",
     "len": 4643
    }
   }
@@ -349,8 +349,8 @@
   "call": "ThinkingModelClient.generate",
   "args": [
    {
-    "sha256": "238006d16dcb39f9",
-    "len": 13536
+    "sha256": "4a018393a5bbdf54",
+    "len": 13160
    }
   ],
   "kwargs": {}
@@ -377,7 +377,7 @@
   "call": "CoderModelClient.generate_sql",
   "args": [
    {
-    "sha256": "b2500f08c952dedf",
+    "sha256": "c6e2419cdde6f6f2",
     "len": 1666
    }
   ],
@@ -435,7 +435,7 @@
   "call": "CoderModelClient.generate_sql",
   "args": [
    {
-    "sha256": "7b64c9ea37c06c7b",
+    "sha256": "dc4a3c27b1e5bc63",
     "len": 2062
    }
   ],
@@ -497,7 +497,7 @@
    {
     "__type__": "ConversationMemoryContext",
     "prompt": {
-     "sha256": "d284295b9b41f69b",
+     "sha256": "660d225bf993af5a",
      "len": 4962
     }
    }
@@ -521,7 +521,7 @@
     "采购"
    ],
    "query": {
-    "sha256": "e80b88808a214728",
+    "sha256": "a302b3ec5c2e5960",
     "len": 5007
    }
   }
@@ -532,11 +532,11 @@
   "kwargs": {
    "few_shots": [],
    "schema_graph": {
-    "sha256": "d3703624e3697606",
-    "len": 1874
+    "sha256": "409ce797cd79b683",
+    "len": 2762
    },
    "user_query": {
-    "sha256": "e80b88808a214728",
+    "sha256": "a302b3ec5c2e5960",
     "len": 5007
    }
   }
@@ -545,8 +545,8 @@
   "call": "ThinkingModelClient.generate",
   "args": [
    {
-    "sha256": "954917ceeb2a0575",
-    "len": 9003
+    "sha256": "fc233740e4ceba7d",
+    "len": 9892
    }
   ],
   "kwargs": {}
@@ -631,7 +631,7 @@
   "call": "CoderModelClient.generate_sql",
   "args": [
    {
-    "sha256": "7b64c9ea37c06c7b",
+    "sha256": "dc4a3c27b1e5bc63",
     "len": 2062
    }
   ],
@@ -693,7 +693,7 @@
    {
     "__type__": "ConversationMemoryContext",
     "prompt": {
-     "sha256": "8dde1de626921ce4",
+     "sha256": "849193077ce78c1c",
      "len": 5875
     }
    }
@@ -707,7 +707,7 @@
    {
     "__type__": "ConversationMemoryContext",
     "prompt": {
-     "sha256": "8dde1de626921ce4",
+     "sha256": "849193077ce78c1c",
      "len": 5875
     }
    }

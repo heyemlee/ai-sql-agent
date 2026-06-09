@@ -17,18 +17,23 @@
 
 离线 Mock 下路由、对话问答、语义自检走的是规则版，模型版的提示词不在这份快照里；
 它们的提示词由各自模块拼装，输入则由这里记录的 `route` / `answer` / `validate` 参数覆盖。
+
+模型面还必须与字符串哈希种子无关：换一个种子等于重启一次进程，同一个问题的提示词得一字不差，
+否则复现不了，前缀缓存也命不中。`PromptsIgnoreHashSeedTest` 在两个种子下各录一遍全文比对。
 """
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import hashlib
 import json
 import os
+import secrets
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Sequence
 from unittest import mock
 
 from ai_sql_agent.core import get_settings
@@ -44,32 +49,39 @@ QUESTIONS = (
     "解释一下刚才的查询结果",
 )
 
+# 跨种子比对再加一个带两个等长枚举取值的问题：规则抽词时「华鹏板材」「东顺五金」谁在前，
+# 曾经取决于集合的遍历顺序。
+HASH_SEED_QUESTIONS = QUESTIONS + ("查询华鹏板材和东顺五金的采购单号",)
+
 FROZEN_AS_OF = "2026-01-01T00:00:00Z"
 
 _INLINE_LIMIT = 80
 
 
-def _digest(text: str) -> Any:
-    if len(text) <= _INLINE_LIMIT:
+def _digest(text: str, full_text: bool = False) -> Any:
+    if full_text or len(text) <= _INLINE_LIMIT:
         return text
     return {"sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16], "len": len(text)}
 
 
-def _norm(value: Any) -> Any:
-    """把参数变成可比较、不随运行变化的 JSON。长文本只留指纹。"""
+def _norm(value: Any, full_text: bool = False) -> Any:
+    """把参数变成可比较、不随运行变化的 JSON。长文本只留指纹，full_text 时留全文。"""
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
-        return _digest(value)
+        return _digest(value, full_text)
     if isinstance(value, (list, tuple)):
-        return [_norm(item) for item in value]
+        return [_norm(item, full_text) for item in value]
     if isinstance(value, dict):
-        return {str(key): _norm(value[key]) for key in sorted(value, key=str)}
+        return {str(key): _norm(value[key], full_text) for key in sorted(value, key=str)}
     to_prompt = getattr(value, "to_prompt_context", None)
     if callable(to_prompt):
-        return {"__type__": type(value).__name__, "prompt": _digest(to_prompt())}
+        return {"__type__": type(value).__name__, "prompt": _digest(to_prompt(), full_text)}
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        fields = {field.name: _norm(getattr(value, field.name)) for field in dataclasses.fields(value)}
+        fields = {
+            field.name: _norm(getattr(value, field.name), full_text)
+            for field in dataclasses.fields(value)
+        }
         return {"__type__": type(value).__name__, **fields}
     if callable(value):
         return "<callable>"
@@ -108,23 +120,27 @@ def _targets():
     )
 
 
-def _recorder(records: List[dict], owner: type, name: str, drop: tuple) -> Callable:
+def _recorder(
+    records: List[dict], owner: type, name: str, drop: tuple, full_text: bool
+) -> Callable:
     original = getattr(owner, name)
 
     def wrapper(self, *args, **kwargs):
         kept = {key: value for key, value in kwargs.items() if key not in drop}
         records.append({
             "call": f"{owner.__name__}.{name}",
-            "args": _norm(list(args)),
-            "kwargs": _norm(kept),
+            "args": _norm(list(args), full_text),
+            "kwargs": _norm(kept, full_text),
         })
         return original(self, *args, **kwargs)
 
     return wrapper
 
 
-def record_snapshot() -> List[dict]:
-    """在 Mock 模型下跑 QUESTIONS，返回按调用顺序的记录。"""
+def record_snapshot(
+    questions: Sequence[str] = QUESTIONS, full_text: bool = False
+) -> List[dict]:
+    """在 Mock 模型下跑一组问题（默认 QUESTIONS），返回按调用顺序的记录。"""
     from ai_sql_agent.memory import ConversationMemoryService
     from ai_sql_agent.memory.conversation import MemoryServiceConfig
     from ai_sql_agent.memory.short_term import ShortTermMemoryConfig
@@ -148,7 +164,7 @@ def record_snapshot() -> List[dict]:
             service = DynamicSqlAgentService(Text2SQLPipeline(), memory)
             patches = [
                 mock.patch.object(owner, name, autospec=True,
-                                  side_effect=_recorder(records, owner, name, drop))
+                                  side_effect=_recorder(records, owner, name, drop, full_text))
                 for owner, name, drop in _targets()
             ]
             patches.append(mock.patch(
@@ -158,12 +174,12 @@ def record_snapshot() -> List[dict]:
                 patcher.start()
             try:
                 session = f"snap_{uuid.uuid4().hex[:8]}"
-                for question in QUESTIONS:
+                for question in questions:
                     records.append({"question": question})
                     result = service.run(user_id="u_snapshot", session_id=session, query=question)
                     records.append({
                         "route": result.decision.route.value,
-                        "answer": _digest(result.answer),
+                        "answer": _digest(result.answer, full_text),
                         "degraded": result.degraded,
                     })
             finally:
@@ -182,20 +198,35 @@ from ai_sql_agent.core.settings import SqlAgentSettings
 SqlAgentSettings.model_config["env_file"] = None
 reload_settings()
 import test_prompt_snapshot as snapshot
-runs = [snapshot.record_snapshot(), snapshot.record_snapshot()]
+if sys.argv[3] == "full_text":
+    result = snapshot.record_snapshot(snapshot.HASH_SEED_QUESTIONS, full_text=True)
+else:
+    result = [snapshot.record_snapshot(), snapshot.record_snapshot()]
 with open(sys.argv[2], "w", encoding="utf-8") as handle:
-    json.dump(runs, handle, ensure_ascii=False)
+    json.dump(result, handle, ensure_ascii=False)
 """
 
 
-def record_in_fixed_hash_seed() -> List[List[dict]]:
+def _recording_hash_seed() -> str:
     """
-    在 PYTHONHASHSEED=0 的子进程里录两遍。
+    录快照用的字符串哈希种子：环境里设了 PYTHONHASHSEED 就用它，否则随机挑一个。
 
-    Schema 上下文里表和字段的先后顺序取决于字符串哈希的随机种子：同一个问题，进程重启之后
-    拼出来的提示词顺序可能不同（这是现状，不是这份测试造成的）。固定种子才能拿它当基线。
-    子进程用和当前进程相同的 sys.path，所以测的是同一份代码；工作目录是临时目录，
-    演示库建在那里，不碰仓库里的 runtime_data。
+    以前钉死在 0：Schema 图里表的先后、规则抽词时等长枚举取值的先后都随种子变，
+    不钉死就没有基线。这两处现在都排好了序，快照在哪个种子下都该成立，随机挑一个
+    等于每跑一次顺带抽查一个种子。失败信息里带着它，设同样的 PYTHONHASHSEED 再跑就能复现。
+    """
+    return os.environ.get("PYTHONHASHSEED") or str(secrets.randbelow(2 ** 32))
+
+
+def record_in_subprocess(hash_seed: str, mode: str = "snapshot") -> Any:
+    """
+    在 PYTHONHASHSEED=hash_seed 的子进程里录。
+
+    - mode="snapshot"：QUESTIONS 录两遍，长文本只留指纹，返回两份记录；
+    - mode="full_text"：HASH_SEED_QUESTIONS 录一遍，长文本留全文，返回一份记录。
+
+    哈希种子只能在进程启动前定，所以要子进程。子进程用和当前进程相同的 sys.path，
+    所以测的是同一份代码；工作目录是临时目录，演示库建在那里，不碰仓库里的 runtime_data。
     """
     import subprocess
     import sys
@@ -204,7 +235,7 @@ def record_in_fixed_hash_seed() -> List[List[dict]]:
         out_path = Path(work_dir) / "records.json"
         env = dict(os.environ)
         env.update({
-            "PYTHONHASHSEED": "0",
+            "PYTHONHASHSEED": hash_seed,
             "PYTHONPATH": os.pathsep.join(path for path in sys.path if path),
             "AI_SQL_LOG_LEVEL": "ERROR",
             "AI_SQL_MODEL_SETTINGS_ENABLED": "false",
@@ -213,12 +244,47 @@ def record_in_fixed_hash_seed() -> List[List[dict]]:
                     "AI_SQL_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"):
             env[key] = ""
         completed = subprocess.run(
-            [sys.executable, "-c", _CHILD, str(Path(__file__).parent), str(out_path)],
+            [sys.executable, "-c", _CHILD, str(Path(__file__).parent), str(out_path), mode],
             cwd=work_dir, env=env, capture_output=True, text=True, timeout=300,
         )
         if completed.returncode != 0:
-            raise AssertionError(f"录制子进程失败：\n{completed.stderr[-4000:]}")
+            raise AssertionError(
+                f"录制子进程失败（PYTHONHASHSEED={hash_seed}）：\n{completed.stderr[-4000:]}"
+            )
         return json.loads(out_path.read_text(encoding="utf-8"))
+
+
+def _leaves(value: Any, path: str = "") -> dict:
+    """把一条记录摊平成 {路径: 叶子值}。"""
+    if isinstance(value, dict):
+        children = value.items()
+    elif isinstance(value, list):
+        children = enumerate(value)
+    else:
+        return {path: value}
+    leaves: dict = {}
+    for key, child in children:
+        leaves.update(_leaves(child, f"{path}/{key}"))
+    return leaves
+
+
+def _explain_difference(left: Any, right: Any) -> str:
+    """两条记录哪几处不同。长文本给逐行 diff，看得出是哪几行挪了位置。"""
+    left_leaves, right_leaves = _leaves(left), _leaves(right)
+    lines: List[str] = []
+    for path in sorted(set(left_leaves) | set(right_leaves)):
+        before, after = left_leaves.get(path), right_leaves.get(path)
+        if before == after:
+            continue
+        if isinstance(before, str) and isinstance(after, str):
+            diff = difflib.unified_diff(
+                before.splitlines(), after.splitlines(), lineterm="", n=1
+            )
+            lines.append(f"{path}:")
+            lines.extend(list(diff)[2:])  # 去掉 ---/+++ 两行文件头
+        else:
+            lines.append(f"{path}: {before!r} != {after!r}")
+    return "\n".join(lines)
 
 
 class PromptSnapshotTest(unittest.TestCase):
@@ -227,8 +293,9 @@ class PromptSnapshotTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.runs = None
+        cls.hash_seed = _recording_hash_seed()
         if not get_settings().has_model_credentials:
-            cls.runs = record_in_fixed_hash_seed()
+            cls.runs = record_in_subprocess(cls.hash_seed)
 
     def setUp(self):
         if self.runs is None:
@@ -248,13 +315,43 @@ class PromptSnapshotTest(unittest.TestCase):
         for index, (got, want) in enumerate(zip(records, expected)):
             self.assertEqual(
                 got, want,
-                f"第 {index} 条记录与快照不同——模型面变了。有意变更才重录（见模块说明）。",
+                f"第 {index} 条记录与快照不同（录制用的 PYTHONHASHSEED={self.hash_seed}）"
+                "——模型面变了。有意变更才重录（见模块说明）。",
             )
         self.assertEqual(len(records), len(expected), "记录条数与快照不同")
 
     def test_two_runs_record_the_same_thing(self):
         """快照本身必须稳定，否则它证明不了任何事。"""
-        self.assertEqual(self.runs[0], self.runs[1])
+        self.assertEqual(self.runs[0], self.runs[1], f"PYTHONHASHSEED={self.hash_seed}")
+
+
+class PromptsIgnoreHashSeedTest(unittest.TestCase):
+    """
+    换一个字符串哈希种子（等于重启一次进程），模型收到的每一段输入都一字不差。
+
+    曾经不是这样：Schema 图里表的先后来自一个字符串集合，规则抽词时等长枚举取值的先后
+    也来自集合，两处都随 PYTHONHASHSEED 变。这里在两个固定种子下各录一遍全文（不取指纹）
+    逐条比对；修复之前，这两个种子录出来的 Schema 上下文和抽词顺序都不一样。
+    """
+
+    SEEDS = ("1", "2")
+
+    def setUp(self):
+        if get_settings().has_model_credentials:
+            self.skipTest("只在离线 Mock 模型下有意义；当前环境配置了模型凭证")
+
+    def test_two_hash_seeds_give_the_model_the_same_inputs(self):
+        first = record_in_subprocess(self.SEEDS[0], mode="full_text")
+        second = record_in_subprocess(self.SEEDS[1], mode="full_text")
+        for index, (left, right) in enumerate(zip(first, second)):
+            if left != right:
+                label = left.get("call") or left.get("question") or "问题的结果"
+                self.fail(
+                    f"第 {index} 条记录（{label}）在 PYTHONHASHSEED={self.SEEDS[0]} 与 "
+                    f"{self.SEEDS[1]} 下不同——模型面又跟着字符串哈希走了：\n"
+                    + _explain_difference(left, right)
+                )
+        self.assertEqual(len(first), len(second), "两个种子下的记录条数不同")
 
 
 if __name__ == "__main__":
