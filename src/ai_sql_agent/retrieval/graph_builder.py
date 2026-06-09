@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional, Sequence
 
 from .objects import ColumnSchema, SchemaGraph, SchemaHit, TableRelation, TableSchema
 
@@ -13,6 +13,7 @@ def build_schema_graph(
     relations: List[TableRelation],
     include_join_columns: bool = True,
     min_columns_per_table: int = 0,
+    table_order: Optional[Sequence[str]] = None,
 ) -> SchemaGraph:
     """
     根据检索命中的字段构建 Schema 子图。
@@ -23,6 +24,8 @@ def build_schema_graph(
     - all_columns: 全量字段 Schema。
     - relations: 全量表关系。
     - min_columns_per_table: 每张选中表在图中至少保留的字段数（0 表示不保底）。
+    - table_order: 表的先后。三层检索传表级检索的排名；不传时按字段命中的先后。
+      只影响先后，不影响选哪些表、哪些字段。
 
     输出：
     - 仅包含相关表、相关字段、相关关联关系的 SchemaGraph。
@@ -33,10 +36,17 @@ def build_schema_graph(
     给每张选中表一个保底配额可以避免这种失衡。
     """
 
-    # 表的先后就是相关性：hits 已按检索得分排好，每张表排在它最靠前的那个字段的位置。
+    # 不给排名时，表排在它最靠前的那个字段的位置（hits 已按检索得分排好）。
     # 不能拿 set 去重——字符串集合的遍历顺序随 PYTHONHASHSEED 变，同一个问题换一个
     # 进程，Schema 上下文里的表就换了顺序：提示词复现不了，前缀缓存也命不中。
     selected_tables = list(dict.fromkeys(hit.column.table_name for hit in hits))
+    if table_order:
+        # 字段命中的先后由精排定，而精排文本里拼着所属表的说明：说明里恰好带着问题用词的表，
+        # 所有字段一起排到前面。本地精排下，「查询板材类物料的在库数量」里 stock_snapshot 的
+        # 五个字段都排在 material 前面，这张表就压在了要输出物料名称的 material 前面。表级检索
+        # 按整张表排，用它的排名；排名里没有的表（字段级回退检索带进来的）按命中先后排在后面。
+        rank = {name: index for index, name in enumerate(table_order)}
+        selected_tables.sort(key=lambda name: rank.get(name, len(rank)))
 
     selected_columns = defaultdict(dict)
 

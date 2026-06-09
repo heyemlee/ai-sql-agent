@@ -415,15 +415,19 @@ class ThreeTierSchemaRetrievalService:
 
         for database, tables in selected_tables.items():
             service = self.column_services[database]
+            # tables 按表级检索的排名排好了；库内表的先后就用这个排名
             result = service.retrieve(
                 query=query,
                 keywords=resolved_keywords,
                 allowed_tables=set(tables),
+                table_order=tables,
             )
 
             # 收窄过度导致该库无命中时，回退为不限表的字段级检索
             if not getattr(result.schema_graph, "tables", None):
-                result = service.retrieve(query=query, keywords=resolved_keywords)
+                result = service.retrieve(
+                    query=query, keywords=resolved_keywords, table_order=tables
+                )
 
             # 兜底：无论走哪条分支，进 Prompt 前都按权限再裁一次
             filter_schema_graph(result.schema_graph, self._access_for(access, database))

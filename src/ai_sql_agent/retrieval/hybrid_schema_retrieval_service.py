@@ -265,6 +265,7 @@ class HybridSchemaRetrievalService:
         query: str,
         keywords: Optional[Sequence[str]] = None,
         allowed_tables: Optional[set[str]] = None,
+        table_order: Optional[Sequence[str]] = None,
     ) -> HybridSchemaRetrievalResult:
         """
         执行混合检索，并返回 SchemaGraph。
@@ -277,6 +278,8 @@ class HybridSchemaRetrievalService:
             allowed_tables: 可选的候选表集合。
                 三层检索中由表级检索收窄得到；传入后只有这些表的字段
                 会进入 Rerank 精排。
+            table_order: 可选的表排名，决定 SchemaGraph 里表的先后。
+                三层检索传表级检索的排名；不传时按字段命中的先后。
 
         Returns:
             HybridSchemaRetrievalResult: 包含关键词、RRF 结果、Rerank 结果和 SchemaGraph。
@@ -323,6 +326,7 @@ class HybridSchemaRetrievalService:
             relations=self.relations,
             include_join_columns=self.config.include_join_columns,
             min_columns_per_table=self.config.min_columns_per_table,
+            table_order=table_order,
         )
         return HybridSchemaRetrievalResult(
             query=query,
