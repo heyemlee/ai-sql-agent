@@ -31,7 +31,9 @@ Every `/query` and A2A request is one run. `/query` returns its id in the `X-Run
 - A model call already in flight is let finish (at most the model timeout), its result is discarded, and no further call is made.
 - The audit row is still written, with status `499`, and it still counts toward the daily quota.
 
-Cancelling when the caller disconnects is off by default (`AI_SQL_CANCEL_ON_DISCONNECT`). The A2A contract at v1.12 promises that a disconnect does not stop the query, and changing that promise needs a contract update first.
+When the caller disconnects, the run is cancelled at the next checkpoint (A2A contract v1.13 §5.4). This is on by default; set `AI_SQL_CANCEL_ON_DISCONNECT=false` to let a query run to the end instead.
+
+On A2A, a run cancelled while the caller is still connected ends as `canceled`: the stream's final frame and the task returned by `message/send` both carry `state: "canceled"` and `metadata.error` such as `cancelled: api` (contract §4.4). Rate limits, quotas and a full stream admission answer HTTP `429` with JSON-RPC code `-32029` and a `Retry-After` header, before any stream opens (contract §3.2 / §5.5).
 
 The catalog endpoints reuse the caller identity and table/column policy of `/query`. A preview is built server-side from an allowlist of real, visible columns, binds every value as a parameter, and runs through the same read-only executor and authorization gate as generated SQL. What it fetches is bounded in the database, not afterwards: long text is cut at 2,000 characters and binary fields return only their size. The profile behind the Data page's charts follows the same rules and returns aggregates only; a field's breakdown ignores that field's own filter, so a chosen value can be swapped for another.
 

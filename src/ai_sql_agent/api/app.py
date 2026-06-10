@@ -952,7 +952,7 @@ async def query(
     和一条 run 记录（响应头 `X-Run-Id`，事件日志见 `GET /runs/{run_id}/events`）。
 
     主体仍是同步的，放在线程池里跑（和以前 `def` 端点一样）；这一层只多做一件事：
-    开了 `AI_SQL_CANCEL_ON_DISCONNECT` 时盯着客户端，断开就取消这次 run。
+    开着 `AI_SQL_CANCEL_ON_DISCONNECT`（默认开，契约 v1.13 §5.4）时盯着客户端，断开就取消这次 run。
     """
     principal = await run_in_threadpool(_admit_query, api_key, request.user_id)
 

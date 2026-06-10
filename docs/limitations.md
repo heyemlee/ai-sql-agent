@@ -19,12 +19,12 @@ These numbers do not establish current-commit accuracy on real business database
 - **Handling of a rejected model credential is verified with mock transports only.** The wording lists that recognise "quota exhausted", "key disabled" and "model not permitted" are heuristics; state is per process; requests already in flight when the first rejection arrives cannot be recalled.
 - **English UI:** dictionary text is shown as written when the semantic metadata has no English keys, and server-side free text (routing reason, validator notes, error messages) is Chinese.
 - **Routing fallback:** when the routing model is unavailable, the rule-based fallback sends most colloquial Chinese questions (30 of the 40 hold-out phrasings) to conversation instead of a query.
-- **Joint integration with the Helpdesk over A2A has not been run** for this change set.
+- **Joint integration with the Helpdesk over A2A has been run once** for the run-record change set (2026-10-17, one streamed question, completed with its run record). It ran before disconnect cancellation was turned on, so a Helpdesk-side disconnect has not been exercised end to end.
 - **Cancellation works at checkpoints.**
   - A cancel takes effect at the next stage boundary, between model calls, or during a retry backoff.
   - It interrupts SQL at once: SQLite through the progress handler, PostgreSQL through a server-side cancel.
   - A model call already in flight cannot be interrupted, because the HTTP client is synchronous and shared. The run waits for that call, at most `AI_SQL_HTTP_TIMEOUT_SECONDS` (60 s by default), discards the result and makes no further call.
   - A cancel that races with the end of a run can lose: a run that has finished its last stage is reported as completed.
-  - Cancelling when the caller disconnects stays off until the A2A contract changes §5.4.
-  - Verification so far is offline only (mock model, SQLite). The PostgreSQL cancel path has no test against a real database yet. Latency under a real model is unmeasured; watch `ai_sql_run_cancel_latency_seconds`.
+  - A caller disconnecting cancels the run (A2A contract v1.13 §5.4, on by default; `AI_SQL_CANCEL_ON_DISCONNECT=false` turns it off).
+  - Verified on 2026-10-16: the PostgreSQL cancel tests passed against a real PostgreSQL 16, and six cancels under the real model stopped 0.07–2.7 s after the request, each time as soon as the in-flight model call returned. That is a small sample; keep watching `ai_sql_run_cancel_latency_seconds`.
 - **Run records assume one process.** A cancel request reaches only runs registered in the process that receives it, and the shipped deployment runs one Uvicorn worker. A run left `running` by a dead local process is marked `interrupted` at startup; one from another host is marked after an hour without updates.

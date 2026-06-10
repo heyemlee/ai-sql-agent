@@ -319,12 +319,13 @@ class SqlAgentSettings(BaseSettings):
     run_event_attr_max_bytes: int = 16384
     """单条事件 attrs 序列化后的上限；SQL 最多留 8 KiB，其余字符串 1 KiB，超出部分截断。"""
 
-    cancel_on_disconnect: bool = False
+    cancel_on_disconnect: bool = True
     """
     调用方断开连接时取消这次 run（三条入口：`/query`、A2A send、A2A stream）。
 
-    默认关：a2a-contract v1.12 §5.4 写的是"断开后我方不中止"，改这条是一次双边的契约变更，
-    契约出新版之前服务端不单方面改。控制台的停止按钮走 `POST /runs/{id}/cancel`，不受这个开关影响。
+    默认开：a2a-contract v1.13 §5.4 写的是"调用方断开后，我方在下一个检查点停止"。关掉就回到
+    v1.12 的行为（断开后不中止，跑完为止）。控制台的停止按钮走 `POST /runs/{id}/cancel`，
+    不受这个开关影响。
     """
 
     run_deadline_seconds: float = 0.0
@@ -491,7 +492,7 @@ class SqlAgentSettings(BaseSettings):
     # ---- A2A 流式资源 ----
     a2a_stream_max_concurrent: int = 8
     """
-    同时在跑的 message/stream 上限，超出直接拒（-32001），不排队。
+    同时在跑的 message/stream 上限，超出直接拒（HTTP 429 + -32029，契约 v1.13 §5.5），不排队。
 
     排队只会把压力从「拒绝」变成「全都超时」，而调用方的 90s 硬上限一到
     照样全丢——不如在流打开之前说清楚。

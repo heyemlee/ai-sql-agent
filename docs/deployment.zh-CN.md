@@ -58,7 +58,7 @@ curl -s localhost:8000/readyz | python -m json.tool
 | `AI_SQL_SCHEMA_REFRESH_SECONDS` | `300` | Schema 变更轮询间隔，0 为关闭 |
 | `AI_SQL_RUNS_ENABLED` | `true` | 每次请求一条运行记录和一份按序号的事件日志（`GET /runs/{id}/events`）。配了 `AI_SQL_PGVECTOR_DSN` 就落 PostgreSQL，否则落 `AI_SQL_RUNS_DB_PATH`（默认 `runtime_data/runs.db`）。丢了只是没有历史，不影响查询 |
 | `AI_SQL_RUNS_RETENTION_DAYS` | `7` | 运行结束多少天后连同事件一起删掉 |
-| `AI_SQL_CANCEL_ON_DISCONNECT` | `false` | 调用方断开时取消这次运行。A2A 契约改 §5.4 之前保持关闭；控制台的停止按钮走 `/runs`，不受它影响 |
+| `AI_SQL_CANCEL_ON_DISCONNECT` | `true` | 调用方断开后，在下一个检查点取消这次运行（A2A 契约 v1.13 §5.4）。设为 `false` 就跑完为止，和 v1.12 时一样；控制台的停止按钮走 `/runs`，不受它影响 |
 | `AI_SQL_RUN_DEADLINE_SECONDS` | `0` | 一次运行的总时长上限，在下一个检查点生效；0 = 不限。要开就比调用方自己的上限大 |
 | `AI_SQL_LOG_FORMAT` | `json` | 便于日志系统采集 |
 

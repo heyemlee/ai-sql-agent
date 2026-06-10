@@ -39,6 +39,11 @@ CARD_VERSION = "1.1.0"          # 契约 §6.1：从 1.0.0 提到 1.1.0 作为�
 E_PARSE, E_INVALID_REQUEST, E_METHOD_NOT_FOUND, E_INVALID_PARAMS = -32700, -32600, -32601, -32602
 E_UNSUPPORTED = -32004
 E_INTERNAL = -32603
+# 限流、配额、流式并发准入满了：HTTP 429 + -32029（契约 v1.13 §3.2 / §5.5）。
+# v1.13 之前用的是 -32001，可它在 A2A 规范里是 TaskNotFoundError——将来支持任何
+# tasks/* 方法，同一个码就会有两种意思。-32029 落在服务端自定义的 -32000..-32099 里，
+# 也避开了规范已经占用的 -32001..-32007。
+E_RATE_LIMITED = -32029
 
 # ── 契约 §4.5：stage 映射表 ──────────────────────────────────────────────────
 #
@@ -219,7 +224,12 @@ def _admit(request: Request, user_id: str):
         return principal
     except HTTPException as exc:
         headers = {k: v for k, v in (exc.headers or {}).items()}
-        code = E_INVALID_REQUEST if exc.status_code in (401, 403) else -32001
+        if exc.status_code in (401, 403):
+            code = E_INVALID_REQUEST
+        elif exc.status_code == 429:
+            code = E_RATE_LIMITED
+        else:
+            code = E_INTERNAL
         raise JsonRpcError(code, str(exc.detail), http_status=exc.status_code, headers=headers) from exc
 
 
@@ -380,6 +390,11 @@ async def _handle_send(request: Request, req_id: Any, params: Any) -> JSONRespon
         summary = await work
     except ValueError as exc:
         raise JsonRpcError(E_INVALID_PARAMS, str(exc)) from exc
+    except RunCancelled as exc:
+        # 契约 v1.13 §4.4：被取消就是 canceled，不是 failed。调用方自己断开时这份响应发不出去，
+        # 能收到它的只有「被本连接以外的途径取消」（服务端取消接口、运维、关停）这一种情况。
+        return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": _task_result(
+            task_id, parsed.session_id, "canceled", None, trace_id, error=str(exc))})
     except Exception as exc:
         log_event(_logger, logging.ERROR, "a2a.send_failed", error=f"{type(exc).__name__}: {exc}")
         return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": _task_result(
@@ -562,6 +577,12 @@ async def _stream_events(request: Request, req_id: Any, principal, parsed: Parse
                 yield _envelope(req_id, _artifact_frame(task_id, context_id, _artifact(task_id, a, trace_id)))
                 yield _envelope(req_id, _terminal_frame(task_id, context_id, "completed", trace_id))
                 return
+            elif isinstance(b, RunCancelled):
+                # 契约 v1.13 §4.4：流还开着的时候被本连接以外的途径取消（服务端取消接口、
+                # 运维、关停）发 canceled。本连接自己断开时走不到这里——那时已经发不出去了。
+                yield _envelope(req_id, _terminal_frame(task_id, context_id, "canceled", trace_id,
+                                                        error=str(b)))
+                return
             else:
                 err = str(b) or type(b).__name__
                 log_event(_logger, logging.ERROR, "a2a.stream_failed", error=f"{type(b).__name__}: {err}")
@@ -579,9 +600,9 @@ async def _stream_events(request: Request, req_id: Any, principal, parsed: Parse
             # cancel() 停得掉那个 await，停不掉已经在跑的同步线程；要停下 pipeline，
             # 得给 run 置取消标记，它在下一个检查点停（SQL 立即中断，在途的模型调用跑完）。
             #
-            # 默认不这么做：契约 v1.12 §5.4 写的是"断开后我方不中止"——SQL 跑完、审计照写、
-            # 配额照扣，只是没人接收结果。改它是一次双边契约变更，开关
-            # AI_SQL_CANCEL_ON_DISCONNECT 等契约出新版再开。这里把两种情况都记下来，
+            # 契约 v1.13 §5.4：调用方断开后我方在下一个检查点停下，开关
+            # AI_SQL_CANCEL_ON_DISCONNECT 默认开。关掉它就回到 v1.12 的行为——SQL 跑完、
+            # 审计照写、配额照扣，只是没人接收结果。两种情况都记一条，
             # 免得「客户端断开后服务端还在烧钱」变成一件没人知道的事。
             runs = runs_of(getattr(request, "app", None))
             if run_ctx is not None and runs is not None and get_settings().cancel_on_disconnect:
@@ -592,7 +613,7 @@ async def _stream_events(request: Request, req_id: Any, principal, parsed: Parse
                 log_event(_logger, logging.INFO, "a2a.stream_abandoned",
                           trace_id=trace_id, user_id=principal.user_id,
                           run_id=run_ctx.run_id if run_ctx is not None else "",
-                          note="客户端已断开；断开即取消未开启（契约 §5.4），后台继续跑完")
+                          note="客户端已断开；断开即取消被关掉了（契约 §5.4），后台继续跑完")
 
 
 async def _handle_stream(request: Request, req_id: Any, params: Any):
@@ -608,7 +629,7 @@ async def _handle_stream(request: Request, req_id: Any, params: Any):
     permit = _admission()
     if not permit.try_acquire():
         raise JsonRpcError(
-            -32001,
+            E_RATE_LIMITED,
             f"并发流已达上限（{permit.limit}），请稍后重试。",
             http_status=429,
             headers={"Retry-After": "1"},
@@ -640,7 +661,8 @@ async def a2a_endpoint(request: Request):
             return await _handle_stream(request, req_id, params)
         if method in ("tasks/cancel", "tasks/resubscribe", "tasks/get",
                       "tasks/pushNotificationConfig/set", "tasks/pushNotificationConfig/get"):
-            # 契约 §7：刻意不做。查询是同步 pipeline，没有取消点；不存任务状态。
+            # 契约 §7：暂不提供。服务端有取消点和运行记录了，但调用方用不上：断开本身就会
+            # 取消（§5.4），控制台走服务端自己的 POST /runs/{id}/cancel。
             raise JsonRpcError(E_UNSUPPORTED, f"{method} 不支持")
         raise JsonRpcError(E_METHOD_NOT_FOUND, f"未知 method: {method}")
     except JsonRpcError as err:

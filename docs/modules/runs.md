@@ -70,11 +70,13 @@ Where a cancel comes from:
 - the console's stop button: it takes the task id from the first stream frame and calls `POST /runs/{id}/cancel`
   before it aborts the request;
 - `POST /runs/{id}/cancel` itself;
-- a caller disconnecting, only when `AI_SQL_CANCEL_ON_DISCONNECT=true`;
+- a caller disconnecting (`AI_SQL_CANCEL_ON_DISCONNECT`, on by default since A2A contract v1.13);
 - the run deadline (`AI_SQL_RUN_DEADLINE_SECONDS`, off by default);
 - shutdown.
 
 A cancelled request is still audited, with status 499, and still counts toward the daily quota (A2A contract §5.5).
+On A2A, a run cancelled while the caller is still connected ends in the `canceled` state, on the stream's final
+frame and on the task that `message/send` returns (contract §4.4).
 
 ## Verifying
 

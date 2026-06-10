@@ -5,8 +5,8 @@
 `request.is_disconnected()`，断开就调 `on_disconnect`（通常是取消这次 run），然后等线程在
 下一个检查点收尾——结果已经没人接收，但审计照写、run 记录照常结束。
 
-是否启用由入口按 `Settings.cancel_on_disconnect` 决定（a2a-contract v1.12 §5.4 写的是"断开后
-不中止"，契约出新版之前默认关）。
+是否启用由入口按 `Settings.cancel_on_disconnect` 决定（a2a-contract v1.13 §5.4 写的是"调用方断开后，
+我方在下一个检查点停止"，默认开）。
 """
 from __future__ import annotations
 

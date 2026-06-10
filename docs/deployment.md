@@ -60,7 +60,7 @@ it is mounted read-only instead. Rotating a key means editing the file and runni
 | `AI_SQL_SCHEMA_REFRESH_SECONDS` | `300` | Schema-change poll interval; 0 disables it |
 | `AI_SQL_RUNS_ENABLED` | `true` | One run record and numbered event log per request (`GET /runs/{id}/events`). It goes to PostgreSQL when `AI_SQL_PGVECTOR_DSN` is set, otherwise to `AI_SQL_RUNS_DB_PATH` (default `runtime_data/runs.db`). Losing it loses history only |
 | `AI_SQL_RUNS_RETENTION_DAYS` | `7` | Runs and their events are deleted this many days after they finish |
-| `AI_SQL_CANCEL_ON_DISCONNECT` | `false` | Cancel a run when the caller disconnects. Leave it off until the A2A contract changes §5.4; the console's stop button cancels through `/runs` either way |
+| `AI_SQL_CANCEL_ON_DISCONNECT` | `true` | Cancel a run at the next checkpoint when the caller disconnects (A2A contract v1.13 §5.4). `false` lets the query run to the end, as under v1.12; the console's stop button cancels through `/runs` either way |
 | `AI_SQL_RUN_DEADLINE_SECONDS` | `0` | Hard cap on one run, enforced at the next checkpoint; 0 = none. Keep it above the caller's own limit |
 | `AI_SQL_LOG_FORMAT` | `json` | For log collectors |
 
