@@ -336,7 +336,7 @@
     }
    ],
    "schema_graph": {
-    "sha256": "ff112bfc608be6ab",
+    "sha256": "dcb92552d8eecb41",
     "len": 5581
    },
    "user_query": {
@@ -349,7 +349,7 @@
   "call": "ThinkingModelClient.generate",
   "args": [
    {
-    "sha256": "4a018393a5bbdf54",
+    "sha256": "7378b9987534bc44",
     "len": 13160
    }
   ],
@@ -532,7 +532,7 @@
   "kwargs": {
    "few_shots": [],
    "schema_graph": {
-    "sha256": "409ce797cd79b683",
+    "sha256": "feabc7280ba03e5a",
     "len": 2762
    },
    "user_query": {
@@ -545,7 +545,7 @@
   "call": "ThinkingModelClient.generate",
   "args": [
    {
-    "sha256": "fc233740e4ceba7d",
+    "sha256": "ea93c18d90e3b25e",
     "len": 9892
    }
   ],
