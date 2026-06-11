@@ -397,7 +397,7 @@ class A2ACancelTest(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"run {run_id} 没有变成 {wanted}：{run}")
 
-    def test_cancelling_a_live_stream_ends_it_with_a_failed_terminal(self):
+    def test_cancelling_a_live_stream_ends_it_with_a_canceled_terminal(self):
         async def cancel_via_http(run_id, _generator):
             self.assertTrue(await asyncio.to_thread(self.started.wait, 5))
             response = await asyncio.to_thread(self.client.post, f"/runs/{run_id}/cancel")
@@ -406,9 +406,10 @@ class A2ACancelTest(unittest.TestCase):
 
         run_id, frames, _active = self._stream(cancel_via_http)
         terminal = frames[-1]
-        # 契约 v1.12 只有 completed / failed 两种终态：v1.13 之前取消用 failed + error 表达
+        # 契约 v1.13 §4.4：被本连接以外的途径取消发 canceled（v1.12 时只能用 failed + error 表达）。
+        # metadata.error 里的 cancelled: 是取消原因，state 用的是 A2A 规范的拼写 canceled。
         self.assertEqual((terminal["kind"], terminal["final"]), ("status-update", True))
-        self.assertEqual(terminal["status"]["state"], "failed")
+        self.assertEqual(terminal["status"]["state"], "canceled")
         self.assertEqual(terminal["metadata"]["error"], "cancelled: api")
         self.assertFalse(any(frame["kind"] == "artifact-update" for frame in frames))
 
@@ -437,12 +438,38 @@ class A2ACancelTest(unittest.TestCase):
         run = self._wait_status(run_id, "cancelled")
         self.assertEqual(run["cancel_reason"], "client_disconnected")
 
+    def test_disconnect_cancellation_is_on_by_default(self):
+        from ai_sql_agent.core.settings import SqlAgentSettings
+
+        self.assertIs(SqlAgentSettings.model_fields["cancel_on_disconnect"].default, True,
+                      "契约 v1.13 §5.4：调用方断开后，我方在下一个检查点停止")
+
+    def test_a_cancelled_send_returns_a_canceled_task(self):
+        from ai_sql_agent.a2a import server as a2a
+
+        def cancelled(*_args, **_kwargs):
+            raise RunCancelled("api")
+
+        body = {"jsonrpc": "2.0", "id": "req-1", "method": "message/send",
+                "params": {"message": {"kind": "message", "role": "user", "messageId": "m1",
+                                       "contextId": f"c_send_{uuid.uuid4().hex[:8]}",
+                                       "parts": [{"kind": "text", "text": "查询准时率低于0.9的供应商名称"}],
+                                       "metadata": {"user_id": "u_cancel"}}}}
+        with mock.patch.object(a2a, "_run_bound", cancelled):
+            response = self.client.post("/a2a", json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        task = response.json()["result"]
+        # 契约 v1.13 §4.4：send 返回的 Task 和流式终态用同一套取值
+        self.assertEqual(task["status"]["state"], "canceled")
+        self.assertEqual(task["metadata"]["error"], "cancelled: api")
+        self.assertEqual(task["artifacts"], [])
+
     def test_disconnect_leaves_the_run_alone_when_the_switch_is_off(self):
         get_settings().cancel_on_disconnect = False
         run_id = self._disconnect()
         time.sleep(0.3)
         self.assertEqual(self.app.state.runs.get(run_id)["status"], "running",
-                         "契约 v1.12 §5.4：断开后不中止")
+                         "开关关掉就回到契约 v1.12 §5.4 的行为：断开后不中止")
         # 收尾：别让这个慢 run 一直跑到测试结束
         self.assertEqual(self.app.state.runs.cancel(run_id, "api"), "cancel_requested")
         self._wait_status(run_id, "cancelled")

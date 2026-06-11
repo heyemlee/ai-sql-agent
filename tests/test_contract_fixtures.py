@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from ai_sql_agent.api.trust import assess, execution_status_of
 from ai_sql_agent.core import get_settings
 
-CONTRACT_TAG = "v1.12"
+CONTRACT_TAG = "v1.13"
 """CI 钉在这个 tag 上。契约仓库改了版本，这里也要跟着改——那是一次有意的动作。"""
 
 
@@ -351,6 +351,40 @@ class EmittedStageSetTest(unittest.TestCase):
         for event in self._progress_events():
             for forbidden in ("route", "confidence", "tables", "changed"):
                 self.assertNotIn(forbidden, event["metadata"], forbidden)
+
+
+@unittest.skipIf(CONTRACT is None, SKIP_REASON)
+class TerminalFrameTest(unittest.TestCase):
+    """
+    F 组（契约 v1.13）：我方真正发出去的终态帧要过 `schema/terminal-event.schema.json`。
+
+    fixture 只证明契约仓库自己的样本是对的；这里用 `_terminal_frame` 现造三种终态，
+    证明服务端发出去的也是这个形状。`canceled` 是 v1.13 新增的那一种（§4.4）。
+    """
+
+    SCHEMA = "schema/terminal-event.schema.json"
+
+    def setUp(self):
+        if not (CONTRACT / self.SCHEMA).exists():
+            self.skipTest(f"契约里没有 {self.SCHEMA}（v1.13 之前的版本）")
+
+    @staticmethod
+    def _frame(state: str, error: str = "") -> Dict[str, Any]:
+        from ai_sql_agent.a2a import server as a2a
+
+        chunk = a2a._envelope("req-1", a2a._terminal_frame("t1", "c1", state, "trace-1", error=error))
+        return json.loads(chunk[len("data: "):])
+
+    def test_every_terminal_state_we_emit_matches_the_schema(self):
+        for state, error in (("completed", ""), ("failed", "查询执行失败"), ("canceled", "cancelled: api")):
+            with self.subTest(state=state):
+                payload = self._frame(state, error)
+                self.assertTrue(_is_valid(self.SCHEMA, payload),
+                                [e.message for e in _validator(self.SCHEMA).iter_errors(payload)])
+
+    def test_the_cancel_reason_spelling_is_not_a_state(self):
+        # metadata.error 里的 cancelled: 是取消原因；state 只能是 A2A 规范的拼写 canceled
+        self.assertFalse(_is_valid(self.SCHEMA, self._frame("cancelled", "cancelled: api")))
 
 
 if __name__ == "__main__":

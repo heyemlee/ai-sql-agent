@@ -6,7 +6,9 @@ A2A 服务端：契约 a2a-streaming-contract.md（v1.3）里能在单测里钉�
 import json
 import unittest
 import uuid
+from unittest import mock
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from ai_sql_agent.api.app import app
@@ -84,6 +86,38 @@ class A2ATest(unittest.TestCase):
 
     def test_non_jsonrpc_body_is_32600(self):
         self.assertEqual(self.client.post("/a2a", json={"hello": 1}).json()["error"]["code"], -32600)
+
+    # ── 限流与准入（契约 v1.13 §3.2 / §5.5）──
+
+    def test_rate_limit_is_429_with_32029_before_any_stream(self):
+        """限流 / 配额：429 + -32029，带 Retry-After，在流打开之前以普通 JSON 返回。"""
+
+        def limited(_principal):
+            raise HTTPException(status_code=429, detail="请求太频繁", headers={"Retry-After": "7"})
+
+        get_settings().a2a_streaming = True
+        with mock.patch.object(app.state.limiter, "check", limited):
+            for method in ("message/send", "message/stream"):
+                r = self.client.post("/a2a", json=_rpc(method))
+                self.assertEqual(r.status_code, 429, method)
+                self.assertIn("application/json", r.headers["content-type"], method)
+                # 不是 -32001：那个码在 A2A 规范里是 TaskNotFoundError
+                self.assertEqual(r.json()["error"]["code"], -32029, method)
+                self.assertEqual(r.headers.get("retry-after"), "7", method)
+
+    def test_full_stream_admission_is_429_with_32029(self):
+        from ai_sql_agent.a2a import server as a2a
+
+        # 准入按事件循环各持一个（_admission() 要在循环里调），这里直接换一个已经满了的
+        full = a2a._Admission(limit=1)
+        self.assertTrue(full.try_acquire())
+        get_settings().a2a_streaming = True
+        with mock.patch.object(a2a, "_admission", lambda: full):
+            r = self.client.post("/a2a", json=_rpc("message/stream"))
+        self.assertEqual(r.status_code, 429)
+        self.assertIn("application/json", r.headers["content-type"])
+        self.assertEqual(r.json()["error"]["code"], -32029)
+        self.assertEqual(r.headers.get("retry-after"), "1")
 
     # ── message/send ──
 
