@@ -26,7 +26,7 @@ export default {
   'action.refresh': 'Refresh',
   'action.search': 'Search',
   'action.send': 'Send question',
-  'action.stop': 'Stop waiting',
+  'action.stop': 'Stop',
   'action.tryAgain': 'Try again',
 
   'ask.title': 'What would you like to know?',
@@ -129,8 +129,10 @@ export default {
   'notice.degradedChat.body': 'This reply came from a simpler fallback, not from the AI model.',
   'notice.conversation.title': 'This is a conversational answer',
   'notice.conversation.body': 'No database query ran for this message. The text above was written by the AI from the conversation so far — treat it as explanation, not as data. To read the data again, start a new question.',
-  'notice.stopped.title': 'You stopped waiting',
-  'notice.stopped.body': 'The query may still finish on the server. If it does it will appear in History, without its result rows.',
+  'notice.stopped.title': 'You stopped this query',
+  'notice.stopped.body': 'Closing the connection stops it on the server too, unless the server is set to let queries finish after a disconnect. Either way it appears in History.',
+  'notice.cancelled.body': 'The server was asked to stop it as well. A running SQL statement stops at once; a model call already under way finishes first and its result is discarded. The query still appears in History.',
+  'notice.cancelLate.body': 'It had already finished on the server, so it appears in History as usual, without its result rows here.',
   'notice.service.title': 'The request didn’t go through',
   'notice.validatorNote': 'Validator note:',
 

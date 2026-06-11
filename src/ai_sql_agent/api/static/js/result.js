@@ -451,11 +451,17 @@ export function renderPending(turn, elapsedSeconds) {
   </div>`;
 }
 
-export function renderStopped() {
+/* 停止之后说清楚服务端那边怎样了。流式请求停止时会显式请服务端取消，turn.cancel 记着结果：
+   请求还在路上或已受理、服务端已经跑完（409）。其余情况（/query 没有运行号、取消请求本身失败）
+   只能靠断开连接：服务端默认在断开后停下（AI_SQL_CANCEL_ON_DISCONNECT），但这个开关可以关。 */
+const STOPPED_BODY = { sent: 'notice.cancelled.body', accepted: 'notice.cancelled.body', finished: 'notice.cancelLate.body' };
+
+export function renderStopped(turn) {
+  const body = STOPPED_BODY[turn && turn.cancel] || 'notice.stopped.body';
   return html`<div class="answer">
     ${answerHead(html`<span class="chip">${icon('stop', 'icon-sm')}${t('status.stopped')}</span>`)}
     <div class="answer-body">
-      ${notice('info', 'info', t('notice.stopped.title'), html`<p>${t('notice.stopped.body')}</p>`)}
+      ${notice('info', 'info', t('notice.stopped.title'), html`<p>${t(body)}</p>`)}
       <div class="answer-foot"><div class="answer-actions"><button type="button" class="act" data-action="ask-again">
         ${icon('refresh', 'icon-sm')}${t('action.askAgain')}</button></div></div>
     </div>

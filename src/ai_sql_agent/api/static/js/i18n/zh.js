@@ -26,7 +26,7 @@ export default {
   'action.refresh': '刷新',
   'action.search': '搜索',
   'action.send': '发送问题',
-  'action.stop': '停止等待',
+  'action.stop': '停止',
   'action.tryAgain': '重试',
 
   'ask.title': '想了解什么业务数据？',
@@ -129,8 +129,10 @@ export default {
   'notice.degradedChat.body': '这段回复来自较简单的兜底逻辑，不是 AI 模型生成的。',
   'notice.conversation.title': '这是一段对话回答',
   'notice.conversation.body': '这条消息没有执行数据库查询。上面的文字是 AI 根据对话上下文写的，请当作说明看，不要当作数据。想重新读取数据，请点「新问题」另起一个对话。',
-  'notice.stopped.title': '已停止等待',
-  'notice.stopped.body': '查询可能仍会在服务端跑完。跑完后会出现在「历史查询」里，但不带结果数据。',
+  'notice.stopped.title': '已停止查询',
+  'notice.stopped.body': '连接断开后，服务端也会停下这次查询，除非服务端设成断开后继续跑完。两种情况它都会出现在「历史查询」里。',
+  'notice.cancelled.body': '已请服务端一并停下：正在执行的 SQL 立即中断；已经发出的模型调用要等它返回，结果丢弃。这次查询仍会出现在「历史查询」里。',
+  'notice.cancelLate.body': '服务端那边已经跑完了，所以它照常出现在「历史查询」里，只是这里不显示结果数据。',
   'notice.service.title': '请求没有成功',
   'notice.validatorNote': '校验备注：',
 

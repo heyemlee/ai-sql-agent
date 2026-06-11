@@ -67,7 +67,7 @@ function chooseTransport() {
 
 /* ─── 输入框 ───────────────────────────────────────────────────── */
 
-/* 发送键。等结果的时候它是「停止等待」：一个点不了的灰色按钮什么也没告诉人。 */
+/* 发送键。等结果的时候它是「停止」：一个点不了的灰色按钮什么也没告诉人。 */
 function sendButton() {
   if (busy) {
     return html`<button class="send-btn is-stop" id="askSend" type="button" data-action="stop-current"
@@ -274,7 +274,7 @@ function drawTurn(turn) {
   const elapsed = Math.floor((performance.now() - turn.startedAt) / 1000);
   let body;
   if (turn.status === 'pending') body = renderPending(turn, elapsed);
-  else if (turn.status === 'stopped') body = renderStopped();
+  else if (turn.status === 'stopped') body = renderStopped(turn);
   else if (turn.status === 'error') body = renderServiceError(turn);
   else body = renderResult(turn);
 
@@ -401,12 +401,19 @@ async function ask(question, extra = {}) {
   else if (turn.status === 'stopped') loadHistory();
 }
 
-/* 停止：先请服务端停下这次运行，再断开连接。只断开的话服务端照样把查询跑完、
-   照样扣配额。运行号只有流式请求在首帧里拿得到；请求失败（已经结束、网络问题）
-   不影响本地的停止。 */
+/* 停止：先请服务端停下这次运行，再断开连接。服务端默认在连接断开后也会停下
+   （AI_SQL_CANCEL_ON_DISCONNECT），显式取消不依赖这个开关，还能知道服务端那边的结果：
+   受理了、已经跑完（409），还是请求失败（失败不影响本地的停止）。停止提示按这个结果写。
+   运行号只有流式请求在首帧里拿得到。 */
 function stopTurn(turn) {
   if (!turn || !turn.controller) return;
-  if (turn.runId) api.cancelRun(turn.runId).catch(() => {});
+  if (turn.runId) {
+    turn.cancel = 'sent';
+    api.cancelRun(turn.runId)
+      .then(() => { turn.cancel = 'accepted'; })
+      .catch((error) => { turn.cancel = error && error.status === 409 ? 'finished' : 'failed'; })
+      .finally(() => { if (turn.status === 'stopped') drawTurn(turn); });
+  }
   turn.controller.abort();
 }
 
