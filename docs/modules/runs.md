@@ -86,4 +86,8 @@ frame and on the task that `message/send` returns (contract §4.4).
   this layer existed.
 - `tests/test_a2a_wire_snapshot.py` shows the A2A frames, the `message/send` task and the `/query` data part keep their
   shape.
-- The PostgreSQL store and cancel path are exercised only where a DSN is configured.
+- The PostgreSQL store and cancel path run only where a DSN is configured. CI configures one (a PostgreSQL 16 +
+  pgvector service), so they run there.
+- Cancel latency under a real model was measured once, on 2026-10-16, on a local instance with demo data: six cancels
+  sent 0.5–11 s into an A2A stream ended their runs 0.07–2.7 s later, each 3–16 ms after the model or embedding call
+  already in flight returned. No call started after a cancel.

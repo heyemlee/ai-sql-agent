@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 566" width="960" height="566" role="img" aria-labelledby="title desc">
   <title id="title">AI SQL Agent architecture</title>
-  <desc id="desc">The web console and other agents call one FastAPI service, which checks API keys and quotas and can switch the model and embedding connections live. Inside it an agent loop routes each question with an LLM router and JSON-schema output, finds tables and columns with hybrid retrieval (BM25 and vectors fused by RRF, re-ranked, over a YAML semantic layer), plans, writes SQL, runs it read-only through an SQLGlot gate, repairs failures and checks the result with an LLM self-check, keeping memory and an audit trail under a trace_id. Model calls go to an OpenAI-compatible, Anthropic, vLLM or Ollama provider; SQL runs on SQLite or PostgreSQL data sources; memory, audit and vectors are kept in SQLite or pgvector. A separate MCP server uses the same gate, Prometheus scrapes the metrics, and the project ships with Docker Compose, pytest, GitHub Actions and a release gate of 150 + 40 cases.</desc>
+  <desc id="desc">The web console and other agents call one FastAPI service, which checks API keys and quotas and can switch the model and embedding connections live. Inside it an agent loop routes each question with an LLM router and JSON-schema output, finds tables and columns with hybrid retrieval (BM25 and vectors fused by RRF, re-ranked, over a YAML semantic layer), plans, writes SQL, runs it read-only through an SQLGlot gate, repairs failures and checks the result with an LLM self-check, recording each request as a cancellable run with a numbered event log and keeping memory and an audit trail under a trace_id. Model calls go to an OpenAI-compatible, Anthropic, vLLM or Ollama provider; SQL runs on SQLite or PostgreSQL data sources; run records, memory, audit and vectors are kept in SQLite or pgvector. A separate MCP server uses the same gate, Prometheus scrapes the metrics, and the project ships with Docker Compose, pytest, GitHub Actions and a release gate of 150 + 40 cases.</desc>
   <style>
     text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif; }
     .eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; fill: #8e8e93; }
@@ -141,8 +141,8 @@
   <text class="tech" x="400.0" y="394">SQLGlot AST · read-only</text>
   <rect x="360.0" y="432" width="28" height="28" rx="8" fill="#e8f6f4"/>
   <g class="icon" stroke="#0d9488" color="#0d9488" transform="translate(366.0 438.0)"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5 V8 L10.5 9.5"/></g>
-  <text class="name" x="400.0" y="443">Memory · audit</text>
-  <text class="tech" x="400.0" y="460">memory · trace_id · metrics</text>
+  <text class="name" x="400.0" y="443">Runs · memory · audit</text>
+  <text class="tech" x="400.0" y="460">event log · cancel · trace_id</text>
   <rect x="346.0" y="46" width="28" height="28" rx="8" fill="#f4f4f6"/>
   <use href="#si-fastapi" x="352.0" y="52.0" width="16" height="16" fill="#009688"/>
   <text class="name" x="386.0" y="58">FastAPI service</text>
@@ -201,7 +201,7 @@
     <use class="logo" href="#si-postgresql" fill="#4169E1" x="820.4" y="380.5" width="13" height="13"/>
     <text class="tech" x="837.4" y="391">pgvector</text>
   </g>
-  <text class="note" x="820.0" y="406.0" text-anchor="middle">memory · audit · vectors</text>
+  <text class="note" x="820.0" y="406.0" text-anchor="middle">runs · memory · audit · vectors</text>
   <g class="row">
     <text class="eyebrow" x="191.9" y="536">SHIPPED WITH</text>
     <use class="logo" href="#si-docker" fill="#2496ED" x="292.7" y="525.5" width="13" height="13"/>
