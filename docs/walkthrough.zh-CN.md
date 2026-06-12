@@ -7,13 +7,17 @@
 
 | 项目速览 | |
 | --- | --- |
-| 代码量 | Python ≈ 28.4k 行(源码 ≈ 23k + 测试 5.3k) |
-| 模块数 | 16 个顶层包 |
-| 测试 | 357 个用例(无 pgvector 时跳过 16 个 pgvector 集成用例) |
-| 评测 | 150 条评测集 + 40 条留出集 + 发布门禁 |
-| 演示数据 | 4 个互不相干的业务库,15 张表,**无外键跨库** |
-| 外部依赖 | FastAPI / uvicorn / pydantic / httpx / numpy / psycopg+pgvector / mcp |
+| 代码量 | Python ≈ 58.2k 行(源码 34.5k + 测试 23.7k) |
+| 模块数 | `src/ai_sql_agent/` 下 21 个子包(另有放演示建库脚本的 `resources/`) |
+| 测试 | 1262 个用例(没配 `AI_SQL_PGVECTOR_DSN` 时跳过其中 27 个 PostgreSQL 用例) |
+| 评测 | 150 条评测集 + 40 条留出集 + 8 条线的发布门禁 |
+| 演示数据 | 4 个互不相干的业务库,15 张表,86 个字段,**无外键跨库** |
+| 外部依赖 | FastAPI / uvicorn / pydantic / httpx / numpy / PyYAML / sqlglot / psycopg+pgvector / mcp(共 12 个直接依赖) |
+| 对外接口 | HTTP(`/query` 等)、A2A(`/a2a`,给别的 Agent 用)、MCP stdio(单独进程) |
 | 离线可跑 | 是。没有模型 Key 时全链路走 Mock,Demo 和测试都能跑通 |
+
+> 表里的数字对应提交 `3de63cb`(2026-10-16):行数是 `src/`、`tests/` 下 `*.py` 的 `wc -l`;
+> 用例数是在一个干净的临时目录里跑 `pytest --collect-only` 的结果。
 
 ---
 
@@ -95,9 +99,13 @@
 pip install -e ".[dev]"
 ```
 
-依赖只有 8 个直接包,清单在 `pyproject.toml`。注意依赖段那句注释:原先是 `pip freeze`
-全量导出,混进了一整套用不到的 GPU 训练栈,后来才收敛成「只列真正 import 的包」。
-这本身就是个可以拿来讲的细节。
+直接依赖 12 个,清单在 `pyproject.toml`。依赖段第一行注释是「只列项目真正 import 的包,
+传递依赖交给 pip 解析」。这句话有来历:换成 `pyproject.toml` 之前的 `requirements.txt`
+里写着,原先是 `pip freeze` 全量导出,混进了一整套用不到的 GPU/训练栈
+(`git show 2be4869^:requirements.txt` 能看到)。这本身就是个可以拿来讲的细节。
+
+`sqlglot` 那一行的注释也值得读:它是**运行时硬依赖**,装不上时授权会拒绝一切 SQL——
+服务能起来,但查不了任何东西,这是有意选的失败方向(见第 12、22 节)。
 
 ### 2.2 第一步:看端到端 Demo(最重要的一步)
 
@@ -115,7 +123,8 @@ Demo 1:单库查询「查询准时率低于0.9的供应商名称」
   2. Schema 检索关键词 / 三层检索结果   ← 看它选了哪些库、哪些表
   3. Schema 图                          ← 看进 Prompt 的字段长什么样
      + 跨库约束段落                     ← 命中多库时才出现
-  4. CoT 五元组                          ← 看规划模型拆了几步
+  4. CoT 四元组                          ← 看规划模型拆了几步(标题沿用旧名,
+                                            每步其实有五个字段,见第 10 节)
   5.1 步骤 1 SQL                         ← 看生成的 SQL
   6.1 步骤 1 MCP 执行结果                ← 看真实执行结果
 
@@ -133,17 +142,22 @@ Demo 2:跨库两步查询(上一步结果回填)
 ### 2.3 第二步:跑测试,确认环境没问题
 
 ```bash
-python -m unittest discover -s tests
+make test        # 即 python -m pytest tests -q
 ```
 
-预期:`Ran 357 tests ... OK (skipped=16)`。跳过的 16 个是 pgvector 集成用例
-(本地没起 PostgreSQL 就自动跳过)。
+预期最后一行是 `1235 passed, 27 skipped`(共 1262 个用例,后面还会跟 warnings 和
+subtests 的计数)。跳过的 27 个都要 `AI_SQL_PGVECTOR_DSN`:pgvector 集成 14 个、
+PostgreSQL 授权 7 个、只读账号 3 个、PostgreSQL 取消 2 个、PostgreSQL 运行记录存储 1 个。
+本地没起 PostgreSQL 就自动跳过;CI 里有 pgvector 服务容器,这些都会真跑。
 
-> ⚠️ **本地坑**:如果项目根目录有 `.env` 文件且里面配了 `AI_SQL_*` 变量,
-> 会有 3–4 个 settings 相关用例失败。原因是这些用例通过 `os.environ` 设置
-> `OPENAI_API_KEY` 之类的通用名,而 `.env` 里的 `AI_SQL_` 前缀名在
-> `AliasChoices` 里优先级更高,把测试设的值盖掉了。CI 环境没有 `.env`,所以是绿的。
-> 详见第 29 节。
+CI 用的是另一个入口:`make test-ci`,即 `python -m unittest discover -s tests`,
+预期 `Ran 1256 tests ... OK (skipped=27)`。少的 6 个是 `tests/test_simple_erp.py` 里
+pytest 风格的函数,unittest 收不到,CI 另起一步用 pytest 单独跑它。
+
+> ⚠️ **本地坑**:`tests/conftest.py` 会在测试期屏蔽三样本机配置——项目根目录的 `.env`、
+> shell 里导出的模型凭证、页面上保存的模型连接(`runtime_data/model_settings.json`)。
+> 但 conftest 只对 pytest 生效:在本机用 `unittest discover` 跑,这三样都会漏进测试,
+> 断言就变成了「你的 `.env` 配了什么」。本机请用 `make test`,详见第 29 节。
 
 ### 2.4 第三步:起服务,用网页问一句
 
@@ -151,7 +165,12 @@ python -m unittest discover -s tests
 ./scripts/run_api.sh
 ```
 
-打开 http://localhost:8000 ,内置查询界面有三个入口:业务查数、数据浏览、历史查询(原生 HTML/CSS/ES Module,无构建步骤;学习模式会按每次请求实际发生的步骤讲解)。
+打开 http://localhost:8000 (端口取 `AI_SQL_PORT`,默认 8000),内置查询界面有三个入口:业务查数、数据浏览、历史查询(原生 HTML/CSS/ES Module,无构建步骤)。页面上有三处和后面的章节直接对应:
+
+- **学习模式**(设置里打开):按每次请求实际发生的步骤讲解。传输方式默认是「自动」:学习模式开着时走 A2A 流式接口(`POST /a2a` 的 `message/stream`),这样才拿得到真实的阶段事件;关着时走 `POST /query`。见 17.6。
+- **停止按钮**:走流式时,它先用首帧里的任务编号调 `POST /runs/{id}/cancel` 让服务端停下,再断开请求。见 3.4。
+- **设置 → 高级设置 → 模型连接 / Embedding**:管理员不重启就能换模型和向量模型。见 17.7。
+
 或者直接打接口:
 
 ```bash
@@ -159,21 +178,27 @@ curl -X POST http://localhost:8000/query -H 'Content-Type: application/json' -d 
 ```
 
 留意返回体里的 `trace_id` / `has_risk` / `degraded` 三个字段,它们分别对应
-本文档的主线 D(可靠性)和主线 E(正确性)。
+本文档的主线 D(可靠性)和主线 E(正确性)。响应头里还有一个 `X-Run-Id`:
+这次请求的运行记录编号,拿它可以查这次请求的完整事件日志(见 3.4)。
 
 ### 2.5 第四步:读代码的推荐顺序
 
-不要从 `README` 的模块表按字母序读。按**数据流**读:
+不要照 `src/ai_sql_agent/` 的目录按字母序读。按**数据流**读:
 
 ```
-1. src/ai_sql_agent/api/app.py          ── 入口,先看 query() 函数(约 423 行起)
+1. src/ai_sql_agent/api/app.py          ── 入口,先看 query()(约 940 行起)和它调的 _answer_query()
 2. src/ai_sql_agent/pipeline/dynamic_service.py ── 路由分叉:查库 还是 聊天
-3. src/ai_sql_agent/pipeline/text2sql_pipeline.py ── 核心!先只读 run() 方法(189–630 行)
-4. 然后按 run() 里出现的顺序,跳进各个子模块
+3. src/ai_sql_agent/pipeline/text2sql_pipeline.py ── 核心!先读 run() 和 _run()(285–362 行)
+4. 再按 _run() 调用的顺序读 _prepare → _plan → _run_steps → _run_step → _finish,
+   从这几个方法跳进各个子模块
 ```
 
-`text2sql_pipeline.py` 的 `run()` 方法是整个项目的**主干**。它一共 440 行,
-把 11 个阶段串成一条线。读懂它,项目就读懂 70% 了。
+`text2sql_pipeline.py` 的 `_run()` 是整个项目的**主干**,但它本身只有 40 行左右:
+准备(归一化 → 抽词 → 检索)→ 规划 → 逐步(生成 → 执行 → 修复 → 校验)→ 收尾,
+每一段是一个方法;规划、生成、修复时模型不可用,统一走降级出口 `_degrade()`。
+这几个方法原来是一个 484 行的 `_run`,2026-10-15 拆开(提交 88440d4)——拆之前先给
+所有发给模型的输入录了快照(`tests/test_prompt_snapshot.py`),拆完逐条比对,一字不差。
+读懂这几个方法,项目就读懂 70% 了。
 
 ---
 
@@ -183,7 +208,7 @@ curl -X POST http://localhost:8000/query -H 'Content-Type: application/json' -d 
 
 ```mermaid
 flowchart TD
-    A["① 用户提问<br/>POST /query"] --> B["② 请求防护<br/>API Key · 数据权限 · 限流配额 · trace_id"]
+    A["① 用户提问<br/>POST /query 或 A2A message/send · message/stream"] --> B["② 请求防护<br/>API Key · 数据权限 · 限流配额 · trace_id · 登记 run"]
     B --> C["③ 加载记忆<br/>短期会话窗口 + 可选长期记忆召回"]
     C --> D{"④ 意图路由<br/>模型优先 / 规则兜底"}
 
@@ -196,8 +221,8 @@ flowchart TD
     H1 --> I["⑨ 逐步生成 SQL<br/>方言约束 + 局部 Schema + 上一步结果"]
     H2 --> I
     I --> I2["跨库静态校验<br/>引用了别的库的表 → 带提示重生成一次"]
-    I2 --> J["⑩ 执行前权限二次校验"]
-    J --> K["⑪ MCP 路由执行<br/>SQL 守卫 · 只读连接 · 行数上限 · 超时"]
+    I2 --> J["⑩ 执行前权限预判<br/>越权不进修复回路"]
+    J --> K["⑪ MCP 路由执行<br/>授权关卡 · 语法树只读校验 · 只读连接<br/>行数 / 字节上限 · 超时 · 可取消"]
     K --> L{"执行成功?"}
     L -->|否| M["修复回路<br/>解析错误 → 定位子句 → 重生成 → 重跑<br/>最多 2 次"]
     M --> K
@@ -209,7 +234,7 @@ flowchart TD
 
     N --> Q["⑬ 返回<br/>answer · 每步 SQL 与结果 · has_risk · trace_id"]
     P --> Q
-    Q --> R["⑭ 落审计 + 指标 + 结构化日志"]
+    Q --> R["⑭ 落审计 + run 记录与事件日志 + 指标 + 结构化日志"]
 
     classDef entry fill:#EAF3FF,stroke:#3B82F6,stroke-width:2px,color:#172554;
     classDef core fill:#F3EEFF,stroke:#8B5CF6,stroke-width:2px,color:#2E1065;
@@ -225,8 +250,9 @@ flowchart TD
 
 | 阶段 | 代码位置 | 关键函数 |
 | --- | --- | --- |
-| ① 入口 | `src/ai_sql_agent/api/app.py` | `query()` |
+| ① 入口 | `src/ai_sql_agent/api/app.py`;A2A 走 `src/ai_sql_agent/a2a/server.py` | `query()` → `_answer_query()` |
 | ② 防护 | `src/ai_sql_agent/api/security.py`、`limits.py` | `AuthGuard.authenticate` / `RequestLimiter.check` |
+| ② 登记 run | `src/ai_sql_agent/runs/manager.py` | `RunManager.start` / `RunManager.running` |
 | ③ 记忆 | `src/ai_sql_agent/memory/conversation.py` | `begin_user_turn()` |
 | ④ 意图路由 | `src/ai_sql_agent/pipeline/routing.py` | `DynamicIntentRouter.route` |
 | ⑤ 归一化 | `src/ai_sql_agent/normalization/normalizer.py` | `QueryNormalizer.normalize` |
@@ -235,11 +261,13 @@ flowchart TD
 | ⑧ 短路径 | `src/ai_sql_agent/pipeline/short_path.py` | `decide_short_path` |
 | ⑧ 规划 | `src/ai_sql_agent/planning/cot_planner.py` | `CotPlanner.plan` |
 | ⑨ 生成 | `src/ai_sql_agent/generation/sql_generator.py` | `SqlGenerator.generate` |
-| ⑩ 权限 | `src/ai_sql_agent/pipeline/text2sql_pipeline.py` | `_check_table_access` |
+| ⑩ 权限预判 | `src/ai_sql_agent/pipeline/text2sql_pipeline.py` | `_check_table_access` |
 | ⑪ 执行 | `src/ai_sql_agent/execution/router.py`、`sqlite_executor.py` | `MCPRouter.execute` |
+| ⑪ 授权关卡 | `src/ai_sql_agent/execution/authorization.py`(判据在 `auth/enforcement.py`) | `enforce` |
 | ⑫ 修复 | `src/ai_sql_agent/repair/repairer.py` | `SqlRepairService.repair` |
 | ⑬ 校验 | `src/ai_sql_agent/validation/validator.py` | `ResultValidator.validate` |
 | ⑭ 审计 | `src/ai_sql_agent/audit/store.py` | `SQLiteAuditStore.record` |
+| ⑭ 运行记录 | `src/ai_sql_agent/runs/manager.py`、`store.py` | `RunManager.finish` |
 
 ### 3.3 一个关键设计:阶段之间用 `stage()` 上下文管理器串起来
 
@@ -251,14 +279,89 @@ with stage("retrieval", _logger, keywords=resolved_keywords) as retrieval_stage:
     retrieval_stage.set(databases=[...], tables={...})
 ```
 
-`stage()` 来自 `src/ai_sql_agent/core/trace.py`。它做三件事:
-1. 自动计时,记录到 `STAGE_DURATION` 指标;
-2. 出错时自动打一条 `stage.<name> status=error` 日志;
-3. `set()` 把这一阶段的关键产物挂进日志字段。
+`stage()` 来自 `src/ai_sql_agent/core/trace.py`。它做五件事:
+1. 自动计时,记录到 `STAGE_DURATION` 指标(按 `ok` / `error` / `cancelled` 分开);
+2. 结束时打一条 `stage.<name>` 日志:正常是 `status=ok`,出错是 `status=error`,
+   被取消是 `status=cancelled`——取消不算故障;
+3. `set()` 把这一阶段的关键产物挂进日志字段;
+4. 阶段**进入时**推一条进度给 A2A 流式接口(`use_stage_sink()`),所以进度里只有进入时
+   就已经知道的字段(步骤号、库、方言等);
+5. 在一次 run 里(见 3.4):进入前先检查取消,已经取消就不进这个阶段;进入和退出各往
+   运行记录里写一条 `stage.started` / `stage.finished`。不在 run 里时这一条是空操作。
 
 **讲解要点**:这不是「加了点日志」,而是**把可观测性做成了链路的骨架**。
 排查一次线上问题时,拿 `trace_id` 一搜,就能看到「检索选了哪几张表 →
 规划拆了几步 → 每步 SQL 是什么 → 哪步失败了 → 修复了几次」的完整时间线。
+后来的 A2A 进度、运行记录、取消检查点都挂在这一个上下文管理器上——所有阶段本来就都
+穿过它,pipeline 本身一行没改。
+
+### 3.4 一次请求 = 一个 run:运行记录、事件日志与取消
+
+`/query`、A2A `message/send`、`message/stream` 三个入口在准入通过之后、调用 service
+之前都会登记一个 **run**(`src/ai_sql_agent/runs/`,2026-10-15 加入)。一个 run 有三样东西:
+
+| | 是什么 | 存在哪 |
+| --- | --- | --- |
+| 记录 | 状态、入口、起止时间、用量、业务结论(`degraded`、`execution_status`……) | 表 `ai_sql_runs` |
+| 事件日志 | 从 1 开始编号的事件 | 表 `ai_sql_run_events` |
+| 取消令牌 | 线程安全的取消标记 | `core/run_context.py` 的 `CancelToken` |
+
+pipeline 本身不知道 run 的存在。事件由它本来就会穿过的三层发出:`trace.stage()`、
+模型传输层、SQL 路由器。benchmark、脚本、单测直接调 pipeline 时没有 run,这些钩子全是空操作。
+
+**七种事件**(`runs/events.py`):
+
+| 类型 | 谁发 | 带什么 |
+| --- | --- | --- |
+| `run.started` | 入口 | 入口名(`http_query` / `a2a_send` / `a2a_stream`)、调用方、用户、会话、问题长度 |
+| `stage.started` / `stage.finished` | `trace.stage()` | 阶段字段;结束时带状态与耗时 |
+| `model.call` | 模型传输层,每次尝试一条 | 组件、模型、第几次、状态、耗时、token |
+| `tool.sql` | SQL 路由器,每次执行一条 | 库、状态、行数、是否截断、耗时、SQL |
+| `run.cancel_requested` | 取消入口 | 原因:`api` / `client_disconnected` / `deadline` / `shutdown` |
+| `run.finished` | 入口 | 终态 `completed` / `failed` / `cancelled` / `interrupted`、用量、业务结论 |
+
+几个刻意的取舍:
+
+- **不存 Prompt、模型输出和结果行**。字符串截到 1 KiB(SQL 留 8 KiB),一条事件的字段最多
+  16 KiB(`AI_SQL_RUN_EVENT_ATTR_MAX_BYTES`),截掉了哪些字段记在 `_dropped` 里。
+- **每个事件带它所在的最内层阶段和步骤号**,所以一条 `tool.sql` 看得出是首次执行、修复还是降级重放。
+- **攒着写**:阶段结束、收到取消、run 结束时才落库,进程崩溃最多丢当前阶段的事件。
+- **落库失败不影响查询**:这次 run 停止持久化,`ai_sql_run_events_dropped_total` 计数。
+- **存在哪**:没配 `AI_SQL_PGVECTOR_DSN` 时是 `runtime_data/runs.db`,配了就进同一个
+  PostgreSQL;run 结束 7 天后连同事件删掉(`AI_SQL_RUNS_RETENTION_DAYS`)。服务关停时还在跑的
+  run,以及启动时发现所属进程已经不在的 run,都标成 `interrupted`。
+- **A2A 的进度帧不从这里来**,仍然来自 `trace.stage()` 的 sink,契约里的线上格式没变。
+
+查询接口是 `GET /runs/{id}` 和 `GET /runs/{id}/events?after=&limit=`(`api/runs.py`)。
+只看得到自己的 run(同一个 caller、同一个 user_id),管理员例外;**不是本人的一律 404**,
+不区分「不存在」和「没权限」,免得有人拿它枚举别人的 run——事件里有问题原文和 SQL。
+
+**取消**是这一层的另一半。`POST /runs/{id}/cancel` 置取消令牌,各层在下一个检查点停下:
+
+| 检查点 | 在哪 | 停得多快 |
+| --- | --- | --- |
+| 进入每个阶段前 | `trace.stage()` | 当前阶段结束时 |
+| 每次模型尝试前、重试退避中 | `core/transport.py` | 立刻 |
+| 已经发出的那次模型调用 | — | 打断不了:最多等到 HTTP 超时,结果丢弃,不再发新调用 |
+| SQL 执行中 | SQLite 的进度回调;PostgreSQL 的 `cancel_safe()` | 立刻 |
+| 每次修复尝试、每步降级重放之前 | `repair/repairer.py`、`_replay_history` | 立刻 |
+
+取消有五个来源:控制台的停止按钮、`POST /runs/{id}/cancel`、调用方断开(`AI_SQL_CANCEL_ON_DISCONNECT`,
+默认开)、总时长上限(`AI_SQL_RUN_DEADLINE_SECONDS`,默认 0 = 不限)、服务关停。
+被取消的请求照样写审计(状态码 499)、照样计日配额(契约 §5.5)。在 A2A 上,调用方还连着时被取消
+(服务端取消接口、运维、关停),流的终态帧和 `message/send` 返回的 Task 都是 `canceled`
+(契约 v1.13 §4.4;以前是 `failed` 加一句「cancelled: …」);调用方自己断开时,这份响应已经发不出去了。
+
+**一个值得讲的细节**:「断开即取消」2026-10-15 就写好了,但默认关着——当时的 A2A 契约 v1.12 §5.4
+写的是「断开后不中止」,服务端单方面改就是违约。契约出了 v1.13(「调用方断开后,我方在下一个检查点
+停止」),才在提交 3de63cb 里把默认值翻过来;设成 `false` 就回到 v1.12 的行为:断开后照样跑完,
+只是没人接收结果。
+
+**讲解要点**:`RunCancelled` **直接继承 `Exception`**,这一行是整套取消能成立的前提
+(`core/run_context.py` 的注释):如果它是 `RuntimeError`,路由会把它当成模型失败,退回规则版
+接着跑;如果它是 `ModelCallError`,pipeline 会转去重放历史 SQL。取消之后谁都不该再干活,
+所以它必须不像任何一种「可以兜底的失败」。同样的原因,三处原来会吞掉异常的地方
+(关键词抽取器、远端 Embedding 客户端、语义自检)现在都会先让取消过去。
 
 ---
 
@@ -328,7 +431,13 @@ erDiagram
 | `mes_db` | 生产与工时 | `work_order` / `labor_hour` / `capacity_stat` / `quality_check` |
 | `wms_db` | 库存与物料 | `material` / `batch` / `stock_snapshot` |
 
-定义在 `sql/create_*.sql`,由 `src/ai_sql_agent/pipeline/demo_data.py` 建库并附上业务元数据。
+建库脚本在 `src/ai_sql_agent/resources/demo_sql/create_*.sql`,由
+`src/ai_sql_agent/pipeline/demo_data.py` 建库并附上业务元数据。
+
+这份元数据现在被包成**语义层**的内置版本(`ai_sql_agent.semantic` 的 `demo_semantic_layer()`)。
+接真实业务库时不改代码,而是一个库写一份 YAML、用 `AI_SQL_SEMANTIC_DIR` 指过去——
+「有哪些库、怎么连、字段什么意思」都由它决定。`tools/` 下有两套按这个方式生成的部署配置:
+`sim_erp`(模拟 ERP)和 `simple_erp`(精简业务库,4 个库 9 张表)。
 
 ### 4.2 三个刻意埋下的「坑」(这是设计,不是疏忽)
 
@@ -388,13 +497,18 @@ erDiagram
 
 **干什么**:配置、模型传输、熔断、指标、日志、链路追踪、错误分类。所有模块都依赖它。
 
-**关键文件**(1870 行)
+**关键文件**(13 个文件,4348 行)
 
 | 文件 | 职责 |
 | --- | --- |
 | `settings.py` | 全局配置单例,统一收口原先散落各处的 `os.getenv` |
 | `transport.py` | 模型调用统一传输层(**最值得读**) |
 | `circuit.py` | 熔断器 |
+| `model_access.py` | 记住哪组「服务地址 + 凭证」已被模型服务拒绝,之后不再发请求 |
+| `model_settings.py` | 管理员在页面上保存的模型连接(压过环境变量和 `.env`) |
+| `model_client.py` | 规划、SQL 生成、抽词三个模型 Client 共用的连接参数,页面换了连接之后跟着换 |
+| `model_text.py` | 解析模型输出之前先去掉 Markdown 记号(GPT 系模型爱给标签加 `**`) |
+| `run_context.py` | 一次请求的运行上下文:run_id、取消令牌、取消检查点、事件发射(见 3.4) |
 | `metrics.py` | Prometheus 指标注册表(自己实现的,无第三方依赖) |
 | `trace.py` | `trace_id` 上下文 + `stage()` 计时器 |
 | `logging_setup.py` | 结构化日志(text / json 双格式) |
@@ -420,30 +534,54 @@ model_provider: Provider = "openai"   # 或 "anthropic"
    BASE_URL 惯例带,Anthropic 的惯例不带,两种都得能用。
 
 **Embedding 和 Rerank 的凭证是单独配置项**,原因写在注释里:主链路走 Anthropic 时,
-Embedding 只能另找一家(Anthropic 不提供 embedding 接口)。
+Embedding 只能另找一家(Anthropic 不提供 embedding 接口)。Schema 检索用哪种向量也是一个
+配置项:`embedding_backend` 默认 `local`(本地哈希向量,不调任何服务),设成 `remote` 才去调
+OpenAI 兼容的 `/embeddings`(见 7.5)。
 
-### 5.2 transport.py:一层把三件事收口
+**还有一份比环境变量优先级更高的配置**:管理员在页面「设置 → 高级设置 → 模型连接」里保存的那一份
+(默认存在 `runtime_data/model_settings.json`,和 `.env` 一样是明文 Key,文件权限 0600)。
+保存后立刻生效,不用重启,直到有人在页面上点「恢复为服务端配置」。多副本部署时每个副本各存各的
+文件,应当关掉它(`AI_SQL_MODEL_SETTINGS_ENABLED=false`),继续用环境变量或密钥管理来配。接口见 17.7。
+
+### 5.2 transport.py:模型调用的事都在这一层收口
 
 ```
 ModelTransport
   ├─ 协议差异     openai / anthropic 两种请求体与响应体格式
-  ├─ 重试与退避   指数退避 + 尊重服务端的 Retry-After 头
+  ├─ 重试与退避   指数退避 + 尊重服务端的 Retry-After 头(退避中也能被取消)
   ├─ 熔断保护     请求前先查熔断器,断开就直接抛错不发请求
-  └─ 用量记账     每次调用记 prompt_tokens / completion_tokens
+  ├─ 访问状态     请求前先查模型访问状态表,被拒过的凭证不再发请求
+  └─ 用量记账     每次调用记 prompt_tokens / completion_tokens,并发一条 model.call 运行事件
 ```
 
 **错误分类是关键**(`_classify_status`):
 
 | 类别 | 例子 | 重试? | 跳闸? |
 | --- | --- | --- | --- |
-| `ModelTimeoutError` | 超时 | ✅ | ✅ |
+| `ModelTimeoutError` | 超时(含 408) | ✅ | ✅ |
+| `ModelConnectionError` | 连不上 | ✅ | ✅ |
 | `ModelServerError` | 5xx | ✅ | ✅ |
 | `ModelRateLimitError` | 429 | ✅ | ✅ |
-| `ModelAuthError` | 401 | ❌ | ❌ |
+| `ModelAuthError` | 401;403 | ❌ | ❌ |
+| `ModelQuotaExhaustedError` | 402,或响应写明额度 / 余额用尽 | ❌ | ❌ |
+| `ModelBadRequestError` | 其他 4xx | ❌ | ❌ |
 | `ModelResponseError` | 返回不是合法 JSON | ❌ | ❌ |
 
 **为什么鉴权失败不跳闸**:Key 配错了,重试一万次也还是错,而且它本来就是
 立即返回的,不占用超时预算。跳闸只该保护「慢失败」。
+
+**但光是「不重试」还不够**。`core/model_access.py` 的注释记着 2026-10-04 实际发生的事:
+一把 Key 被停用之后,每个请求照样先让路由调一次、抽词调一次、规划再调一次,Key 停用后的两分半里
+又发出了约 650 次注定被拒的请求。熔断器管不了这件事:它只数基础设施类失败,而且当时把鉴权失败
+记成了「成功」。
+
+于是加了一张进程内的**模型访问状态表**:401、402、写明凭证无效或额度用尽的 403,按
+「服务地址 + 协议 + 凭证指纹」记下来,之后同一组的请求**在发出之前**就被拦住;写明「无权用这个模型」
+的 403 只封这个模型;带了等不起的 Retry-After 的 429、没说原因的 403 只是暂缓(最长 300 秒)。
+永久性的拒绝只由重启、`POST /admin/circuit/reset`、或在页面上换一份模型连接解除——它不会自己发请求
+去试凭证好了没有。凭证只以加盐的 BLAKE2 指纹参与比较,不存、不输出明文。
+鉴权和额度失败对熔断器记「不确定」:既不清失败计数,也不合上熔断器(`transport.py` 的
+`_record_circuit_outcome`)。
 
 ### 5.3 circuit.py:熔断器解决的是什么问题
 
@@ -465,7 +603,7 @@ closed ──连续失败达阈值(默认5)──> open ──冷却结束(默�
 
 ### 5.4 metrics.py:自己实现的 Prometheus 注册表
 
-没有引 `prometheus_client`。19 个指标,几个值得注意:
+没有引 `prometheus_client`。24 个指标,几个值得注意:
 
 | 指标 | 为什么要它 |
 | --- | --- |
@@ -474,6 +612,8 @@ closed ──连续失败达阈值(默认5)──> open ──冷却结束(默�
 | `SCHEMA_COLUMNS_DROPPED` | **被 Token 预算丢掉的字段数** |
 | `RESULT_ANOMALIES` | 按异常类型 × 严重度分桶 |
 | `DEGRADED_RESPONSES` | 按降级原因 × 失败阶段分桶 |
+| `RUN_CANCEL_LATENCY` | 从收到取消到真正停下用了多久——取消检查点放得对不对,看它 |
+| `RUN_EVENTS_DROPPED` | 运行记录没写进去的事件数(见 3.4) |
 
 **讲解金句**:「指标不是给运维看的,是给**改进模型效果**用的。
 `SCHEMA_COLUMNS_DROPPED` 一涨,就知道是预算太紧导致的召回损失,
@@ -485,7 +625,7 @@ closed ──连续失败达阈值(默认5)──> open ──冷却结束(默�
 
 **干什么**:链路的第一步。把口语化的问题变成确定的、可复现的问题。
 
-**两件事**(共 344 行,是最小的模块,但位置极其关键):
+**两件事**(共 344 行,除了 137 行的 `mcp_server`,是最小的包,但位置极其关键):
 
 ### 6.1 代词消解(`coreference.py`)
 
@@ -526,7 +666,7 @@ closed ──连续失败达阈值(默认5)──> open ──冷却结束(默�
 
 ## 7. ai_sql_agent.retrieval — 三层 Schema 检索
 
-**这是全项目最大的模块(6025 行),也是技术含量最高的部分。**
+**这个模块 4030 行(全项目第三大,仅次于 pipeline 和 core),是技术含量最高的部分。**
 
 ### 7.1 为什么要三层
 
@@ -540,7 +680,8 @@ closed ──连续失败达阈值(默认5)──> open ──冷却结束(默�
 ```
 Tier 1 库级   4 个库  →  最多 3 个
 Tier 2 表级   15 张表 →  最多 8 张
-Tier 3 字段级 86 个字段 → 最终约 20 个进 Prompt
+Tier 3 字段级 86 个字段 → 每个库融合后留 10 个(远端 Embedding)/ 20 个(本地哈希向量),
+                         再加上关键词保底和关联键
 ```
 
 ### 7.2 每一层内部:三路召回 + 融合 + 精排
@@ -584,30 +725,51 @@ score_delta = route_weight / (rrf_k + rank)     # rrf_k 默认 60
 **讲解金句**:「同一个分词策略,在字段级是优点(提高召回),在库级是缺点
 (引入噪声)。**检索的每一层都该有自己的参数**,一套配置打天下必然在某一层吃亏。」
 
-### 7.4 每表保底字段数
+### 7.4 进图字段的预算跟着向量走
 
-```python
-min_columns_per_table=4,   # 每表保底 4 个字段
-```
+字段级有两个数:每个库融合后留多少字段、每张表保底几个。它们不是常量,由
+`column_budget_for()` 按 Schema 检索**实际在用**的向量决定(`text2sql_pipeline.py`):
 
-注释里有实测数据:
+| 向量 | 每库字段数 | 每表保底 |
+| --- | --- | --- |
+| 远端 Embedding | 10 | 3 |
+| 本地哈希向量 | 20 | 4 |
 
-> 多表关联时避免一张表占满 top-15 配额、另一张表只剩 join key。
-> 实测把 multi_join 召回从 14/25 拉到 17/25,再往上加(5/6)收益递减
-> 但 Schema 图明显变胖。
+注释把两组数的来历都写清了:
+
+> 每表保底字段是为了多表关联时不让一张表占满配额、另一张表只剩 join key;当初用本地哈希向量时
+> 设 4 把 multi_join 召回从 14/25 拉到 17/25。换成远端 Embedding 后召回已经是 100%,
+> 这两个数反倒成了进图字段占比超线(44%,门禁线 40%)的主因。
+
+接着是 2026-10-14 只跑检索的扫参:远端每库 10 个、保底 3 个,评测集和留出集召回仍是 100%,
+进图占比降到 37%;再少到每库 8 个,留出集开始漏字段。本地向量把保底从 4 降到 3(每库 10–15 个时),
+留出集召回从 55% 掉到 47.5%。所以**只在真用上远端时收紧**——配了远端、启动时调不通会退回本地向量,
+预算也跟着回到宽的一档。
 
 **这是全项目注释风格的典型代表**:每个魔法数字背后都有一句「为什么是这个数,
 不是更大或更小」。讲解时可以专门提这一点。
 
-### 7.5 向量后端:内存 / pgvector 双实现
+### 7.5 向量:本地 / 远端 × 内存 / pgvector
 
-`vector_backend.py` 是个工厂:
+两个互相独立的选择。
+
+**用什么算向量**(`embedding_backend`,`pipeline/embedding.py`):
+
+- `local`(默认)→ `LocalHashEmbeddingClient`,把 token 哈希到固定维度上。不调任何服务,
+  但没有语义——「多少钱」和「金额」对不上,口语问法主要靠关键词召回和抽词时的术语映射;
+- `remote` → 调 OpenAI 兼容的 `/embeddings`,启动和 Schema 重建时把全部表、字段说明算一遍向量。
+  **调不通或缺 Key 时退回本地哈希向量,服务照常起**(日志 `schema.embedding_fallback`,
+  原因在 `/admin/model` 里看得到)。理由写在 `_build_schema_retrieval_service` 的注释里:
+  Schema 检索建不起来整个服务就起不来,而少了语义召回只是口语问法召回得差一些。
+
+**向量存在哪**(`vector_backend.py` 是个工厂):
 
 - 配了 `AI_SQL_PGVECTOR_DSN` → 用 `PgVectorIndex`;
 - 没配 / 依赖缺失 / 连不上 → **回退内存索引**,保证离线开发能跑。
 
-离线时用的 embedding 是 `LocalHashEmbeddingClient`——把 token 哈希到固定维度上。
-**它当然不如真 embedding**,但它让整个项目在没有任何 Key 的情况下可跑、可测。
+本地哈希向量**当然不如真 embedding**,但它让整个项目在没有任何 Key 的情况下可跑、可测。
+在页面上换 Embedding 不是改个配置就完:新旧模型的向量不在一个空间里,检索索引要整个重算。
+所以先用新模型把整份索引建好,建成了才换上;中途任何一步失败,正在用的索引一点不动(见 17.7)。
 
 ### 7.6 权限在三层里都会生效
 
@@ -619,7 +781,27 @@ def retrieve(self, query, keywords=None, access=None):
 ```
 
 **核心思想**:模型看不到的东西,就写不出来。这是权限的第一道防线
-(第二道在执行前,见主线 C)。
+(第二道在执行器入口,见主线 C)。
+
+### 7.7 表在 Schema 里的先后顺序也会影响答案
+
+同一个库里几张表按什么顺序写进 Prompt,看起来无关紧要。2026-10 的两次修复说明不是:
+
+- **先是「每次重启顺序都变」**(提交 6ef8810):`build_schema_graph` 用 set 给表名去重,
+  顺序跟着 `PYTHONHASHSEED` 走,同一个问题重启之后,规划 Prompt 里的表顺序就变了——
+  结果不可复现,Prompt 也没有稳定的前缀可以做缓存。改成按检索结果排。
+- **再是「按什么排」**(提交 5897af9):按每张表最靠前的那个字段命中排,会被本地精排带偏——
+  每个字段的精排文本里都带着所属表的描述,问「在库数量」时 `stock_snapshot` 的五个字段全排在
+  `material` 前面,规划就拿 `stock_snapshot.material_code` 当行标识,而不是 `material` 的编码和名称。
+  改成按**表级检索的排名**(`stage.retrieval` 日志里的 `tables` 字段)。
+
+提交说明里有一组对照(远端 Embedding,q049 / q050 / q068 各跑 5 次,共 15 次):按字段命中排
+8/15、6 条静默错误;按表级排名 14/15、没有静默错误;按表名字母序 15/15。选中哪些表和字段、
+库的顺序、表内字段的顺序都没变,变的只有表的先后。`tests/test_schema_graph_order.py`
+在两个不同的 hash seed 下渲染 q049,检查渲染出来的顺序就是表级排名。
+
+**讲解金句**:「同样的表、同样的字段,只换了先后,15 次里答对的从 8 次变成 14 次。
+顺序也是 Prompt 的内容,不能交给一个 set 去决定。」
 
 ---
 
@@ -670,7 +852,9 @@ def retrieve(self, query, keywords=None, access=None):
 def _relevance(column, position):
     """SchemaGraph 里的 ColumnSchema 不带检索分数(分数在 RetrievalHit 上),
     但**列表顺序就是检索排序**,所以位置本身是可用的相关性代理。"""
-    score = getattr(column, "rerank_score", None) or getattr(column, "rrf_score", None)
+    score = getattr(column, "rerank_score", None)
+    if score is None:
+        score = getattr(column, "rrf_score", None)
     return (float(score) if score is not None else 0.0, -position)
 ```
 
@@ -715,14 +899,23 @@ data_qa         → 解释历史结果 / 指标口径 / 业务知识,不该重�
 3. 知识型问句             → data_qa       (0.96)  「什么是准时交付率」
 4. 解释词 且 无查询词      → data_qa       (0.92)
 5. 有查询词               → database_query (0.90)
-6. 兜底                   → data_qa       (0.65)  「未发现必须访问数据库的明确意图」
+6. 有历史结果 + 解释词     → data_qa       (0.90)
+7. 兜底                   → data_qa       (0.65)  「未发现必须访问数据库的明确意图」
 ```
+
+每组信号词都有中文词表和一份英文正则,英文问句也能走规则兜底。
 
 **兜底选 data_qa 而不是 database_query**,理由是「默认使用低成本对话问答」——
 不确定时选便宜的那条路。
 
-`ModelIntentClassifier` 用模型做同样的二分类,`DynamicIntentRouter` 是门面:
-**模型优先,任何异常(JSON 解析失败、字段缺失、模型挂了)一律回落规则**。
+`ModelIntentClassifier` 用模型做同样的二分类(输出用 JSON Schema 约束),
+`DynamicIntentRouter` 是门面:**模型优先,JSON 解析失败、字段缺失、模型调用失败
+(`ModelCallError` 是 `RuntimeError` 的子类)一律回落规则**。只有取消不回落——
+`RunCancelled` 刻意不继承 `RuntimeError`(见 3.4)。
+
+对话问答这条路自己也会用到模型。模型不可用时回答会标 `degraded=true`
+(`dynamic_service.py`)——不标的话,调用方拿到一句固定话术加 `degraded=false`,
+看起来就像模型认真答过。
 
 ### 9.2 短路径:一个刻意保守的优化
 
@@ -824,6 +1017,25 @@ if replanned.steps and not self._plan_database_conflicts(replanned):
     cot_result = replanned
 ```
 
+### 10.5 规划规则 9–12:管住「输出什么」
+
+2026-10-14、15 换用 GPT 系模型跑评测时,剩下的错误大多是**输出形状**问题,而且是规划阶段就写进去的:
+没让汇总却汇总、自己补了问题里没有的筛选条件、把只用来筛选的那张表的编号和名称也输出了、
+「每个 X 的合计」从 X 的主表 LEFT JOIN 出一堆补零的行。于是规划 Prompt 多了四条
+(`planning/prompt_builder.py`):
+
+```
+9.  没要求汇总就出明细;「逐条」只是不汇总,不等于不去重
+10. 只用问题里明说的筛选条件,不要从字面意思推出没写的条件
+11. 输出目标只放问到的字段,再加一个让人认得出每一行的业务编号或名称;
+    只用来筛选或关联的表,它的字段不输出(跨库拆步要交给下一步的关联键除外)
+12. 「每个 X 的合计、数量、平均」只统计明细里出现过的 X,不从主表 LEFT JOIN
+```
+
+生成 Prompt 里有对应的规则 12–14(见 11.3)。规则里举的例子都不是评测题,有测试专门断言这一点。
+提交说明也把代价写在了明处:这些规则是对着评测里看到的失败写的,所以评测数字拿来估计
+「没见过的问题」会偏乐观(提交 091a7fd)。
+
 ---
 
 ## 11. ai_sql_agent.generation — SQL 生成
@@ -886,6 +1098,11 @@ POSTGRES = SqlDialect(
 把路由信息塞进生成 Prompt,只会诱导模型写出 `db.table` 这种在 SQLite/单库连接下
 必然报错的形式。
 
+生成 Prompt 现在一共 14 条要求(`generation/prompt_builder.py`),第 8 条之后的几条也值得扫一眼:
+9 要求用主键说清「哪一行是谁」,10 要求沿一对多 JOIN、输出列只来自「一」那侧时加 DISTINCT
+(JOIN 的基数标在 Schema 的「表关联关系」里),11 要求计算列的别名用英文小写加下划线,
+12–14 管输出形状,和规划规则 9–12 对应(见 10.5)。
+
 ### 11.4 上一步结果回填:把答案摆成「可直接抄的一行」
 
 这是全项目我最喜欢的一个细节。`_serialize_step_result()`:
@@ -893,10 +1110,13 @@ POSTGRES = SqlDialect(
 ```python
 sections = [f"共 {len(rows)} 行,字段:{', '.join(columns)}"]
 sections.append("可直接用作本步骤的字面量筛选条件:")
-sections.append("  project_code IN ('J24001', 'J24003', 'J24007')")   # ← 关键
+sections.append("  project_code IN ('J24001', 'J24003', 'J24006')")   # ← 关键
 sections.append("完整结果(JSON):")
 sections.append(json.dumps({...}))
 ```
+
+回填有上限:最多 50 行、每列最多 50 个取值(`_MAX_BACKFILL_ROWS`、`_MAX_BACKFILL_LITERALS`),
+防止一个长结果集把下一步的 Prompt 撑爆。
 
 注释解释了为什么不只给 JSON:
 
@@ -946,52 +1166,85 @@ MCPRouter                      按 request.database 找执行器
  └─ MCPProtocolExecutor        真实 MCP stdio 协议(use_mcp_protocol=True 时)
 ```
 
-### 12.2 SQL 守卫(`sql_guard.py`)
+每个执行器的 `execute()` 第一件事是过授权关卡(`execution/authorization.py` 的 `enforce`,
+见第 22 节);路由器执行完发一条 `tool.sql` 运行事件(见 3.4)。授权放在执行器而不是路由器,
+是因为路由器只是几条执行路径里最常走的那一条,绕开它直接调执行器一样能打到库。
 
-四类拒绝:
+### 12.2 只读校验(`sql_guard.py`):看语法树,不看关键字
 
-```python
+2026-10 之前这里是关键字扫描:正则去掉注释和单引号字符串,剩下的词和一张禁用词表求交集。
+模块 docstring 写了它为什么两头都错——判断依据是「词」,而只读与否是**结构**问题:
+
+> - 漏放:词法和数据库不一致的地方都能藏东西。`SELECT '--' AS x; DROP TABLE t`
+>   ——正则先删 `--` 到行尾,把后半条语句当注释删掉了;PostgreSQL 的
+>   `$$ ... $$` 字符串、嵌套注释同理。`set_config(...)`、`pg_sleep(...)` 这类
+>   有副作用的函数也不在词表里。
+> - 误杀:引号里的标识符(`"Last Update"`)、`replace()` 这样的普通函数,
+>   只要撞上词表就拒。
+
+现在的判定依据是 **sqlglot 按方言解析出来的语法树**(提交 1f43d0f,和授权关卡用同一个解析器、
+同一套方言映射)。`check_readonly_sql()` 拒绝七类:
+
+```
 1. 空语句
-2. 首关键字不是 SELECT / WITH
-3. 一次提交多条语句(分号拼接)
-4. 语句中出现写操作关键字(insert/update/delete/drop/attach/pragma/...)
-5. 调用可读写文件或加载扩展的函数(load_extension/writefile/pg_read_file/...)
+2. 解析失败——「看不懂」不等于「没问题」(fail closed)
+3. 一次提交多条语句
+4. 不是查询语句(写操作、DDL、PRAGMA、ATTACH、SET、COPY、EXPLAIN……)
+5. 查询里藏着写操作或会话控制(CTE 里的 INSERT/UPDATE/DELETE、SELECT INTO、FOR UPDATE……)
+6. 调用读写文件、执行 SQL 文本、改会话状态的函数(load_extension、pg_read_file、set_config、dblink……)
+7. 附加防线:裸关键字命中禁用词表,或用了 Unicode 转义写法
 ```
 
 有两个实现细节值得讲:
 
-**① 为什么要扫描整条语句而不只看首关键字**
+**① 旧的关键字表没删,降成了附加防线**。它现在扫的是 sqlglot 按方言切出来的 token,
+字符串、注释、带引号的标识符天然不在里面,所以不会再误伤引号里的词;语法树已经把某个词
+认成列名、别名、表名时也不算命中——`copy`、`call`、`update` 在 PostgreSQL 里都是合法的
+非保留字,业务库里真有这样的列。附加防线防的是解析器自身的盲区,**只能多拒,不能放行**
+语法树已经拒掉的语句。
+
+**② 不知道方言时两种都判**。调用方没说方言,就按 SQLite 和 PostgreSQL **各**解析一遍,
+两种都判只读才放行:`$$…$$`、嵌套注释、反斜杠转义在两边是两种切法,同一段文字可能是一条
+或两条语句——不知道目标库是哪种,就不能挑对自己有利的那种解读。两个执行器都会传自己的方言,
+所以这条路只留给不知道目标库的调用方。
+
+### 12.3 执行治理
 
 ```python
-# `WITH x AS (...) INSERT INTO ...` 在 SQLite / PostgreSQL 都是合法写法,
-# 只看首关键字会漏,因此对整条语句做关键字扫描。
+SQLiteMCPExecutor(readonly=True, max_rows=1000, max_execution_seconds=10.0,
+                  max_result_bytes=8 * 1024 * 1024, max_value_bytes=8 * 1024 * 1024)
 ```
 
-**② 为什么要先剥掉注释和字符串字面量**
+API 进程里这四个上限来自配置(`AI_SQL_MAX_ROWS`、`AI_SQL_MAX_EXECUTION_SECONDS`、
+`AI_SQL_MAX_RESULT_BYTES`、`AI_SQL_MAX_VALUE_BYTES`),默认值就是上面这些。
 
-```python
-def strip_sql_noise(sql):
-    """去掉注释与字符串字面量,只留下用于关键字判断的骨架。"""
-```
-
-否则 `WHERE name = 'delete me'` 会被误判为包含 `delete`。
-
-### 12.3 执行治理三件套
-
-```python
-SQLiteMCPExecutor(readonly=True, max_rows=1000, max_execution_seconds=10.0)
-```
-
-| 治理项 | 实现 |
+| 治理项 | SQLite 执行器的实现 |
 | --- | --- |
-| 只读 | `sql_guard` 校验 **+** `file:...?mode=ro` URI 打开只读连接(双防线) |
-| 行数上限 | `fetchmany(max_rows + 1)`,**多取一行**来区分「刚好取满」和「被截断」 |
-| 超时 | `conn.set_progress_handler()` 每 10000 条虚拟机指令检查一次 deadline |
+| 授权 | `execute()` 第一件事是过 `enforce()` 关卡(第 22 节) |
+| 只读 | 语法树校验 **+** `file:...?mode=ro` 只读连接 **+** 数据库层授权器:默认拒绝,只放行读数据,`ATTACH`、`VACUUM INTO`、`PRAGMA`、`sqlite_*` 内部表在引擎里就被拒 |
+| 行数上限 | 逐行取,取到第 `max_rows + 1` 行就停,**多取的那一行只用来证明「后面还有」** |
+| 字节上限 | 返回的值加起来最多 `max_result_bytes`;第一行就超了直接报错,不返回「0 行、已截断」 |
+| 单值上限 | `SQLITE_LIMIT_LENGTH`:单个字符串 / BLOB 超过 `max_value_bytes`,语句在分配前就报错中止 |
+| 超时与取消 | `conn.set_progress_handler()` 每 10000 条虚拟机指令检查一次 deadline 和取消令牌 |
 
-**`fetchmany(max_rows + 1)` 这个细节值得单独讲**:如果只取 `max_rows` 行,
-返回正好 1000 行时你无法判断是「真的只有 1000 行」还是「被截断了」。
-多取一行,`len(rows) > max_rows` 就是截断标志。返回体里的 `truncated` 字段
-就是这么来的。
+**多取一行这个细节值得单独讲**:如果只取 `max_rows` 行,返回正好 1000 行时你无法判断是
+「真的只有 1000 行」还是「被截断了」。多取一行,取得到就是截断标志。返回体里的 `truncated`
+字段就是这么来的;按字节截断时 `truncated_by` 是 `bytes`。
+
+**字节上限是 2026-10-14 的安全审计加的**(`result_budget.py` 的注释):行数上限管不住体积——
+`SELECT x, zeroblob(5000000)` 每行 5 MB,40 行就是 200 MB。这些字节先进执行器的内存,
+再被序列化进 HTTP 响应、A2A 数据段、对话记忆库和下一步的提示词,每一环都按「行数不多」设计。
+也是因此,取数从 `fetchmany(max_rows + 1)` 改成了逐行 `fetchone`:前者会先把一千零一行
+全部取进内存,字节预算就只是事后的摆设。
+
+**单值上限和进度回调是互补的**:进度回调打断不了**单次函数调用**,
+`SELECT hex(randomblob(150000000))` 要靠长度上限才会在分配内存之前就报错。
+
+PostgreSQL 执行器(`postgres_executor.py`)对齐同一套规则,每条落到 PostgreSQL 自己的机制上:
+`SET TRANSACTION READ ONLY`、会话级 `statement_timeout`(由数据库负责中断,不靠应用轮询)、
+服务端游标按需取数、同样的字节预算;取消时用 `conn.cancel_safe()` 让服务端中断语句。
+PostgreSQL 没有「单值最大长度」这样的会话参数,单个大值要在 SQL 里用 `left()` / `substr()`
+截,或者让只读账号看不到那些列。
 
 ---
 
@@ -1014,7 +1267,8 @@ flowchart LR
     class A,B,C,D,E,F s;
 ```
 
-最多 2 次(`max_repair_attempts`)。
+最多 2 次(`max_repair_attempts`);每次尝试之前过一个取消检查点(见 3.4)——
+取消之后不该再多发一次模型调用。
 
 ### 13.2 错误解析:七类模式
 
@@ -1070,7 +1324,7 @@ if not repaired_sql or repaired_sql.strip() == current_sql.strip():
 
 ### 14.1 它解决什么问题
 
-模块 docstring 开门见山:
+`ResultValidator` 的类 docstring(`validation/validator.py`)开门见山:
 
 > 处理「SQL 跑通了但结果可能是错的」这一类软异常。
 > 硬错误(语法、未知字段)由 ai_sql_agent.repair 的日志解析回路负责,不在这里。
@@ -1085,8 +1339,13 @@ if not repaired_sql or repaired_sql.strip() == current_sql.strip():
 | --- | --- | --- | --- |
 | 1 | 空结果 | ❌ | 返回 0 行:可能真没数据,也可能过滤条件写错 |
 | 2 | 基数校验 | ❌ | 实际行数 vs 规划声明的「预期输出量级」 |
-| 3 | **形状检查** | ❌ | 该出明细却聚合成一个数 |
-| 4 | 语义自检 | ✅ | SQL 实际算的东西 vs 用户问的东西 |
+| 3 | **形状检查** | ❌ | 该出明细却聚合成一个数(最后一步);SQL 结构上的行数和计划声明的量级矛盾(每一步) |
+| 4 | 语义自检 | ✅ | SQL 实际算的东西 vs 用户问的东西(带上语义层声明的字段单位当已知事实) |
+
+还有一类提示不是「发现了问题」,而是「该做的核对没做成」:语义自检的模型调用失败、或者读不出
+结论时,留一条 `self_check_not_run`。以前这种情况什么都不留,从响应上看和「核对过、没问题」
+一模一样——没核对过不能当成核对过。反过来,模型走 Mock 时自检记「不适用」:Mock 不做语义判断,
+记成「没做成」会让每条离线答案都带一条提示(提交 257104c)。
 
 ### 14.3 形状检查:静默错误的头号形态
 
@@ -1105,7 +1364,9 @@ def wants_aggregation(query):    # 问句里有没有「统计/合计/总额/平
 def is_structurally_single_row(sql):  # 最外层查询有聚合函数且没有 GROUP BY
 ```
 
-用户没要求汇总 + SQL 结构上只返回一行 → 报异常。
+用户没要求汇总 + SQL 结构上只返回一行 → 报 `aggregation_unrequested`。
+「要不要汇总」的词表有中文和英文两份:只有中文词表时,「What is the total …」这种明明白白要合计的
+英文问题也会被报成「没让汇总却汇总了」,一条每问必报的提示等于没有提示。
 
 「结构上只返回一行」只看**最外层查询**(用 sqlglot 解析,解析不了才退回按全文搜)。
 聚合出现在别处并不折叠结果:「每种物料取最新一张快照」写成
@@ -1156,7 +1417,8 @@ Prompt 里明确写着:
 
 ### 14.6 结果必须回传给调用方
 
-`src/ai_sql_agent/api/app.py` 里 `StepLogResponse.risk_findings` 的注释:
+`src/ai_sql_agent/api/result_summary.py` 里 `StepLogResponse.risk_findings` 的注释
+(`/query`、A2A send、A2A stream 三处共用这一份响应结构):
 
 > 必须回传给调用方:这些错误 SQL 跑得通、有结果,不提示的话用户看不出异常,
 > 会把错的数字当成事实。指标口径上,「答错且没有任何提示」才算静默错误——
@@ -1181,6 +1443,9 @@ Prompt 里明确写着:
 **长期记忆默认关闭**是个重要决定:它要花 embedding 调用和检索时间,
 而大多数查询并不需要。让调用方按需开启。
 
+记忆库的位置取 `AI_SQL_MEMORY_DB_PATH`(默认 `runtime_data/memory.db`,相对进程的工作目录)。
+同一台机器上跑两个实例时各配各的,对话历史就不会串在一起。
+
 ### 15.2 短期记忆:非阻塞增量摘要
 
 超出窗口的消息不是丢掉,而是压成摘要。关键是**异步**:
@@ -1193,6 +1458,12 @@ self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="memory-su
 `ConversationMemoryContext.short_term.summary_pending` 会告诉你摘要还没做完。
 
 服务关闭时会等摘要线程收尾(`memory.close(wait=True)`)。
+
+摘要器从**一条消息**里读多少也有上限(`SummaryBudgetConfig`,提交 48f08ca):正文 4000 字符、
+payload 摘录 3000 字符、一步 SQL 1200 字符、一个单元格 200 字符。原因写在注释里:查库回答把整份
+结果存成消息的 payload,摘要提示词以前把它原样拼进去,一条顶到行数上限(1000 行)的结果就是
+约 15 万字符。上限只管摘要器**读到**的内容,存下来的消息一个字不动——窗口内的追问还要从完整的
+payload 里读结果行。
 
 ### 15.3 摘要器也有离线降级
 
@@ -1235,15 +1506,29 @@ deny_columns = ["wms_db.batch.unit_cost", "*.*.id_card_no"]
 > 内部自用场景下真正要拦的不是租户之间的越界,而是「**估价员不能看批次成本单价**」
 > 这类表级/列级授权。
 
+后来补上的三条规则(`auth/objects.py`):
+
+- **大小写:拒绝从宽、放行从严**。拒绝规则在任何库上都不区分大小写;放行规则在 SQLite 上
+  不区分,在 PostgreSQL 上必须和存储名一致(那里 `"Orders"` 与 `orders` 是两张表)。目录、
+  检索裁剪、SQL 授权关卡都用 `for_dialect()` 绑定同一套规则,三处给出同一个答案——以前一条
+  大小写写得不一样的 deny 规则,会在目录里藏住一张表,SQL 关卡却照样放行(提交 e46c29d)。
+- **行范围**:`row_filters` 按声明顺序取第一条匹配。「没声明」和「声明了放行所有行」是两件事。
+- **没匹配到任何策略时一律拒绝**。合并角色策略的地方原来写的是
+  `if not matched: return full_access()`——配漏了的角色拿到全库权限,而且没有任何症状。
+  安全默认值必须是拒绝:配漏了要表现为「查不到」,不是「都能查」。
+
 `Principal` 是一次请求的身份,包含:
 
 | 字段 | 用途 |
 | --- | --- |
 | `caller` | 调用方标识(应用名或人名) |
 | `user_id` | 记忆与配额的归属人 |
+| `roles` | 角色,数据权限按角色合并 |
 | `policy` | 合并后的数据权限 |
 | `can_impersonate` | 能否代其他 `user_id` 发请求(BI 门户需要,个人脚本不该开) |
 | `is_admin` | 能否调运维接口 |
+| `rate_limit_per_minute` / `daily_query_quota` / `daily_token_quota` | 限流与日配额(默认每分钟 60 次;配额 0 表示不限) |
+| `anonymous` | 鉴权关闭时使用的占位身份 |
 
 **API Key 重复会直接抛异常**:
 
@@ -1254,10 +1539,11 @@ raise ValueError(f"API Key 重复:{...}")
 
 ### 16.2 audit:审计表 = 排查依据 + 配额口径 + 降级重放数据源
 
-一张 SQLite 表(生产可切 PostgreSQL),字段包括
-`trace_id / caller / user_id / query / route / databases / tables / sqls /
-denied_tables / success / failed_steps / repaired_steps / duration_ms /
-prompt_tokens / completion_tokens / degraded / error`。
+一张 SQLite 表(配了 `AI_SQL_PGVECTOR_DSN` 就落 PostgreSQL),字段包括
+`trace_id / run_id / caller / user_id / session_id / query / route / databases / tables /
+sqls / denied_tables / success / degraded / has_risk / execution_status / status_code /
+failed_steps / repaired_steps / duration_ms / prompt_tokens / completion_tokens / error /
+created_at`。被取消的请求也写一条,状态码 499(见 3.4)。
 
 **注意它有三个索引**:
 
@@ -1296,22 +1582,35 @@ class TokenBucketLimiter:
 
 ### 17.1 端点一览
 
+一共 32 个路由:`app.py` 里 12 个,另外 20 个在四个路由模块里(`api/catalog.py`、
+`api/runs.py`、`api/model_admin.py`、`a2a/server.py`)。完整的请求与响应格式见
+[docs/api.zh-CN.md](api.zh-CN.md)。
+
 | 端点 | 用途 | 鉴权 |
 | --- | --- | --- |
 | `GET /` | 内置查询界面(静态文件在 `/static` 下) | — |
 | `GET /whoami` | 本次请求解析出的身份与服务能力(页面发问前靠它知道 user_id) | API Key |
 | `GET /catalog` | 数据目录:当前身份可见的数据域、表、字段 | API Key |
+| `GET /catalog/{库}/{表}` | 单张表的字段说明(表多的部署里 `/catalog` 不带字段,按表从这里取) | API Key |
 | `POST /catalog/{库}/{表}/rows` | 只读分页预览(搜索/筛选/排序,不接受 SQL) | API Key |
 | `POST /catalog/{库}/{表}/profile` | 表概况(只有聚合:行数、填充数、取值分布、按月的记录数) | API Key |
-| `POST /query` | 自然语言查询入口 | API Key |
+| `POST /query` | 自然语言查询入口(响应头带 `X-Run-Id`) | API Key |
 | `GET /history` | 查询历史(默认只看自己的) | API Key |
+| `POST /feedback` | 用户对一次回答的判定(对 / 错 / 说不准) | API Key |
 | `POST /memory/save` | 保存结果到个人长期记忆 | API Key |
+| `GET /runs/{id}`、`GET /runs/{id}/events` | 一次运行的记录与事件日志(只看得到自己的,见 3.4) | API Key |
+| `POST /runs/{id}/cancel` | 取消一次正在跑的运行 | API Key |
+| `POST /a2a` | A2A JSON-RPC:`message/send`、`message/stream`(见 17.6) | API Key |
+| `GET /.well-known/agent.json` | A2A Agent Card | 无 |
+| `GET /a2a/databases` | 生效中的业务库清单(和 Agent Card 里的同源) | 无 |
 | `GET /health` | 存活探针 | 无 |
 | `GET /readyz` | 就绪探针 | 无 |
 | `GET /metrics` | Prometheus 抓取 | 无(按内网设计) |
+| `GET /feedback/stats` | 线上反馈汇总:真实用户口径的准确率与静默错误率 | **Admin** |
 | `POST /admin/schema/reload` | 手动重建 Schema 索引 | **Admin** |
-| `POST /admin/circuit/reset` | 手动复位熔断器 | **Admin** |
+| `POST /admin/circuit/reset` | 手动复位熔断器,并清掉记下的模型访问故障 | **Admin** |
 | `GET /admin/schema/status` | 查看 Schema 指纹与待生效变更 | **Admin** |
+| `/admin/model` 下 9 个 | 查看、测试、保存、恢复模型连接与 Embedding(见 17.7) | **Admin**(没开鉴权时只认本机) |
 
 ### 17.2 health vs readyz:一个经常被做错的区分
 
@@ -1337,6 +1636,13 @@ def readyz():
 # 熔断状态只做展示:模型挂了会走降级链路,服务本身仍然可用,
 # 因此不把它算进 ready 判定,否则会被摘掉流量反而没法降级服务。
 ```
+
+后来又加了两条:
+
+- **生产模式下没有模型凭证,算不就绪**(`AI_SQL_APP_ENV=production`)。注释写得很直白:Mock
+  会编出语法正确、内容错误的 SQL,而且从响应上看不出区别——把它算成 ready 等于把编造当成服务。
+- **被模型服务拒过的凭证**显示在 `model_access` 里(见 5.2),但和熔断状态一样不算进 ready 判定:
+  凭证被拒时服务仍然能重放历史 SQL、能浏览数据。
 
 **讲解金句**:「探针设计的核心问题是『**这个失败该由谁修**』。
 进程死了要重启(health);依赖挂了要摘流量等它自己好(readyz);
@@ -1373,8 +1679,73 @@ async def trace_requests(request, call_next):
 ### 17.5 SchemaWatcher:业务库改了结构怎么办
 
 `schema_watcher.py` 按 `AI_SQL_SCHEMA_REFRESH_SECONDS` 轮询,对比 **Schema 指纹**
-(`src/ai_sql_agent/retrieval/schema_fingerprint.py`)判断有没有变化,变了就重建索引。
+(`src/ai_sql_agent/retrieval/schema_fingerprint.py`)判断有没有变化,变了就重建索引并原子替换。
+默认是 0,即不开(本地开发与单测);Compose 编排里设成 300 秒(`deploy/docker-compose.prod.yml`)。
+配了 pgvector 时,没变化的部分命中向量指纹缓存,真正重新 Embedding 的只有变动的那部分。
 也可以通过 `POST /admin/schema/reload` 手动触发。
+
+### 17.6 A2A:让别的 Agent 来问
+
+除了给人用的 `/query`,同一个服务还按 A2A(Agent-to-Agent)协议开了一个 JSON-RPC 入口,
+给别的 Agent 调——比如 ai-helpdesk 把订单、生产、库存这类业务问题转过来。
+双方的约定写在单独的契约仓库 `a2a-contract` 里,CI 按固定 tag 把它拉下来跑契约用例
+(`.github/workflows/ci.yml`,当前是 v1.13),拉不到就失败,不允许整组跳过。
+
+| 入口 | 是什么 |
+| --- | --- |
+| `GET /.well-known/agent.json` | Agent Card:名字、能力(是否支持流式)、技能、生效中的业务库清单 |
+| `POST /a2a` · `message/send` | 一次问完,返回一个完整的 Task |
+| `POST /a2a` · `message/stream` | SSE 流:首帧是带 taskId 的 Task,然后是阶段进度帧,最后是结果和终态(`completed` / `failed` / `canceled`) |
+| `tasks/get`、`tasks/cancel`、`tasks/resubscribe`、推送配置 | 契约 §7 暂不提供,返回 -32004(断开本身就会取消,控制台走服务端自己的 `POST /runs/{id}/cancel`) |
+
+几个设计点:
+
+- **和 `/query` 是同一套东西**:同样的 API Key、数据权限、限流配额和审计。鉴权和限流都发生在
+  流打开之前,失败返回普通的 JSON-RPC 错误——调用方不该为了知道「我没通过鉴权」去解析一个事件流。
+  一次 stream 就是一次 `/query`、一条审计(契约 §5.5),返回的数据段也和 `/query` 共用
+  `api/result_summary.py`。
+- **进度帧来自 `trace.stage()`**(见 3.3):阶段在**进入时**推出去;内部阶段名经过一张映射表
+  才变成契约里的名字(`sql_generation` → `generation`),内部改名不影响契约,改这张表才是契约变更。
+- **入口准入**:并发流最多 8 条(`AI_SQL_A2A_STREAM_MAX_CONCURRENT`),满了就在流打开之前回
+  HTTP 429,不排队——注释的理由是,排队只会把「拒绝」变成「全都超时」。限流、日配额超限和这里
+  用同一个 JSON-RPC 码 -32029(契约 v1.13 §3.2 / §5.5);v1.13 之前用的 -32001 在 A2A 规范里是
+  TaskNotFoundError,将来支持 `tasks/*` 时同一个码就会有两种意思。
+- **能关**:`AI_SQL_A2A_STREAMING=false` 时 Agent Card 里 `streaming` 为假,`message/stream`
+  返回 -32004,调用方据此退回 `message/send`。
+- **taskId 就是 run 编号**:流式入口在发首帧之前登记 run,调用方一拿到 taskId 就能
+  `POST /runs/{taskId}/cancel`——控制台的停止按钮就是这么做的(见 3.4)。
+
+**讲解要点**:A2A 让这个项目从「一个带网页的服务」变成了「别的 Agent 手里的一个工具」。
+但它没有另起一条链路:鉴权、权限、配额、审计、取消全部复用,新增的只有协议适配这一层。
+
+### 17.7 在线换模型:`/admin/model`
+
+管理员可以在页面上(设置 → 高级设置 → 模型连接 / Embedding)查看、测试、保存、恢复模型连接,
+保存后立刻对所有人生效,不用重启(`api/model_admin.py`):
+
+```
+GET    /admin/model                  现在用的模型连接(不含 Key),以及这个请求能不能改
+POST   /admin/model/models           这个连接的接口提供哪些模型(给下拉框),不保存
+POST   /admin/model/test             拿提交的连接各发一条极短的请求,不保存
+PUT    /admin/model                  保存并立刻生效
+DELETE /admin/model                  丢掉页面保存的那一份,回到环境变量和 .env
+POST   /admin/model/embedding/models 这个 Embedding 接口提供哪些向量模型,不保存
+POST   /admin/model/embedding/test   拿提交的 Embedding 连接算一段文本的向量,不保存
+PUT    /admin/model/embedding        先用它把 Schema 检索索引整个建好,再保存、换上
+DELETE /admin/model/embedding        回到服务端配置的 Embedding(同样先建好索引再换)
+```
+
+两个设计点值得讲:
+
+- **门槛比别的运维接口高一档**。改模型连接等于决定「每一个问题、连同表结构和查出来的数据,
+  发给谁」。开了鉴权的实例要管理员 Key;没开鉴权的实例(本地开发,匿名即管理员)只接受
+  **本机直接发来**的请求——连接来自回环地址、`Host` 是本机名字、没有经过代理的痕迹、浏览器请求
+  必须同源。这样局域网里的别人、被打开的恶意网页(DNS 重绑定 / 跨站请求)都改不了它。
+  判断不出来的一律按「不是本机」处理,页面退成只读并说明原因。
+- **Key 只进不出**。没有任何响应、日志、报错里带它,状态里只有「配没配」和末四位。请求体
+  刻意不用 pydantic 模型接——校验失败时 FastAPI 会把提交的值原样放进 422 里。
+
+在页面上保存新连接时,模型访问状态表(5.2)会自动清一遍,不用再去调 `/admin/circuit/reset`。
 
 ---
 
@@ -1391,6 +1762,11 @@ async def trace_requests(request, call_next):
 | 3 | **跨库执行准确率** | ≥ 90% | — | 用户宁可自己查两次再拼,这个能力等于没有 |
 | 4 | **静默错误率** | ≤ 3% | 风险提示误报率 ≤ 20% | 错数字被抄进周报,一次就够让工具被关掉 |
 
+`benchmark/thresholds.json` 里一共 8 条线,任一不达标就阻断发布。除了上面四项主指标和两条护栏,
+还有两条:**评测集字段召回率 ≥ 95%**(退化下限,不作为达标依据——评测集是调过参的)和
+**检索召回与进 Prompt 召回的落差 ≤ 3pp**(预算护栏:检索捞到了、模型却没看到,说明是预算裁剪丢的,
+这时加大召回只会更糟)。
+
 ### 18.2 「护栏」这个设计是精髓
 
 每个指标都配一个**堵死作弊路径**的护栏:
@@ -1405,19 +1781,19 @@ async def trace_requests(request, call_next):
 
 ### 18.3 为什么用留出集而不是评测集
 
-README 里的原话(翻译):
+`benchmark/README.zh-CN.md` 里的原话:
 
-> 门禁用留出集而不是评测集,因为短语表、字段别名和枚举词表都是对着评测集建的。
-> 没法说清那 100% 里有多少是调出来的。留出集用完全不同的口语表述,不参与调参,
-> 才是「真实用户来了会怎样」的估计。
+> 门禁卡留出集而不是评测集:短语表、字段别名、枚举取值词表都是对着评测集补的,
+> 那个 100% 里有多少是调出来的说不清;留出集用完全不同的口语问法、不参与任何调参,
+> 才是「上线后遇到真实用户」的估计值。
 
 **这是数据泄漏防护意识。** 讲解时可以特别提一句:很多项目的「95% 准确率」
 就是这么来的——在自己调过参的集合上测。
 
 ### 18.4 单次运行的数字不算数
 
-> **执行准确率指标的单次运行不算数。**同样的代码在同样的 25 条跨库用例上,
-> 测出来的范围能从 16% 到 36%;一条用例就是 4 个百分点。
+> 执行准确率类指标**单次跑分不作数**:同一份代码、同一批 25 条跨库题,
+> 实测在 16%~36% 之间波动,一条题就是 4pp。
 
 规则:
 
@@ -1428,18 +1804,28 @@ README 里的原话(翻译):
 
 ### 18.5 诚实地标注未达标项
 
-README 里明确写着两项 ❌(2026-09-09 基线,150 条全量三轮):
+仓库里最新的三轮全量记录是 `benchmark/baseline/2026-09-09`(`claude-sonnet-5`,150 条 × 3 轮)。
+`benchmark/README.zh-CN.md` 第一张表上明确打了三个 ❌:
 
-- 跨库执行准确率:85.3%,距离 90% 门槛差 4.7pp;
-- 静默错误率:5.3%,距离 3% 门槛差 2.3pp。
+- 跨库执行准确率:85.3% [84.0, 88.0],距离 90% 门槛差 4.7pp;
+- 静默错误率:5.3%,距离 3% 门槛差 2.3pp;
+- 平均进图字段占比:43.6%(检索侧的数字引用 2026-09-08 那份三轮基线),超过 40% 的护栏线。
 
 并且标注了数据的局限:
 
-> ⚠️ 跑的是内置演示元数据,不是部署用的 `tools/sim_erp/semantic` 语义层,
-> 量的是 pipeline 在标准夹具上的表现;主键规则现在这版措辞只有一轮全量数据。
-> 引用时带上这两条,见 `benchmark/baseline/2026-09-09/README.md`。
+> ⚠️ **引用前两条前提。** 跑的是内置演示元数据,不是 `tools/sim_erp/semantic`
+> 那套部署语义层,所以量的是 pipeline 在标准夹具上的表现,不是当前部署。
+> 另外主键规则现在这版措辞只有一轮全量数据,三轮数字对应的是它的第一版措辞。
 
-**讲解要点**:这种「把自己没达标的指标写在 README 第一屏」的做法,
+之后的测量都没有凑齐三轮,记录里也都照实写了:
+
+- `benchmark/baseline/2026-10-04`:改动前后各只跑完 2 轮,第 3 轮被模型服务的 401 打断,
+  记录开头就写着按项目口径「不能当作正式基线引用」;
+- 加了自适应字段预算(7.4)和规划规则 9–12(10.5)之后,`gpt-6.1-sol` 跑出过一轮 148/150、
+  每条线都达标,但第二轮跑到第 130 题被模型服务打断,门禁没有结论(提交 091a7fd 的说明);
+- 最近两次调整 Schema 表顺序的提交(6ef8810、5897af9)说明里都写着:完整门禁还没跑。
+
+**讲解要点**:这种「把自己没达标的指标写在第一屏」的做法,
 在求职/汇报场景反而是加分项——它证明你知道什么叫可信的度量。
 
 ### 18.6 怎么跑
@@ -1451,6 +1837,11 @@ python -m benchmark.gate --repeat 3 --smoke  # 门禁(冒烟样本)
 
 `benchmark/thresholds.json` 是门槛的**唯一真相源**,`gate.py` 直接读它。
 
+跑分时**遇到第一个降级答案(模型不可用)就停**:那一题不计分、不重试,已完成的部分标
+`incomplete=true` 存下来,退出码 3(提交 b6cc4aa)。以前只在凭证被拒时停,中转站一直回 404 或 5xx
+时剩下的题全走降级回复、全被算成答错——有一次跑分在第 65 题丢了模型,最后对 386 道从没被模型
+回答过的题报了「不予发布」。CI 里还有一步负面用例:没有模型凭证却通过了完整门禁,CI 直接失败。
+
 ---
 
 ## 19. ai_sql_agent.ops / ai_sql_agent.mcp_server — 运维与对外工具
@@ -1458,10 +1849,12 @@ python -m benchmark.gate --repeat 3 --smoke  # 门禁(冒烟样本)
 ### 19.1 ai_sql_agent.ops:一键生成只读账号
 
 ```bash
-python -m ai_sql_agent.ops provision
+python -m ai_sql_agent.ops sql --database ai_sql                # 只打印要执行的 SQL,不连库,先给 DBA 审
+python -m ai_sql_agent.ops provision --admin-dsn ... --database ai_sql --host db   # 直接创建
+python -m ai_sql_agent.ops audit --dsn "$AI_SQL_BUSINESS_DSN"    # 体检某个连接串是不是真的只读
 ```
 
-生成一段 PostgreSQL DDL,建一个真正的只读角色。模板里有几处值得看:
+`sql` 和 `provision` 用的是同一段 PostgreSQL DDL,建一个真正的只读角色。模板里有几处值得看:
 
 ```sql
 -- 2. 明确收回写权限,避免继承 PUBLIC 上的历史授权
@@ -1482,6 +1875,11 @@ ALTER ROLE {role} SET default_transaction_read_only = on;
 
 同模块的 `audit_business_databases()` 就是 API 启动时体检用的那个函数。
 
+这个包还有更细的一层(`ops/least_privilege.py`):`least-privilege` 按 API Key 配置里的
+`DataPolicy` 生成数据库侧的表级 / 列级 GRANT,`verify-privileges` 连上受限角色真查一次,
+确认「该拒的真的拒了」。理由写在模块注释里:应用层的授权关卡是第二道防线,不能是唯一一道——
+只读账号只挡写、不挡读密列,一个能连库的只读账号照样 `SELECT unit_cost`。
+
 ### 19.2 ai_sql_agent.mcp_server:把只读查询能力开放给外部 Agent
 
 ```bash
@@ -1495,7 +1893,14 @@ python -m ai_sql_agent.mcp_server.server   # stdio 协议
 
 **这是反向的:** 主链路里 `ai_sql_agent.execution` 是「我们去执行 SQL」;
 `ai_sql_agent.mcp_server` 是「别的 Agent(比如 Claude Code)来用我们的只读执行能力」。
-治理参数(行数上限、超时、只读)和主链路保持一致。
+它和 A2A(17.6)的区别是:MCP 给出去的是**底层工具**,调用方自己写 SQL;A2A 给出去的是
+**整个 Agent**,调用方问一句话。
+
+治理参数是写死的常量(1000 行、10 秒、结果 8 MiB、单值 8 MiB),和 API 进程的默认值相同,
+但这个进程不读 `AI_SQL_MAX_ROWS` 这类配置。它也**没有调用方身份**(stdio 进程不带 API Key),
+数据权限只能来自 `AI_SQL_MCP_POLICY_FILE` 指向的策略文件;没配时全放开,**生产模式下拒绝启动**
+——一个不认识调用方、又拿着全库只读权限的进程,不该出现在生产里。执行同样过授权关卡,
+也带视图目录(视图会遮住它读的基表,关卡自己推不出来哪些名字是视图)。
 
 ---
 
@@ -1514,7 +1919,7 @@ python -m ai_sql_agent.mcp_server.server   # stdio 协议
 ① 建索引(启动时,一次)
    demo_data.get_erp_business_meta() 提供元数据
    → document_builder.py 为该字段生成三份文本:
-       keyword_text : "on_time_rate 准时率 准时交付率 及时率 交付准时率"
+       keyword_text : "on_time_rate 准时率 准时交付率 及时率 交付准时率 供应商表现"
        vector_text  : "字段名:on_time_rate。所属表:supplier。该字段是..."
        rerank_text  : "字段:supplier.on_time_rate。含义:准时交付率..."
    → BM25Index 吃 keyword_text,VectorIndex 吃 vector_text
@@ -1539,7 +1944,7 @@ python -m ai_sql_agent.mcp_server.server   # stdio 协议
    filter_schema_graph(graph, access) —— 无权字段在这里被裁掉
 
 ⑦ 构建 SchemaGraph
-   graph_builder.py 把命中字段组装成带表关系的图
+   graph_builder.py 把命中字段组装成带表关系的图,表按表级检索排名排列(7.7)
 
 ⑧ 预算裁剪
    fit_graphs_to_budget() —— on_time_rate 相关性高,不会被丢
@@ -1578,10 +1983,10 @@ python -m ai_sql_agent.mcp_server.server   # stdio 协议
 ```sql
 -- 步骤 1(pm_db)
 SELECT project_code FROM project WHERE actual_cost > budget_amt;
--- → ['J24001', 'J24003', 'J24007']
+-- → ['J24001', 'J24003', 'J24006']
 
 -- 步骤 2(erp_db),把上一步结果当字面量
-SELECT SUM(po_amt) FROM purchase_order WHERE job_no IN ('J24001','J24003','J24007');
+SELECT SUM(po_amt) FROM purchase_order WHERE job_no IN ('J24001','J24003','J24006');
 ```
 
 模型的典型错法有四种:
@@ -1595,8 +2000,8 @@ SELECT SUM(po_amt) FROM purchase_order WHERE job_no IN ('J24001','J24003','J2400
 
 | # | 防线 | 位置 | 防哪种错法 |
 | --- | --- | --- | --- |
-| 1 | **跨库关联键显式声明** | `demo_data.get_cross_database_links()` → 注入 Prompt | ③④ |
-| 2 | **指标口径消歧** | `get_metric_disambiguation()` → 注入 Prompt | ② |
+| 1 | **跨库关联键显式声明** | 语义层的 `cross_database_links`(演示库来自 `demo_data.get_cross_database_links()`)→ 注入 Prompt | ③④ |
+| 2 | **指标口径消歧** | 语义层的 `metric_disambiguation`(演示库来自 `get_metric_disambiguation()`)→ 注入 Prompt | ② |
 | 3 | **跨库 Few-shot** | `src/ai_sql_agent/planning/few_shots.py`,命中多库时给完整范例 | ①③ |
 | 4 | **步骤-库一致性校验 + 重规划** | `_plan_database_conflicts()` | ① |
 | 5 | **SQL 跨库静态校验 + 重生成** | `_enforce_step_database()` | ① |
@@ -1608,7 +2013,7 @@ SELECT SUM(po_amt) FROM purchase_order WHERE job_no IN ('J24001','J24003','J2400
 ### 效果与代价
 
 benchmark 记录:修掉度量缺陷和预算裁剪问题后,跨库准确率从 **56% → 76–80%**。
-README 里的结论很值得引用:
+`benchmark/README.zh-CN.md` 里的结论很值得引用:
 
 > 这个差距**主要是工程缺陷,不是链路长度**。
 
@@ -1625,22 +2030,23 @@ README 里的结论很值得引用:
 ```mermaid
 flowchart TB
     subgraph RO["只读约束 · 三层纵深"]
-        R1["第 1 层 · 应用层<br/>sql_guard.check_readonly_sql()<br/>只允许 SELECT/WITH,扫描全语句关键字<br/>拒绝多语句、写操作、文件函数"]
-        R2["第 2 层 · 连接层<br/>SQLite: file:...?mode=ro<br/>PostgreSQL: 只读事务"]
+        R1["第 1 层 · 应用层<br/>sql_guard.check_readonly_sql()<br/>sqlglot 语法树判定,解析不了就拒<br/>拒绝多语句、写操作、危险函数"]
+        R2["第 2 层 · 连接层<br/>SQLite: file:...?mode=ro + 默认拒绝的授权器<br/>PostgreSQL: 只读事务"]
         R3["第 3 层 · 数据库账号<br/>ai_sql_agent.ops provision 建的只读角色<br/>+ statement_timeout + read_only"]
         R1 --> R2 --> R3
     end
 
     subgraph AC["数据权限 · 两道"]
         A1["第 1 道 · 检索阶段裁剪<br/>无权的库/表/字段不进 SchemaGraph<br/>→ 模型看不到,就写不出来"]
-        A2["第 2 道 · 执行前二次校验<br/>_check_table_access()<br/>按 SQL 实际引用的表再判一次"]
+        A2["第 2 道 · 执行器入口的强制关卡<br/>execution.authorization.enforce()<br/>按 SQL 实际引用的表和列再判一次<br/>首次执行 / 修复 / 重放 / MCP 都经过"]
         A1 --> A2
     end
 
     subgraph GOV["执行治理"]
         G1["行数上限 max_rows"]
-        G2["执行超时 max_execution_seconds"]
-        G3["限流 令牌桶 / 日配额"]
+        G2["结果字节上限 max_result_bytes"]
+        G3["执行超时 max_execution_seconds"]
+        G4["限流 令牌桶 / 日配额"]
     end
 
     subgraph CHK["启动体检"]
@@ -1653,7 +2059,7 @@ flowchart TB
     classDef ck fill:#ECFDF5,stroke:#10B981,color:#064E3B;
     class R1,R2,R3 ro;
     class A1,A2 ac;
-    class G1,G2,G3 gv;
+    class G1,G2,G3,G4 gv;
     class C1 ck;
 ```
 
@@ -1661,12 +2067,28 @@ flowchart TB
 
 第一道(检索裁剪)已经很强了——模型压根看不到无权表。为什么还要第二道?
 
-代码注释回答了:
+因为「看不到」不等于「写不出来」:模型可能凭对话上下文或先验知识写出表名。所以在 SQL 打到
+数据库之前,要按它**实际引用**的表和列再判一次。
 
-> 第一道防线是检索阶段裁剪(模型看不到无权表),但**模型可能凭对话上下文
-> 或先验知识写出表名**,所以在 SQL 打到数据库之前,按实际引用的表再判一次。
+### 第二道为什么放在执行器入口
 
-而且第二道在**降级重放**时也会跑:
+这一道原来写在 pipeline 的执行分支里(`_check_table_access`)。`auth/enforcement.py` 的模块注释
+记着为什么挪走:
+
+> 四条执行路径里漏了一条:修复回调直接调执行器,完全没有重新鉴权
+> (2026-09-04 审查复现:让修复模型返回一条禁用表的 SQL,直接检查会拒,
+> 走完整修复路径却成功返回了 1 行)。
+>
+> **在每个调用点各写一次检查,就是这次漏掉一处的原因。**
+
+现在授权下沉到每个执行器 `execute()` 的入口:首次生成、失败修复、缓存 / 历史重放、MCP 调用,
+四条路最终都要调执行器,不存在「忘了加一句」的可能。关卡靠一个 contextvar 拿当前身份的策略
+(`authorization_scope()`,`Text2SQLPipeline.run()` 里绑定),而且**没有绑定作用域时一律拒绝**——
+如果「没绑定」等于「放行」,任何新增的执行路径只要忘了绑,就会静默地拿到全权限。
+
+`_check_table_access` 还在,但只是预判,做两件关卡做不了的事:把越权当成**不该重试**的失败
+(改 SQL 也拿不到权限,进修复回路只会白烧模型调用),以及把被拒的名字落进审计的 `denied_tables`。
+两处的判据同源(`check_sql_access`),不会给出不同的答案。降级重放之前也先预判一次:
 
 ```python
 # 权限可能在上次查询之后收紧,重放前必须重新校验
@@ -1674,6 +2096,16 @@ denied = self._check_table_access(database=database, sql=sql, access=access)
 if denied:
     return []
 ```
+
+2026-10-14 的安全审计之后,关卡还要看穿几种「表名或列名不直接出现」的写法(`auth/enforcement.py`):
+
+- **视图**:视图会遮住它读的基表。关卡按视图目录(`auth/views.py`)展开:视图读了无权的基表就拒;
+  基表有列级限制就拒(关卡看不出视图的列对应基表的哪一列);视图定义解析不了也拒。
+- **把字符串当 SQL 执行的函数**:`query_to_xml('select * from payroll', …)` 读的表不在语法树里,
+  按表和列判永远看不见,所以对所有角色一律拒绝。
+- **`rowid` 这类别名**:禁了 `employees.id`,`SELECT rowid FROM employees` 照样能把 id 读出来。
+  关卡不知道主键叫什么,所以在 SQLite 上只要这张表有任何列级限制,读 `rowid` 就按「可能读到了禁列」拒绝。
+- **SQLite 内部对象**:`sqlite_master`、`pragma_table_info('任意表')` 这类,对所有角色一律拒绝。
 
 **讲解金句**:「安全设计的基本功是问『如果这一层被绕过会怎样』。
 检索裁剪防的是模型**不知道**;执行前校验防的是模型**知道但不该用**。
@@ -1716,7 +2148,10 @@ flowchart TD
     T -->|"规划的步骤-库冲突<br/>(静态查出)"| P1["带冲突描述重新规划 1 次<br/>(只有真解决了才采纳)"]
     P1 --> OK
 
-    T -->|"模型调用失败<br/>(超时/5xx/限流)"| M1["transport 层重试<br/>指数退避 + Retry-After"]
+    T -->|"模型拒绝凭证 / 额度用尽<br/>(401/402/写明原因的 403)"| K1["不重试,记进模型访问状态表<br/>之后同一组地址 + 凭证不再发请求"]
+    K1 --> D1
+
+    T -->|"模型调用失败<br/>(超时/连不上/5xx/限流)"| M1["transport 层重试<br/>指数退避 + Retry-After"]
     M1 --> M2{"连续失败达阈值?"}
     M2 -->|是| M3["熔断跳闸<br/>后续请求直接抛错,不再等超时"]
     M2 -->|否| OK
@@ -1728,11 +2163,17 @@ flowchart TD
 
     T -->|"Schema 里没有相关表<br/>或用户无权限"| SI["返回人能看懂的说明,<br/>不是内部错误"]
 
+    T -->|"用户取消 / 调用方断开<br/>/ 超过总时长"| X1["在下一个检查点停下<br/>不降级、不重放<br/>审计照写(499),配额照计"]
+
     classDef f fill:#FFF1F2,stroke:#F43F5E,color:#881337;
     classDef g fill:#ECFDF5,stroke:#10B981,color:#064E3B;
     class S,T,FAIL f;
     class OK,D3,D5 g;
 ```
+
+注意图里两条模型失败的路:基础设施类失败(慢失败)才计入熔断;凭证被拒、额度用尽是确定性的,
+不重试、不跳闸,但会被记下来,之后的请求在发出之前就被拦住(见 5.2)。两条路最后都汇到同一个
+降级出口。另外一条是**取消**:它不是失败,不走降级,也不重放历史 SQL(见 3.4)。
 
 ### 降级重放是这条线的亮点
 
@@ -1830,7 +2271,7 @@ benchmark README 的原话(翻译):
 
 ## 25. 技术栈清单
 
-### 25.1 直接依赖(只有 8 个)
+### 25.1 直接依赖(12 个)
 
 | 层 | 技术 | 版本 | 干什么 |
 | --- | --- | --- | --- |
@@ -1841,16 +2282,19 @@ benchmark README 的原话(翻译):
 | HTTP 客户端 | httpx | 0.28.1 | 调模型 API(含 SSE 流式) |
 | 环境变量 | python-dotenv | 1.2.2 | `.env` 加载 |
 | 数值计算 | numpy | 2.2.6 | 向量检索 |
+| 语义层 | pyyaml | 6.0.3 | 一个库一份 YAML 的业务元数据 |
 | 向量存储 | psycopg[binary] + pgvector | 3.3.4 / 0.5.0 | pgvector 后端(可选) |
 | MCP | mcp | 2.0.0 | MCP 服务端 |
+| SQL 解析 | sqlglot | 27.29.0 | 只读校验与授权关卡的语法树(运行时硬依赖) |
 
 > **注意没有的东西**:没有 LangChain、没有 LlamaIndex、没有 SQLAlchemy、
 > 没有 prometheus_client、没有 Redis、没有 Celery。
 > 检索、RRF、BM25、指标注册表、令牌桶限流、熔断器**全是自己实现的**。
 >
 > **讲解时这是一个加分点**:能说清楚「为什么不用框架」比「用了什么框架」更有说服力。
-> 这里的理由是:这些组件的逻辑都在 100 行以内,自己写换来的是完全可控的行为
-> 和零版本冲突,而框架带来的抽象层在这个场景里帮不上忙。
+> 这里的理由是:这些组件都不大(连注释算:BM25 68 行、RRF 融合 113 行、熔断器 227 行),
+> 自己写换来的是完全可控的行为和零版本冲突,而框架带来的抽象层在这个场景里帮不上忙。
+> 反过来,SQL 解析就没有自己写:方言细节太多,手写的正则正是 12.2 里那套被换掉的关键字扫描。
 
 ### 25.2 技术点清单(按面试/讲解分类)
 
@@ -1862,15 +2306,20 @@ benchmark README 的原话(翻译):
 - 分层检索(库 → 表 → 字段)
 - 一字段三份索引文本(keyword / vector / rerank)
 - 关键词强证据裁剪(bigram 门槛)
+- 远端 Embedding(OpenAI 兼容)+ 本地哈希向量兜底;字段预算跟着实际在用的向量走
+- 表级检索排名决定 Schema 里的表顺序
 
 **LLM 工程**
 - 多厂商协议抽象(OpenAI 兼容 / Anthropic Messages)
 - Prompt Token 预算分配与相关性感知裁剪
 - Few-shot(按命中库数量动态选择)
-- 结构化输出解析 + 容错(去 markdown 围栏、正则兜底提取 JSON)
+- 结构化输出解析 + 容错(去 markdown 围栏、正则兜底提取 JSON;路由用 JSON Schema 约束输出)
 - CoT 五元组规划
 - 模型自检(复述-比对两步法)
 - 全链路 Mock 降级(无 Key 可跑)
+- 凭证被拒后不再发请求(进程内的模型访问状态表)
+- 不重启换模型 / 换 Embedding(换 Embedding 先建好整份索引再换上)
+- Prompt 快照测试:发给模型的每一份输入逐字比对
 
 **后端工程**
 - FastAPI 依赖注入、lifespan、中间件
@@ -1881,16 +2330,20 @@ benchmark README 的原话(翻译):
 - Prometheus 指标(自实现注册表)
 - 存活/就绪探针分离
 - 线程池异步任务(记忆摘要)
+- 运行记录 + 编号事件日志;协作式取消(取消令牌 + 检查点)
+- SSE 流式响应(A2A `message/stream`)与入口准入
 - 优雅关闭
 
 **数据与安全**
 - 多方言 SQL 抽象(SQLite / PostgreSQL)
-- 只读 SQL 静态校验(AST 级关键字扫描)
-- 三层只读纵深防御
-- 表级 + 列级数据权限(glob 匹配,deny 优先)
+- 只读 SQL 判定(sqlglot 语法树 + token 级附加防线)
+- 三层只读纵深防御(SQLite 再加一个默认拒绝的授权器)
+- 执行器入口的强制授权关卡(没有绑定作用域一律拒绝;看穿视图、字符串里的 SQL、rowid)
+- 结果字节上限 + 单值长度上限
+- 表级 + 列级 + 行范围数据权限(glob 匹配,deny 优先,没匹配到策略一律拒绝)
 - API Key 鉴权 + 角色策略合并
 - 审计日志 + 日配额
-- PostgreSQL 只读角色 provisioning
+- PostgreSQL 只读角色 provisioning + 数据库侧列级 GRANT 生成与验证
 
 **评测**
 - 执行准确率评测集 + 留出集
@@ -1901,8 +2354,9 @@ benchmark README 的原话(翻译):
 
 **部署**
 - Docker + docker-compose(pgvector / vLLM / 生产三套编排)
-- GitHub Actions CI(带 pgvector service container)
+- GitHub Actions CI(带 pgvector service container,按固定 tag 跑跨仓库契约用例)
 - MCP 服务端(对外暴露只读查询工具)
+- A2A 服务端(Agent Card + JSON-RPC,对外暴露整个 Agent)
 
 ---
 
@@ -1926,7 +2380,7 @@ benchmark README 的原话(翻译):
 **展示**:终端跑 `python examples/end_to_end.py`,滚动看输出。
 
 > 「不需要任何 API Key,模型层自动走 Mock。这一点很重要——
-> 整个项目 357 个测试用例都能离线跑,CI 里也不需要配 Key。」
+> 1262 个测试用例里,除了 27 个要 PostgreSQL 的,都能离线跑,CI 里也不需要配模型 Key。」
 
 指着输出说:「关键词 → 候选库 → 候选表 → Schema 图 → CoT 五元组 → SQL → 执行结果。
 这就是整条链路,后面我讲的每一块,在这份输出里都有对应的实物。」
@@ -1938,7 +2392,8 @@ benchmark README 的原话(翻译):
 > 「第一个真问题:企业库有几百张表、几千个字段,塞不进 Prompt。
 > 而且就算塞得进,无关字段会成为干扰项——字段越多模型选错越多,这是有实测数据的。
 >
-> 所以做三层收窄:4 个库选 3 个,15 张表选 8 张,86 个字段最后进 Prompt 约 20 个。
+> 所以做三层收窄:4 个库选 3 个,15 张表选 8 张,字段级每个库留 10 到 20 个——
+> 用远端向量时留 10 个,本地哈希向量时留 20 个,两个数都是扫参扫出来的。
 > 每一层内部都是 **BM25 + 向量 + RRF 融合**,字段级再加一层 Rerank。」
 
 **亮点讲这个**:
@@ -1961,7 +2416,7 @@ benchmark README 的原话(翻译):
 **亮点讲这个**:
 
 > 「最有意思的是第六道。上一步的结果不是直接给 JSON,而是额外拼一行:
-> `project_code IN ('J24001','J24003','J24007')`,再配一句『直接抄这一行放进 WHERE』。
+> `project_code IN ('J24001','J24003','J24006')`,再配一句『直接抄这一行放进 WHERE』。
 >
 > 原因是:给 JSON 的时候,模型看着数据自己又去写跨库子查询了。
 > **模型跟随格式示例,远强于跟随文字指令。**」
@@ -1971,10 +2426,11 @@ benchmark README 的原话(翻译):
 **展示**:画三层只读 + 两道权限。
 
 > 「Agent 要连生产库,只读是底线。这里做了三层:
-> 应用层扫 SQL 关键字、连接层用只读连接、数据库层用只读账号。
+> 应用层用 sqlglot 把 SQL 解析成语法树判只读、连接层用只读连接、数据库层用只读账号。
 >
 > 权限做了两道:检索的时候无权表就不进 Schema 图,模型看不到就写不出来;
-> 但模型可能凭上下文猜出表名,所以执行前按 SQL 实际引用的表再判一次。」
+> 但模型可能凭上下文猜出表名,所以每个执行器的入口都按 SQL 实际引用的表和列再判一次。
+> 放在执行器而不是调用点,是因为以前每处各写一次检查,修复那条路就漏了。」
 
 **亮点讲这个**:
 
@@ -2018,11 +2474,12 @@ benchmark README 的原话(翻译):
 
 > 「最后说两个我觉得能体现这个项目态度的地方:
 >
-> 一是 README 里有两个指标是**打红叉的**——跨库准确率 85.3% 差 4.7 个点,
-> 静默错误率 5.3% 超了 2.3 个点,都明明白白写在第一屏。
+> 一是评测说明的第一张表上有三个**红叉**——跨库准确率 85.3% 差 4.7 个点,
+> 静默错误率 5.3% 超了 2.3 个点,进图字段占比 43.6% 超了 40% 的护栏线,都明明白白写在第一屏。
 >
-> 二是它明确写了『**单次运行的执行准确率不算数**』:同样的代码测三次
-> 能从 16% 到 36%,一条用例就是 4 个百分点。所以对外的数字必须是三轮均值加范围。
+> 二是它明确写了『**单次跑分不作数**』:同一份代码、同一批 25 条跨库题,测出来能从 16% 到 36%,
+> 一条题就是 4 个百分点。所以对外的数字必须是三轮均值加范围——后来换模型跑出过一轮 148/150,
+> 也只记成『一轮、门禁没有结论』。
 >
 > 我觉得这比准确率本身更能说明问题——**知道自己的数字有多可信,是工程能力的一部分。**」
 
@@ -2063,7 +2520,7 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 每个依赖模型的能力都有一个不依赖模型的降级实现:
 - 意图路由 → `RuleBasedIntentClassifier`
 - 关键词抽取 → 规则抽取
-- Embedding → `LocalHashEmbeddingClient`(token 哈希到固定维度)
+- Embedding → `LocalHashEmbeddingClient`(token 哈希到固定维度;配了远端 Embedding 但调不通时也退回它)
 - 记忆摘要 → `ExtractiveMemorySummarizer`(抽取式)
 - SQL 修复 → `difflib` 近名替换
 - 数据问答 → `RuleBasedDataQAClient`
@@ -2077,7 +2534,10 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 
 因为鉴权失败(401)、参数错误、返回体不是 JSON 这些是**确定性错误**,
 重试一万次也一样,而且它们本来就是立即返回的,不占超时预算。
-熔断器保护的是「慢失败」——超时、5xx、限流。
+熔断器保护的是「慢失败」——超时、连不上、5xx、限流。
+
+确定性错误另有去处:凭证被拒、额度用尽会记进模型访问状态表,之后同一组「地址 + 凭证」的请求
+在发出之前就被拦住(5.2)。以前没有这张表,一把 Key 被停用之后两分半里又发出了约 650 次注定被拒的请求。
 
 **Q8:降级重放会不会给出过期数据?**
 
@@ -2102,12 +2562,15 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 
 定位问题。注释里写了:内部自用场景要拦的不是租户越界,而是
 「估价员不能看批次成本单价」这类授权。glob + deny 优先足够表达,
-而且配置文件可以直接挂成 K8s Secret,改权限不用重建镜像。
+而且 Key 和策略在一个 JSON 文件里(`AI_SQL_API_KEYS_FILE`,Compose 把 `deploy/api_keys.json`
+只读挂到 `/run/secrets/api_keys.json`),改权限改文件就行,不用重建镜像。真正要补的不是 RBAC 表,
+而是数据库侧也落一次同样的策略——`python -m ai_sql_agent.ops least-privilege` 就是干这个的(19.1)。
 
 **Q12:静默错误率 5.3% 没达标,这个项目算失败吗?**
 
-不算,反而是它诚实的地方。更重要的是它**知道自己是 5.3%**,
-知道这 5.3% 主要是形状不符和口径选错,也知道改进方向。
+不算,反而是它诚实的地方。更重要的是它**知道自己是 5.3%**(三轮、带区间),
+知道静默错误的头号形态是形状不符(`shape.py` 的注释),也知道改进方向——后来换模型跑出的那一轮里,
+剩下的静默错误几乎全是输出形状问题,于是加了规划规则 9–12(10.5)。
 对比「不知道自己准确率是多少」的项目,这是完全不同的成熟度。
 
 **Q13:这套设计能迁移到别的场景吗?**
@@ -2119,18 +2582,33 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 
 **Q14:最大的技术债是什么?**
 
-见第 29 节。主要是:跨库准确率和静默错误率两项未达门槛;
-基线跑的是演示元数据而不是部署语义层;`hierarchical_service` / `text2sql_pipeline`
-两个文件偏大(各 500+ 和 1300+ 行)。
+见第 29 节。主要是:仓库里最新的三轮记录有三条线没过(跨库、静默错误、进图字段占比),
+之后的改动都还没有凑齐三轮;基线跑的是演示元数据而不是部署语义层;
+`text2sql_pipeline.py` 1822 行,主干虽然拆成了步骤方法,状态还都在一个类里。
 
 **Q15:如果让你继续做,下一步做什么?**
 
 按 benchmark 的诊断:
-1. 按 `tools/sim_erp/semantic` 重写 gold SQL,拿到部署口径的基线(现在的基线是演示夹具口径);
-2. 攻静默错误里占比最高的「形状不符」和「口径选错」——前者已有静态检查,
-   可以从「提示」升级为「反问用户」;后者要扩 `metric_disambiguation` 词表;
-3. 跨库剩下的 4.7pp:JOIN 基数标注已把「漏 DISTINCT」清掉,剩下的主要是投影缺列,
+1. 先在当前代码上跑满三轮门禁,把记录提交进 `benchmark/baseline/`——自适应字段预算(7.4)、
+   规划规则 9–12(10.5)、表顺序(7.7)都还没有一份能引用的三轮数字;
+2. 按 `tools/sim_erp/semantic` 重写 gold SQL,拿到部署口径的基线(现在的基线是演示夹具口径);
+3. 攻静默错误的头号形态「形状不符」——已有静态检查,可以从「提示」升级为「反问用户」;
+   口径类错误靠扩 `metric_disambiguation` 词表;
+4. 跨库剩下的 4.7pp:JOIN 基数标注已把「漏 DISTINCT」清掉,剩下的主要是投影缺列,
    先看规则 9(输出主键)扩写版补齐三轮之后还剩多少。
+
+**Q16:A2A 和 MCP 都是「给别的 Agent 用」,有什么区别?**
+
+给出去的东西不一样。MCP stdio 服务(19.2)给的是**底层工具**——`list_databases` 和
+`execute_sql`,调用方自己写 SQL,这边只负责只读执行和授权。A2A(17.6)给的是**整个 Agent**:
+调用方问一句话,这边负责检索、规划、生成、执行、修复、校验,和 `/query` 走同一套鉴权、配额和审计。
+
+**Q17:点了停止,为什么不是立刻停?**
+
+看停在哪。SQL 执行中、重试退避中、修复和重放之间,都是立刻停;但**已经发出去的那次模型调用打断不了**,
+要等它返回(最长到 HTTP 超时),结果丢弃,之后不再发新的调用(3.4)。调用方直接断开连接也是一样:
+默认会在下一个检查点停下(契约 v1.13 §5.4);设 `AI_SQL_CANCEL_ON_DISCONNECT=false` 就回到 v1.12 的
+行为,断开后照样跑完,只是没人接收结果。
 
 ---
 
@@ -2140,14 +2618,19 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 
 ### 练习 1 · 加一个业务库(⭐)
 
-在 `sql/` 下加一个 `create_hr_demo.sql`(比如员工与考勤域),然后:
+「有哪些库、怎么连、字段什么意思」由语义层决定(第 4 节),加库不用改代码:
 
-1. `demo_data.py` 里加 `create_hr_demo_database()` 和 `get_hr_business_meta()`;
-2. 在 `get_database_catalog()` 里加它的描述和别名;
-3. `text2sql_pipeline._resolve_databases()` 和 `_resolve_business_metas()` 里注册;
-4. 跑 Demo,看看它能不能被检索到。
+1. 先跑一次 `make demo`,把四个演示库建到 `runtime_data/*_demo.db`;
+2. 导出内置语义层当模板:`python -m ai_sql_agent.semantic export /tmp/semantic`
+   (一个库一份 YAML,外加跨库共享的 `_shared.yaml`);
+3. 准备一个 SQLite 库(比如员工与考勤域),照着模板在目录里加一份 `hr_db.yaml`:
+   `connection` 里写方言和库文件路径,再写表和字段的描述、别名、`semantic_role`;
+   有跨库关联键的话,写进 `_shared.yaml` 的 `cross_database_links`;
+4. 校验:`python -m ai_sql_agent.semantic validate /tmp/semantic`(会和真实库结构比对);
+5. 用 `AI_SQL_SEMANTIC_DIR=/tmp/semantic` 跑 Demo 或起服务,看新库能不能被检索到。
 
-**学到什么**:业务元数据的每个字段分别喂给了谁。
+**学到什么**:业务元数据的每个字段分别喂给了谁——别名决定口语问法能不能召回字段,
+描述决定模型怎么理解字段,`semantic_role` 决定它被当成筛选、指标还是关联键。
 
 ### 练习 2 · 故意让 SQL 报错,观察修复回路(⭐)
 
@@ -2173,7 +2656,7 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 ### 练习 4 · 写一个会触发形状检查的查询(⭐⭐)
 
 构造一个问题,让模型倾向于写 `SUM(...)` 但用户其实要明细,
-看 `risk_findings` 里是不是出现了 `unrequested_aggregation`。
+看 `risk_findings` 里是不是出现了 `aggregation_unrequested`。
 
 然后反过来:构造一个用户确实要汇总的问题,确认它**不**误报。
 
@@ -2182,10 +2665,11 @@ BM25 分数和余弦相似度量纲完全不同,直接加权求和没有意义�
 ### 练习 5 · 加一种 SQL 方言(⭐⭐⭐)
 
 在 `src/ai_sql_agent/execution/dialects.py` 加一个 `MYSQL = SqlDialect(...)`,
-再写一个 `MySQLMCPExecutor`,在 `_build_mcp_router()` 里注册。
+再写一个 `MySQLMCPExecutor`,在 `_build_mcp_router()` 里注册。别忘了两件事:新执行器的
+`execute()` 第一件事也要过 `enforce()` 授权关卡;只读校验和授权关卡都要能按 MySQL 方言解析 SQL。
 
 **学到什么**:方言抽象的边界在哪——哪些差异是「注入 Prompt 的规则」,
-哪些是「执行器要处理的连接细节」。
+哪些是「执行器要处理的连接细节」,哪些是「解析器要认的语法」。
 
 ### 练习 6 · 加一道新的软异常检查(⭐⭐⭐)
 
@@ -2206,9 +2690,25 @@ python -m benchmark.run_benchmark          # 完整 150 条
 python -m benchmark.gate --repeat 3        # 门禁,三轮
 ```
 
-对比你跑出来的数字和 README 里的数字。注意范围有多宽。
+对比你跑出来的数字和 `benchmark/baseline/` 里的记录。注意范围有多宽。
+模型服务中途不可用时,跑分会在第一个降级答案处停下(退出码 3),不会把剩下的题算成答错。
 
 **学到什么**:为什么「单次运行不算数」不是一句客套话。
+
+### 练习 8 · 读一次 run 的事件日志,再取消一次(⭐⭐)
+
+起服务,发一次 `POST /query`,从响应头拿 `X-Run-Id`,然后:
+
+```bash
+curl -s http://localhost:8000/runs/<run_id>/events | python -m json.tool
+```
+
+对着事件找:`stage.started` / `stage.finished` 的先后、每次 `model.call` 的耗时和 token、
+`tool.sql` 的 `stage` 字段是 `execution` 还是 `repair`。再开学习模式问一个跨库问题,
+在回答出来之前点停止,看 `run.cancel_requested` 之后还有没有新的 `model.call`,
+以及 `run.finished` 的终态。
+
+**学到什么**:取消检查点放在哪、为什么「已经发出去的那次模型调用」停不下来(3.4)。
 
 ---
 
@@ -2222,60 +2722,58 @@ python -m benchmark.gate --repeat 3        # 门禁,三轮
 | --- | --- | --- | --- |
 | 跨库执行准确率 | ≥ 90% | 85.3% [84.0, 88.0] | −4.7pp |
 | 静默错误率 | ≤ 3% | 5.3% | +2.3pp |
+| 平均进图字段占比(护栏) | ≤ 40% | 43.6% | +3.6pp |
 
-数字来自 2026-09-09 基线(150 条全量三轮,`claude-sonnet-5`)。前一天是
-73.3% / 10.0%,JOIN 基数标注一处改动补上了大部分差距。但**基线跑的是内置演示
-元数据,不是部署语义层**,README 里用了 ⚠️ 明确标注。
+准确率和静默错误率来自 2026-09-09 的记录(150 条全量三轮,`claude-sonnet-5`),前一天是
+73.3% / 10.0%,JOIN 基数标注一处改动补上了大部分差距;进图字段占比来自 2026-09-08 的三轮基线。
+**基线跑的是内置演示元数据,不是部署语义层**,`benchmark/README.zh-CN.md` 里用 ⚠️ 明确标注。
 
-### 29.2 本地跑测试的 `.env` 污染(实测确认)
+这之后的改动——自适应字段预算(7.4)、规划规则 9–12(10.5)、表顺序(7.7)——都还没有一份提交进
+仓库的三轮记录。提交说明里有一轮 `gpt-6.1-sol` 的 148/150、每条线都达标(091a7fd),但那是
+另一个模型、另一版代码、只有一轮,不能当成上面这张表的「改动后」来对比(18.5)。
 
-**现象**:项目根目录有 `.env` 时,`python -m unittest discover -s tests`
-会有 3–4 个用例失败,报错形如:
+### 29.2 本地跑测试:两个入口读到的配置不一样
 
-```
-AssertionError: 'https://<你的 base url>/v1/messages' != 'https://relay.example.com/v1/messages'
-AssertionError: '' != 'Bearer sk-local-vllm'
-```
+**现象**:本机项目根目录有 `.env`(或者在页面上保存过模型连接)时,`make test`(pytest)是绿的,
+`python -m unittest discover -s tests` 却会有一批 settings、模型连接相关的用例失败。
 
-**原因**:这些用例通过 `os.environ` 设置 `OPENAI_API_KEY` / `ANTHROPIC_BASE_URL`
-这类通用名,但 `.env` 里配的是 `AI_SQL_` 前缀名,在
-`AliasChoices("AI_SQL_XXX", "XXX")` 里前缀名优先级更高,把用例设的值盖掉了。
-CI 环境没有 `.env`,所以是绿的。
+**原因**:`.env` 里配的是 `AI_SQL_` 前缀名,在 `AliasChoices("AI_SQL_XXX", "XXX")` 里优先级
+高于用例自己用 `os.environ` 设的 `OPENAI_API_KEY` / `ANTHROPIC_BASE_URL` 这类通用名,把用例的值
+盖掉了;页面保存的 `runtime_data/model_settings.json` 优先级还要更高。`tests/conftest.py` 已经在
+测试期把这些都关掉了(`env_file` 置空、模型凭证置空、`AI_SQL_MODEL_SETTINGS_ENABLED=false`),
+**但 conftest 只对 pytest 生效**。CI 用的是 unittest 入口,只是 CI 环境里没有 `.env`,所以是绿的。
 
-**验证方法**:在一个不含 `.env` 的目录下跑,357 个用例全绿:
+**怎么办**:本机用 `make test`;要复现 CI,就把 `.env` 和 `runtime_data/model_settings.json`
+临时挪开,再在仓库根目录跑 `make test-ci`(预期 `Ran 1256 tests ... OK (skipped=27)`)。
 
-```bash
-cd /tmp && PYTHONPATH=/path/to/ai-sql-agent python -c "
-import sys, unittest
-sys.path[:0] = ['/path/to/ai-sql-agent', '/path/to/ai-sql-agent/tests']
-unittest.TextTestRunner().run(
-    unittest.defaultTestLoader.discover('/path/to/ai-sql-agent/tests',
-                                        top_level_dir='/path/to/ai-sql-agent/tests'))"
-# Ran 357 tests — OK (skipped=16)
-```
+### 29.3 跑测试和 Demo 时的 matmul 告警
 
-**根因**:测试没有隔离 `.env`。修法是在 `tests/conftest.py` 里
-把 `SettingsConfigDict(env_file=...)` 在测试期置空,或者用
-`monkeypatch.delenv` 清掉所有 `AI_SQL_*` 变量。
-
-### 29.3 离线 Mock 的向量索引会告警
-
-跑 Demo 时会看到:
+会看到:
 
 ```
 src/ai_sql_agent/retrieval/vector_index.py:50: RuntimeWarning: divide by zero encountered in matmul
 ```
 
-原因是 `LocalHashEmbeddingClient` 对某些文本会产出零向量,归一化时除零。
-不影响功能(结果是 NaN 会被排序丢到末尾),但属于应该修掉的噪声。
+同一行还会报 `overflow encountered in matmul` 和 `invalid value encountered in matmul`。
 
-### 29.4 两个文件偏大
+这里以前写的原因是「`LocalHashEmbeddingClient` 产出零向量,归一化时除零」,不对:哈希向量归一化时
+已经有保护(`vectors / np.maximum(norms, 1e-8)`,`pipeline/local_clients.py`),零向量的打分就是 0,
+不报告警。实测在 numpy 2.2.6、arm64 的 macOS 上,两个**随机的**归一化 float32 矩阵相乘也会报这三条
+告警,结果全是有限值——告警来自矩阵乘法的实现置起的浮点标志,不是数据里真有除零。不影响结果,
+但属于该先弄清楚、再决定屏不屏蔽的噪声。
 
-- `src/ai_sql_agent/pipeline/text2sql_pipeline.py` — 1335 行
-- `src/ai_sql_agent/retrieval/hierarchical_service.py` — 593 行
-- `src/ai_sql_agent/retrieval/hybrid_schema_retrieval_service.py` — 803 行
+### 29.4 几个文件偏大
 
-`run()` 方法本身 440 行。可读性靠注释撑住了,但阶段拆成独立对象会更好。
+- `src/ai_sql_agent/pipeline/text2sql_pipeline.py` — 1822 行
+- `src/ai_sql_agent/catalog/service.py` — 1365 行
+- `src/ai_sql_agent/api/model_admin.py` — 1331 行
+- `src/ai_sql_agent/api/app.py` — 1316 行
+- `src/ai_sql_agent/core/transport.py` — 1213 行
+- `src/ai_sql_agent/retrieval/hybrid_schema_retrieval_service.py` — 808 行
+- `src/ai_sql_agent/retrieval/hierarchical_service.py` — 637 行
+
+原来 484 行的 `_run` 已经拆成 `_prepare / _plan / _run_steps / _run_step / _finish`(2.5),
+但拆的是方法,不是对象:状态还都在 `Text2SQLPipeline` 一个类里,文件本身仍是全项目最长的。
 
 ### 29.5 设计上的取舍(不是 bug,但要能说清)
 
@@ -2284,7 +2782,11 @@ src/ai_sql_agent/retrieval/vector_index.py:50: RuntimeWarning: divide by zero en
 | 代词消解 | 规则式 | 覆盖有限,复杂指代解不出(但不会解错) |
 | 限流 | 进程内令牌桶 | 多实例部署时配额是每实例的 |
 | 日配额 | 缓存 15 秒 | 短暂少量超发 |
+| 模型访问状态表 | 进程内 | 多实例各记各的,一把被拒的 Key 每个实例都要撞一次 |
+| 在线换模型 | 存本机文件 | 多副本各存各的,应当关掉、改用环境变量或密钥管理 |
 | 审计存储 | 默认 SQLite | 单实例够用,多实例要切 PostgreSQL |
+| 运行记录与取消 | 默认 SQLite;取消只找本进程登记的 run | 多实例时 `POST /runs/{id}/cancel` 打到别的实例上返回 404 |
+| 断开即取消 | 默认开(契约 v1.13 §5.4) | 已经发出的那次模型调用停不下来,token 照样花掉;关掉开关则整个查询跑完,只是没人接收结果 |
 | 表重名 | `_table_owner()` 只保留先出现的 | 四个 demo 库不重名,真重名时**不猜** |
 | 子句定位 | 顶层关键字扫描 | 深度嵌套子查询会并入外层子句 |
 | 错误日志解析 | 只覆盖 SQLite 错误族 | PostgreSQL 错误模式要另加 |
@@ -2294,57 +2796,77 @@ src/ai_sql_agent/retrieval/vector_index.py:50: RuntimeWarning: divide by zero en
 ## 附:文件速查表
 
 ```
-src/ai_sql_agent/api/          1051 行   API 服务与内置控制台
-  app.py                       11 个端点 + lifespan + trace 中间件
+src/ai_sql_agent/api/          3967 行   API 服务与内置控制台
+  app.py                       12 个端点 + lifespan + trace 中间件
+  catalog.py                   数据目录与只读预览(5 个端点)
+  runs.py                      运行记录查询与取消(3 个端点)
+  model_admin.py               在线管理模型连接与 Embedding(9 个端点)
+  result_summary.py            /query 与 A2A 共用的结果组装
   security.py                  API Key 鉴权、Admin 依赖
   limits.py                    令牌桶限流 + 日配额
   schema_watcher.py            Schema 指纹轮询
+  trust.py                     「能不能拿去当出处」的判据
+  static/                      内置控制台(原生 HTML / CSS / ES Module)
 
-src/ai_sql_agent/core/         1870 行   地基
+src/ai_sql_agent/a2a/           682 行   A2A 服务端(Agent Card + JSON-RPC,3 个端点)
+src/ai_sql_agent/runs/         1054 行   运行记录、事件日志、取消、孤儿与过期清理
+
+src/ai_sql_agent/core/         4348 行   地基
   settings.py                  全局配置单例(一个变量切厂商)
-  transport.py                 模型传输层(协议/重试/熔断/记账)
+  transport.py                 模型传输层(协议/重试/熔断/记账/取消检查)
   circuit.py                   熔断器
+  model_access.py              凭证被拒后不再发请求
+  model_settings.py            页面保存的模型连接
+  run_context.py               run_id + 取消令牌 + 检查点 + 事件发射
   metrics.py                   Prometheus 指标(自实现)
   trace.py                     trace_id + stage() 计时器
   logging_setup.py             结构化日志
   errors.py                    错误分类
 
-src/ai_sql_agent/pipeline/     4152 行   编排层 ★核心
-  text2sql_pipeline.py         主干,run() 串起 11 个阶段
+src/ai_sql_agent/pipeline/     4826 行   编排层 ★核心
+  text2sql_pipeline.py         主干,_run() 串起 准备 → 规划 → 逐步 → 收尾
   dynamic_service.py           意图路由入口
   routing.py                   意图分类(模型 + 规则)
   short_path.py                短路径判定
   schema_budget.py             Schema 三档降级裁剪
   token_budget.py              Token 估算与预算分配
+  embedding.py                 Schema 检索用哪种向量(本地 / 远端)
+  local_clients.py             本地哈希向量、关键词抽取
+  provenance.py                结果列接回语义层:单位与来源记录
   conversation_service.py      记忆感知的 pipeline 包装
   data_qa.py                   数据问答链路
   demo_data.py                 4 库业务元数据 + 跨库关联 + 口径消歧
   (examples/end_to_end.py)     ★ 从这里开始读
 
-src/ai_sql_agent/retrieval/    6025 行   三层检索 ★最大模块
+src/ai_sql_agent/retrieval/    4030 行   三层检索
   hierarchical_service.py      三层编排(库→表→字段)
   hybrid_schema_retrieval_service.py  字段级混合检索
   bm25.py / vector_index.py / pgvector_index.py   三路召回
+  embedding_client.py          远端 Embedding 客户端(OpenAI 兼容接口)
   rrf_fusion_client.py         RRF 融合
   rerank_client.py             精排
   document_builder.py          一字段三份索引文本
-  graph_builder.py             SchemaGraph 构建
+  graph_builder.py             SchemaGraph 构建(表按表级检索排名排列)
   access.py                    权限过滤
   schema_fingerprint.py        Schema 指纹
 
-src/ai_sql_agent/planning/         760 行   五元组规划
-src/ai_sql_agent/generation/       916 行   SQL 生成 + 局部 Schema
-src/ai_sql_agent/execution/           698 行   只读执行(guard / dialects / executors)
-src/ai_sql_agent/repair/           505 行   修复回路(日志解析 / 子句定位 / 重生成)
-src/ai_sql_agent/validation/    540 行   软异常校验 ★灵魂模块
-src/ai_sql_agent/normalization/  344 行   代词消解 + 时间归一化
-src/ai_sql_agent/memory/       1591 行   长短期记忆
-src/ai_sql_agent/auth/          408 行   身份与数据权限
-src/ai_sql_agent/audit/         515 行   审计与用量
-src/ai_sql_agent/ops/           309 行   只读账号 provisioning + 体检
-src/ai_sql_agent/mcp_server/            82 行   对外 MCP 只读查询工具
-benchmark/           1744 行   评测集 + 四指标 + 发布门禁
-tests/               5270 行   357 个用例
+src/ai_sql_agent/semantic/     1006 行   语义层:一个库一份 YAML(导出 / 校验 / 加载)
+src/ai_sql_agent/catalog/      2275 行   数据浏览:目录、只读预览、只含聚合的表概况
+src/ai_sql_agent/feedback/      907 行   用户反馈:对错判定、认证范例、导出评测用例
+src/ai_sql_agent/indexing/      912 行   离线建 pgvector 索引
+src/ai_sql_agent/planning/      669 行   五元组规划
+src/ai_sql_agent/generation/    875 行   SQL 生成 + 局部 Schema
+src/ai_sql_agent/execution/    1798 行   只读执行(语法树校验 / 授权关卡 / 字节上限 / 方言 / 执行器)
+src/ai_sql_agent/repair/        513 行   修复回路(日志解析 / 子句定位 / 重生成)
+src/ai_sql_agent/validation/    776 行   软异常校验 ★灵魂模块
+src/ai_sql_agent/normalization/ 344 行   代词消解 + 时间归一化
+src/ai_sql_agent/memory/       1890 行   长短期记忆
+src/ai_sql_agent/auth/         2060 行   身份、数据权限、强制授权关卡、SQL 引用分析、视图展开
+src/ai_sql_agent/audit/         603 行   审计与用量
+src/ai_sql_agent/ops/           776 行   只读账号 provisioning + 体检 + 数据库侧最小授权
+src/ai_sql_agent/mcp_server/    137 行   对外 MCP 只读查询工具
+benchmark/                     2187 行   评测集 + 8 条线的发布门禁(只算 .py)
+tests/                        23714 行   1262 个用例
 ```
 
 ---
@@ -2354,6 +2876,10 @@ tests/               5270 行   357 个用例
 - [README.md](../README.md) / [README.zh-CN.md](../README.zh-CN.md) — 项目总览与快速上手
 - [benchmark/README.zh-CN.md](../benchmark/README.zh-CN.md) — 四大指标怎么定的、护栏怎么设计的(**强烈建议完整读一遍**)
 - [docs/deployment.zh-CN.md](deployment.zh-CN.md) — Docker 编排、权限配置、模型接入、监控排障
+- [docs/api.zh-CN.md](api.zh-CN.md) — 接口与请求 / 响应格式
+- [docs/design.zh-CN.md](design.zh-CN.md) — 关键设计取舍
+- [docs/limitations.zh-CN.md](limitations.zh-CN.md) — 已知限制
 - [docs/modules/retrieval.md](modules/retrieval.md) — 混合召回与 SchemaGraph
 - [docs/modules/execution.md](modules/execution.md) — 只读 SQL、方言与执行器
 - [docs/modules/pipeline.md](modules/pipeline.md) — 动态路由与记忆示例
+- [docs/modules/runs.md](modules/runs.md) — 运行记录、事件日志与取消(英文)
