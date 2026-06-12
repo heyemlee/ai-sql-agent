@@ -9,15 +9,16 @@
 | --- | --- |
 | 代码量 | Python ≈ 58.2k 行(源码 34.5k + 测试 23.7k) |
 | 模块数 | `src/ai_sql_agent/` 下 21 个子包(另有放演示建库脚本的 `resources/`) |
-| 测试 | 1262 个用例(没配 `AI_SQL_PGVECTOR_DSN` 时跳过其中 27 个 PostgreSQL 用例) |
+| 测试 | 1266 个用例(没配 `AI_SQL_PGVECTOR_DSN` 时跳过其中 27 个 PostgreSQL 用例) |
 | 评测 | 150 条评测集 + 40 条留出集 + 8 条线的发布门禁 |
 | 演示数据 | 4 个互不相干的业务库,15 张表,86 个字段,**无外键跨库** |
 | 外部依赖 | FastAPI / uvicorn / pydantic / httpx / numpy / PyYAML / sqlglot / psycopg+pgvector / mcp(共 12 个直接依赖) |
 | 对外接口 | HTTP(`/query` 等)、A2A(`/a2a`,给别的 Agent 用)、MCP stdio(单独进程) |
 | 离线可跑 | 是。没有模型 Key 时全链路走 Mock,Demo 和测试都能跑通 |
 
-> 表里的数字对应提交 `3de63cb`(2026-10-16):行数是 `src/`、`tests/` 下 `*.py` 的 `wc -l`;
-> 用例数是在一个干净的临时目录里跑 `pytest --collect-only` 的结果。
+> 表里和附录里的行数对应提交 `3de63cb`(2026-10-16),是 `src/`、`tests/` 下 `*.py` 的 `wc -l`;
+> 用例数是 main 从 `cae39a8` 起的数(到 `6b2ed93` 没变),在一个干净的临时目录里跑
+> `pytest --collect-only` 得到,本文各处的用例数都用这一版。
 
 ---
 
@@ -145,13 +146,13 @@ Demo 2:跨库两步查询(上一步结果回填)
 make test        # 即 python -m pytest tests -q
 ```
 
-预期最后一行是 `1235 passed, 27 skipped`(共 1262 个用例,后面还会跟 warnings 和
+预期最后一行是 `1239 passed, 27 skipped`(共 1266 个用例,后面还会跟 warnings 和
 subtests 的计数)。跳过的 27 个都要 `AI_SQL_PGVECTOR_DSN`:pgvector 集成 14 个、
 PostgreSQL 授权 7 个、只读账号 3 个、PostgreSQL 取消 2 个、PostgreSQL 运行记录存储 1 个。
 本地没起 PostgreSQL 就自动跳过;CI 里有 pgvector 服务容器,这些都会真跑。
 
 CI 用的是另一个入口:`make test-ci`,即 `python -m unittest discover -s tests`,
-预期 `Ran 1256 tests ... OK (skipped=27)`。少的 6 个是 `tests/test_simple_erp.py` 里
+预期 `Ran 1260 tests ... OK (skipped=27)`。少的 6 个是 `tests/test_simple_erp.py` 里
 pytest 风格的函数,unittest 收不到,CI 另起一步用 pytest 单独跑它。
 
 > ⚠️ **本地坑**:`tests/conftest.py` 会在测试期屏蔽三样本机配置——项目根目录的 `.env`、
@@ -2380,7 +2381,7 @@ benchmark README 的原话(翻译):
 **展示**:终端跑 `python examples/end_to_end.py`,滚动看输出。
 
 > 「不需要任何 API Key,模型层自动走 Mock。这一点很重要——
-> 1262 个测试用例里,除了 27 个要 PostgreSQL 的,都能离线跑,CI 里也不需要配模型 Key。」
+> 1266 个测试用例里,除了 27 个要 PostgreSQL 的,都能离线跑,CI 里也不需要配模型 Key。」
 
 指着输出说:「关键词 → 候选库 → 候选表 → Schema 图 → CoT 五元组 → SQL → 执行结果。
 这就是整条链路,后面我讲的每一块,在这份输出里都有对应的实物。」
@@ -2744,7 +2745,7 @@ curl -s http://localhost:8000/runs/<run_id>/events | python -m json.tool
 **但 conftest 只对 pytest 生效**。CI 用的是 unittest 入口,只是 CI 环境里没有 `.env`,所以是绿的。
 
 **怎么办**:本机用 `make test`;要复现 CI,就把 `.env` 和 `runtime_data/model_settings.json`
-临时挪开,再在仓库根目录跑 `make test-ci`(预期 `Ran 1256 tests ... OK (skipped=27)`)。
+临时挪开,再在仓库根目录跑 `make test-ci`(预期 `Ran 1260 tests ... OK (skipped=27)`)。
 
 ### 29.3 跑测试和 Demo 时的 matmul 告警
 
@@ -2866,7 +2867,7 @@ src/ai_sql_agent/audit/         603 行   审计与用量
 src/ai_sql_agent/ops/           776 行   只读账号 provisioning + 体检 + 数据库侧最小授权
 src/ai_sql_agent/mcp_server/    137 行   对外 MCP 只读查询工具
 benchmark/                     2187 行   评测集 + 8 条线的发布门禁(只算 .py)
-tests/                        23714 行   1262 个用例
+tests/                        23714 行   1266 个用例
 ```
 
 ---
