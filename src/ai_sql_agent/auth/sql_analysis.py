@@ -1,4 +1,4 @@
-"""
+r"""
 基于 SQL AST 的引用分析：这条 SQL 到底碰了哪些表、哪些列。
 
 原来的实现是 `\b(?:from|join)\s+` 正则加一个把 `schema.table` 砍成 `table` 的

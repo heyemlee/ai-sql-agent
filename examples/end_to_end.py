@@ -24,7 +24,7 @@ def _print_result(result) -> None:
     print(result.schema_context)
 
     print("\n" + "=" * 80)
-    print("4. CoT 四元组")
+    print("4. 规划步骤")
     print("=" * 80)
     print(result.cot_output)
 

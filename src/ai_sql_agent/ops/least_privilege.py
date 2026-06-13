@@ -10,10 +10,11 @@
 1. `grant_sql()`：把 DataPolicy 翻成 REVOKE + 表级/列级 GRANT。
    PostgreSQL 的列级 GRANT 是真事：`GRANT SELECT (a, b) ON t TO role` 之后
    `SELECT c FROM t` 会直接被服务端拒。
-2. `row_policy_sql()`：行级安全（RLS）。**行范围不在 DataPolicy 里**——
-   今天的策略模型只有表和列两级，没有「这个人只能看自己客户的单」这一层
-   （审查 P0-2 说的就是这件事）。所以行过滤条件由运维显式给，
-   不假装它能从现有配置推出来。
+2. `row_policies_from_policy()`：行级安全（RLS）。行范围来自 `DataPolicy.row_filters`
+   （设计见 docs/authz-model.md），只为声明了非空谓词的表生成；`predicate: "*"`
+   是显式放行所有行。没声明的表这里不生成，运行时按放行处理，多租户范围下
+   启动检查会把它列为问题。每一条最后都经 `row_policy_sql()` 落成语句，
+   它也接受运维直接写的条件。
 3. `verify_least_privilege()`：**连上去真查一次**，确认该拒的真的拒了。
    生成 SQL 只是意图，执行过没执行过、执行对没执行对，得用一次真实查询回答。
 """
@@ -194,12 +195,10 @@ def row_policy_sql(
     policy_name: str = "",
 ) -> str:
     """
-    行级安全（RLS）。
+    行级安全（RLS）：把一条行范围条件落成语句。
 
-    `using_expression` 由运维给，**不从 DataPolicy 推**——今天的策略模型只有
-    表级和列级，没有行范围（审查 P0-2：`DataPolicy` 没有租户/客户行范围，
-    impersonation 换了 user_id 但权限不变）。在策略模型补上行范围之前，
-    这里能做的是把运维写下来的条件落成 RLS，而不是假装能推出来。
+    `row_policies_from_policy()` 用它把 `DataPolicy.row_filters` 里声明的谓词逐表落下去；
+    也可以直接传运维写的条件。
 
     典型写法：`using_expression="owner_id = current_setting('app.user_id', true)"`
     """

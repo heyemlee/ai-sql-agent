@@ -1,4 +1,4 @@
-"""
+r"""
 表名提取的历史入口。
 
 实现已经换成 AST（`ai_sql_agent.auth.sql_analysis`）——原来的 `\b(?:from|join)\s+`
