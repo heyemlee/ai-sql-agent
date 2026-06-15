@@ -16,4 +16,4 @@ Default execution limits are **1,000 rows, 10 seconds, and 8 MiB per result** (S
 
 ## Further reading
 
-[Project walkthrough (中文)](walkthrough.zh-CN.md) · [Deployment](deployment.md) · [Authorization model (中文)](authz-model.md) · [Least privilege (中文)](least-privilege-runbook.md) · [Schema retrieval](modules/retrieval.md) · [Execution](modules/execution.md) · [A2A contract feedback (中文)](contract-feedback.md)
+[Project walkthrough (中文)](walkthrough.zh-CN.md) · [Deployment](deployment.md) · [Authorization model (中文)](authz-model.md) · [Least privilege (中文)](least-privilege-runbook.md) · [Schema retrieval](modules/retrieval.md) · [Execution](modules/execution.md)

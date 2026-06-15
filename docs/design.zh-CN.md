@@ -16,4 +16,4 @@
 
 ## 深入阅读
 
-[项目详解](walkthrough.zh-CN.md) · [部署与运维](deployment.zh-CN.md) · [授权模型](authz-model.md) · [最小权限配置](least-privilege-runbook.md) · [检索设计](modules/retrieval.md) · [执行器设计](modules/execution.md) · [A2A 契约反馈](contract-feedback.md)
+[项目详解](walkthrough.zh-CN.md) · [部署与运维](deployment.zh-CN.md) · [授权模型](authz-model.md) · [最小权限配置](least-privilege-runbook.md) · [检索设计](modules/retrieval.md) · [执行器设计](modules/execution.md)
