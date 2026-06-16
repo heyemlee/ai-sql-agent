@@ -188,7 +188,7 @@ class RetrievalFilteringTest(unittest.TestCase):
     def test_denied_column_is_also_rejected_at_execution(self):
         """
         上一条只证明了「模型看不到这列」，没证明「执行器会拒绝这列」——
-        模型凭对话上下文或先验知识照样写得出列名。2026-09-04 审查点名的就是
+        模型凭对话上下文或先验知识照样写得出列名。复现过的就是
         这个缺口（`SELECT private_value FROM public_data` 当时能拿到数据）。
 
         完整的执行器侧负面用例在 tests/test_authorization_boundary.py，

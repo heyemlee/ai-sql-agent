@@ -261,8 +261,8 @@ class SqlAgentSettings(BaseSettings):
     """
     API Key 的角色在 `policies` 里一条都没匹配上时给什么权限。
 
-    默认 `deny`。`full_access` 是 2026-09-04 之前的行为——审查用一个不存在的
-    角色拿到了全部权限。保留这个开关只为让老部署有个显式的过渡位置：它必须是
+    默认 `deny`。`full_access` 是早期的行为——用一个不存在的
+    角色就能拿到全部权限。保留这个开关只为让老部署有个显式的过渡位置：它必须是
     有人主动写下来的，而不是默认值。生产模式下配成 `full_access` 直接启动失败。
     """
 
@@ -415,7 +415,7 @@ class SqlAgentSettings(BaseSettings):
     （`row_limit` 是实际返回的行数）。
 
     行数上限管不住体积：每行 5 MB 的话 40 行就是 200 MB，它先进执行器内存，再进
-    HTTP 响应、A2A 数据段、对话记忆库和下一步的提示词（审计 E-03）。
+    HTTP 响应、A2A 数据段、对话记忆库和下一步的提示词。
 
     默认 8 MiB 的依据：`max_rows` 的默认 1000 行里，每行约 1 KB 文本是偏重的业务表
     （约 1 MB），8 MiB 给到它的 8 倍；预览一页至多 100 行，远在其下。只有长文本、
@@ -504,7 +504,7 @@ class SqlAgentSettings(BaseSettings):
 
     以前生产者（`asyncio.to_thread`）和消费者（`run_in_executor(None, …)`）
     抢同一个默认线程池：把默认池限成 2 线程、开 2 条流，两个消费者就把池占满，
-    pipeline 启动数为 0（审查已复现）。专用池 + 消费者不再占线程，两边就不再争。
+    pipeline 启动数为 0（复现过）。专用池 + 消费者不再占线程，两边就不再争。
     """
 
     a2a_stream_queue_size: int = 256

@@ -1,5 +1,5 @@
 """
-授权边界在**真实 PostgreSQL** 上的验收（审查 P0-1 的验收条件）。
+授权边界在**真实 PostgreSQL** 上的验收。
 
 SQLite 上验不到的三件事：
 - **不同 schema 的同名表**（SQLite 没有 schema）；
@@ -151,7 +151,7 @@ class PostgresAuthorizationTest(unittest.TestCase):
 
     def test_column_grant_blocks_a_denied_column_at_the_database(self):
         """
-        这一条是 P0-1 第四点的核心：**绕过应用层**直接用受限角色连库，
+        这一条是数据库侧最小授权的核心：**绕过应用层**直接用受限角色连库，
         禁列照样查不出来。只读账号只挡写，挡不住读密列。
         """
         from ai_sql_agent.ops.least_privilege import (
@@ -211,8 +211,8 @@ class PostgresAuthorizationTest(unittest.TestCase):
 
     def test_row_level_security_scopes_rows(self):
         """
-        行隔离只能落在数据库侧：`DataPolicy` 今天没有行范围这一层
-        （审查 P0-2）。运维给条件，RLS 执行它。
+        行隔离只能落在数据库侧：`DataPolicy` 的行范围
+        最终也落到 RLS 上。运维给条件，RLS 执行它。
         """
         import psycopg
 
@@ -257,7 +257,7 @@ class PostgresAuthorizationTest(unittest.TestCase):
 @requires_postgres
 class RowLevelSecurityThroughTheAgentTest(unittest.TestCase):
     """
-    行隔离在**经由 agent 发起的查询**上生效（审查 P0-2 的一半）。
+    行隔离在**经由 agent 发起的查询**上生效。
 
     上一轮只证明了「有人手工连库时 RLS 管用」——那不够：真实流量都从执行器走，
     而执行器以前不告诉数据库「这次是谁在查」。现在它在事务里

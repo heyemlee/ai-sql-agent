@@ -1,5 +1,5 @@
 """
-视图遮住基表（审查 S-04）：`deny_tables: ["app.payroll"]` 拦得住 `SELECT * FROM payroll`，
+视图遮住基表：`deny_tables: ["app.payroll"]` 拦得住 `SELECT * FROM payroll`，
 拦不住 `SELECT * FROM v_payroll`——SQLite 的 authorizer 回调在读视图时报告的是基表被读了，
 而 SQL 文本里根本没有这个名字。
 

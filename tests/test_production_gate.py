@@ -1,5 +1,5 @@
 """
-生产模式启动闸（审查 P1-4 的「发布安全默认值」那一条）。
+生产模式启动闸：发布时的安全默认值。
 
 原来这些都是警告：readiness 明确把「缺模型凭证走 Mock」当成可就绪
 （`app.py` 的 readyz），启动只读审计发现违规也只 log 一条 WARNING。
@@ -201,7 +201,7 @@ if __name__ == "__main__":
 
 class AuthorizationModelGateTest(unittest.TestCase):
     """
-    审查 P0-2 的两半在生产模式下的启动检查。设计见 docs/authz-model.md。
+    行范围与 impersonation 在生产模式下的启动检查。设计见 docs/authz-model.md。
 
     两条都是「运行时宽松、配置校验时严格」：不破坏现有部署，
     但**宽松必须是有人写下来的**，不能是默认值兜出来的。

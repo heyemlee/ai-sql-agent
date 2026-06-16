@@ -3,7 +3,7 @@
 
 原来的检查写在 `text2sql_pipeline` 的执行分支里（`_check_table_access`），
 于是四条执行路径里漏了一条：修复回调直接调执行器，完全没有重新鉴权
-（2026-09-04 审查复现：让修复模型返回一条禁用表的 SQL，直接检查会拒，
+（复现过：让修复模型返回一条禁用表的 SQL，直接检查会拒，
 走完整修复路径却成功返回了 1 行）。
 
 **在每个调用点各写一次检查，就是这次漏掉一处的原因。** 所以这里换个结构：
@@ -42,7 +42,7 @@ from .views import FAILED, LOADED
 _logger = get_logger("auth")
 
 # SQLite 里 INTEGER PRIMARY KEY 列的别名。关卡没有 schema，不知道哪一列是主键，
-# 所以 `SELECT rowid` 对策略来说是一个谁也写不出规则的列名（2026-10-14 审查：
+# 所以 `SELECT rowid` 对策略来说是一个谁也写不出规则的列名（复现过：
 # 禁了 `employees.id`，`SELECT rowid FROM employees` 照样把 id 读了出来）。
 _ROWID_ALIASES = frozenset({"rowid", "oid", "_rowid_"})
 

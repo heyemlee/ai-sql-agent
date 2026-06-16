@@ -1,14 +1,12 @@
 # 授权模型：行范围与 impersonation（设计）
 
-> 对应审查 P0-2 的两半。2026-09-04 第一轮关掉的是**可复现的越权**；
-> 这一份处理的是**策略模型本身表达不出来的东西**。
->
-> 先出设计再动手，因为它牵动 `src/ai_sql_agent/auth/objects.py`、`enforcement.py` 与
-> key store 的形状，而且**默认值选错就是把 `full_access` 的老毛病换个维度复发**。
+> 只有表、列两级策略时，有两件事表达不出来：行范围，以及 impersonation 时最终用户自己的权限。
+> 这份设计补这两块。它牵动 `src/ai_sql_agent/auth/objects.py`、`enforcement.py` 与
+> key store 的形状，而且**默认值选错，就是把「没配就全放开」的问题换个维度重演**。
 
-## 0. 今天的模型缺什么
+## 0. 只有表、列两级时缺什么
 
-| 维度 | 今天 | 缺口 |
+| 维度 | 表、列两级策略 | 缺口 |
 | --- | --- | --- |
 | 库 / 表 | `allow_tables` / `deny_tables` glob | —— |
 | 列 | `deny_columns` glob | —— |
@@ -63,12 +61,12 @@ BEGIN → SET TRANSACTION READ ONLY → SET LOCAL app.user_id = <principal.user_
 
 所以取第三种：**运行时按「放行」，配置校验时按「必须显式声明」**。
 
-- 运行时：没有匹配的 `row_filters` 条目 → 不加行过滤（行为与今天一致，不破坏现网）；
+- 运行时：没有匹配的 `row_filters` 条目 → 不加行过滤（与没有行范围时一致，不破坏已有部署）；
 - **生产模式启动检查**：策略里任何一张 `allow_tables` 覆盖到的表，
   如果没有任何 `row_filters` 条目匹配它（包括显式的 `"*"`），**拒绝启动**。
 
 于是「这张表不做行隔离」这句话必须是**有人写下来的**，而不是默认值兜出来的。
-这与第一轮 `roles=()` 的处理是同一条原则：*显式的宽松可以接受，默认的宽松不行。*
+这与 `roles=()` 的处理是同一条原则：*显式的宽松可以接受，默认的宽松不行。*
 
 开发模式下只告警。
 
@@ -110,7 +108,7 @@ IntersectionPolicy(service=..., user=...)
 
 | 配置形态 | 行为 | 生产模式 |
 | --- | --- | --- |
-| 没有 `users` 段 | 保持今天的行为（用服务身份的策略） | **拒绝启动**，如果存在 `can_impersonate` 的 Key |
+| 没有 `users` 段 | 沿用服务身份的策略 | **拒绝启动**，如果存在 `can_impersonate` 的 Key |
 | 有 `users` 段，命中 | 取交集 | 正常 |
 | 有 `users` 段，未命中 | **拒绝**（这个人的权限没声明过，推不出来） | 正常 |
 
@@ -121,8 +119,8 @@ IntersectionPolicy(service=..., user=...)
 
 规则是 `库.表` / `库.表.列` 的 glob。名字的大小写怎么算，目录（`/catalog`）、检索裁剪
 和 SQL 授权关卡用的是**同一条规则**（`src/ai_sql_agent/auth/identifiers.py`）——
-2026-10-04 之前它们各比各的：关卡把 SQL 里的名字全转成小写、策略按原样比，
-于是 `deny_tables: ["shop_db.Orders"]` 在关卡上永远对不上，被拒的表照样查得出来。
+如果各比各的——关卡把 SQL 里的名字全转成小写、策略按原样比——
+`deny_tables: ["shop_db.Orders"]` 在关卡上就永远对不上，被拒的表照样查得出来。
 
 规则跟着数据库自己的语义走：
 
@@ -151,7 +149,7 @@ SQL 授权关卡是靠 SQL 的结构来判的，没有 schema，所以有三条�
 - **每个不带前缀的列引用都要被问到**，包括 `HAVING`、与输出别名同名的 `ORDER BY` 项和
   表值函数的实参。分不清它是别名还是真列时按真列问——所以一个输出别名恰好和被禁列
   同名（`SELECT name, 1 AS salary … ORDER BY salary`）会被多拒一次。
-  2026-10-14 之前这几处被漏掉，`HAVING max(salary) > n` 可以把被禁列的值二分出来。
+  漏掉其中任何一处，`HAVING max(salary) > n` 就能把被禁列的值二分出来。
 - **SQLite 的 `rowid` / `oid` / `_rowid_` 是主键列的别名**，关卡不知道哪一列是主键，
   所以只要这张表有任何列级限制（`deny_columns` 里有它），就拒绝对这三个名字的引用。
   PostgreSQL 里 `rowid` 只是个普通列名，不套这条。
@@ -198,7 +196,7 @@ PostgreSQL 的目录扫描（`scan_postgres`）和视图展开**没有在真实 
 SQLite 更彻底的做法是让执行器连接装 `set_authorizer`，直接按 SQLite 报告的真实读取
 判定，视图、`rowid`、解析差异一并消除——那在 `execution/`，不在这里。
 
-## 4. 不在这一轮的
+## 4. 不在本设计范围内的
 
 - **glob 代数**：交集用组合对象绕开了。要把交集落回一份可读的 `DataPolicy`
   （比如给运维看「这个人最终能查什么」），需要真的做 glob 求交，是独立一件事。

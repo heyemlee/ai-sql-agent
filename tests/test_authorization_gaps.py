@@ -1,19 +1,19 @@
 """
-授权关卡的第二批越权——2026-10-14 审查用「SQLite 真实读了什么 vs. 关卡看见了什么」的差分测试找出来的。
+授权关卡的第二批越权——用「SQLite 真实读了什么 vs. 关卡看见了什么」的差分测试找出来的。
 
 和 `test_authorization_boundary.py` 同一个理由放进 CI：这类缺陷退化时没有症状，
 越权成功和正常查询长得一模一样。
 
-覆盖三条（编号对应审查报告）：
+覆盖三条：
 
-- S-01　`HAVING` / 与输出别名同名的 `ORDER BY` 表达式 / 表值函数实参里的列没被检查。
-        sqlglot 的 `Scope.columns` 为了不把「引用别名」的名字当真实列而丢掉它们，
-        `HAVING max(salary) > n` 因此能当布尔探针二分出被禁列的值。
-- S-03　`rowid` / `oid` / `_rowid_` 是 INTEGER PRIMARY KEY 列的别名，策略写不出它的规则。
-- S-05　`sqlite_master`（及别名 `sqlite_schema`）、`dbstat`、表值 `pragma_*` 函数：
-        通配放行会一并放行，表值函数又不产生表名，原来被当成「不碰任何表」。
+- `HAVING` / 与输出别名同名的 `ORDER BY` 表达式 / 表值函数实参里的列没被检查。
+  sqlglot 的 `Scope.columns` 为了不把「引用别名」的名字当真实列而丢掉它们，
+  `HAVING max(salary) > n` 因此能当布尔探针二分出被禁列的值。
+- `rowid` / `oid` / `_rowid_` 是 INTEGER PRIMARY KEY 列的别名，策略写不出它的规则。
+- `sqlite_master`（及别名 `sqlite_schema`）、`dbstat`、表值 `pragma_*` 函数：
+  通配放行会一并放行，表值函数又不产生表名，原来被当成「不碰任何表」。
 
-没有覆盖（已知缺口，S-04）：视图会遮住它读的基表。
+视图遮住基表的情况见 `tests/test_authorization_views.py`。
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _check(policy, sql, dialect="sqlite"):
 
 
 class HavingColumnsAreCheckedTest(unittest.TestCase):
-    """S-01：不带前缀的 HAVING 列引用以前从没被问过策略。"""
+    """不带前缀的 HAVING 列引用以前从没被问过策略。"""
 
     def test_having_aggregate_over_a_denied_column_is_denied(self):
         decision = _check(
@@ -95,7 +95,7 @@ class HavingColumnsAreCheckedTest(unittest.TestCase):
 
 
 class OrderByAliasShadowTest(unittest.TestCase):
-    """S-01：ORDER BY 表达式里的名字等于某个输出别名时被丢弃，真实列却被读了。"""
+    """ORDER BY 表达式里的名字等于某个输出别名时被丢弃，真实列却被读了。"""
 
     def test_expression_over_a_shadowed_denied_column_is_denied(self):
         # SQLite 的 authorizer 回调显示这条真的读了 employees.salary
@@ -131,7 +131,7 @@ class OrderByAliasShadowTest(unittest.TestCase):
 
 
 class TableFunctionArgumentTest(unittest.TestCase):
-    """S-01：表值函数的实参里的无前缀列也被丢。"""
+    """表值函数的实参里的无前缀列也被丢。"""
 
     def test_column_inside_a_table_function_argument_is_denied(self):
         decision = _check(
@@ -153,7 +153,7 @@ class TableFunctionArgumentTest(unittest.TestCase):
 
 
 class RowidAliasTest(unittest.TestCase):
-    """S-03。"""
+    """`rowid` / `oid` / `_rowid_` 是主键列的别名。"""
 
     def test_rowid_of_a_column_restricted_table_is_denied(self):
         for name in ("rowid", "oid", "_rowid_", "ROWID"):
@@ -183,7 +183,7 @@ class RowidAliasTest(unittest.TestCase):
 
 
 class EngineInternalObjectsTest(unittest.TestCase):
-    """S-05：引擎内部对象对所有角色一律拒绝，通配放行也不例外。"""
+    """引擎内部对象对所有角色一律拒绝，通配放行也不例外。"""
 
     INTERNAL = [
         "SELECT sql FROM sqlite_master",
@@ -281,7 +281,7 @@ class ExecutorEndToEndTest(unittest.TestCase):
 
 class WholeRowReferenceTest(unittest.TestCase):
     """
-    S-07：PostgreSQL 里不带前缀的 `e` 可以是整行（`row_to_json(e)`、`SELECT e FROM t e`、
+    PostgreSQL 里不带前缀的 `e` 可以是整行（`row_to_json(e)`、`SELECT e FROM t e`、
     `e::text`、`(e).salary`），取到的是这张表的全部列，含被禁列。关卡把这类引用按 `e.*` 算。
 
     **这些用例只验证关卡的判定，没有在真实 PostgreSQL 上跑过**；整行引用的语义来自 PostgreSQL 文档。
@@ -347,7 +347,7 @@ class WholeRowReferenceTest(unittest.TestCase):
 
 class SqlInStringFunctionTest(unittest.TestCase):
     """
-    S-07 / E-01：把字符串当 SQL 或表名执行的函数，以及覆盖 RLS 身份的 `set_config`。
+    把字符串当 SQL 或表名执行的函数，以及覆盖 RLS 身份的 `set_config`。
     它们读的表不出现在 AST 里，按表和列判永远看不见。**只验证关卡的判定，未在真实 PostgreSQL 上跑。**
     """
 
@@ -487,7 +487,7 @@ class GateSeesEveryRealReadTest(unittest.TestCase):
 
     这才是关卡该满足的性质，比枚举已知绕过更不容易漏。以后升级 sqlglot 后，
     `Scope.columns` 的丢列规则变了也会在这里露出来。
-    视图不在语料里（S-04：视图遮住基表，是已知缺口）。
+    视图不在语料里（视图遮住基表的情况见 `tests/test_authorization_views.py`）。
     """
 
     CORPUS = [

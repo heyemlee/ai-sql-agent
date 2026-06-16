@@ -1,5 +1,5 @@
 """
-stdio MCP 服务器的视图目录接线（审查 S-04 的收尾）。
+stdio MCP 服务器的视图目录接线。
 
 管道和数据目录已经把 `ViewCatalog` 放进授权作用域；`ai_sql_agent.mcp_server.server` 自己开
 作用域（stdio 进程没有调用方身份，也不跨进程继承），以前没带目录，所以同一条

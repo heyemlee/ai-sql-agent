@@ -1,5 +1,5 @@
 """
-数据库侧最小授权的生成逻辑（审查 P0-1 第四条）。
+数据库侧最小授权的生成逻辑。
 
 真实 PostgreSQL 上的验证在 tests/test_authorization_postgres.py——那边证明
 「生成的 GRANT 真的挡住了禁列」。这里验的是**生成得对不对**，不需要连库。

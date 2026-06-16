@@ -405,7 +405,7 @@ async def _handle_send(request: Request, req_id: Any, params: Any) -> JSONRespon
 
 # ── 流式的执行资源（契约 §5.5 的准入 + 背压）──────────────────────────────────
 #
-# 2026-09-04 审查复现的饥饿：生产者用 `asyncio.to_thread`、消费者用
+# 复现过的饥饿：生产者用 `asyncio.to_thread`、消费者用
 # `run_in_executor(None, events.get)`，两者**抢同一个默认线程池**。把默认池限成
 # 2 线程、开 2 条流，两个消费者就把池占满，pipeline 启动数为 0。
 #

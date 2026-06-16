@@ -1,5 +1,5 @@
 """
-授权边界的负面用例——**每一条都是 2026-09-04 审查复现出来的越权**。
+授权边界的负面用例——**每一条都是复现过的越权**。
 
 对照 `Agentic-AI-Audit-2026-09-04/evidence/sql_probes.json`：那份结果里
 `comma_join_table_bypass` / `denied_column_bypass` / `star_column_bypass` 都是
@@ -56,7 +56,7 @@ POLICY = DataPolicy(
 
 
 class ReproducedBypassTest(unittest.TestCase):
-    """审查里那三条 SQL：现在必须一条都执行不了。"""
+    """复现过的那三条 SQL：现在必须一条都执行不了。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -262,7 +262,7 @@ class NestedQueryTest(unittest.TestCase):
 
 
 class UnknownRoleTest(unittest.TestCase):
-    """审查用一个不存在的角色拿到了全部权限。"""
+    """用一个不存在的角色曾经能拿到全部权限。"""
 
     def test_unknown_role_gets_nothing(self):
         store = ApiKeyStore.from_dict({
@@ -304,7 +304,7 @@ class UnknownRoleTest(unittest.TestCase):
 
 class RepairPathTest(unittest.TestCase):
     """
-    审查里最要命的一条：直接检查会拒的 SQL，走完整修复路径却成功返回了 1 行。
+    最要命的一条：直接检查会拒的 SQL，走完整修复路径却成功返回了 1 行。
 
     修复回调直接调执行器，没有重新鉴权。现在关卡在执行器入口，这条路绕不过去。
     """
@@ -321,7 +321,7 @@ class RepairPathTest(unittest.TestCase):
         policy = DataPolicy(allow_tables=(f"{target_db}.{allowed_table}",))
         denied_sql = f"SELECT * FROM {denied_table} LIMIT 1"
 
-        # 修复模型被替身成「返回一条禁用表的 SQL」，与审查脚本同一手法
+        # 修复模型被替身成「返回一条禁用表的 SQL」，与复现脚本同一手法
         pipeline.sql_repair._regenerate = lambda *a, **kw: (
             denied_sql,
             "audit-injected-model-output",
@@ -378,7 +378,7 @@ if __name__ == "__main__":
 
 class RowScopeTest(unittest.TestCase):
     """
-    行范围（审查 P0-2 的一半）。设计见 docs/authz-model.md。
+    行范围。设计见 docs/authz-model.md。
 
     三态是这条设计的全部要点：**「没声明」和「声明了全放」必须分得开**，
     否则默认值会兜出一个静默的全放行——那就是 `full_access` 的老毛病
@@ -421,7 +421,7 @@ class RowScopeTest(unittest.TestCase):
 
 class ImpersonationIntersectionTest(unittest.TestCase):
     """
-    impersonation 取交集（审查 P0-2 的另一半）。
+    impersonation 取交集。
 
     以前只换 `user_id` 不换权限，所以 alice 和 bob 权限完全相同——
     一把服务 Key 替所有员工发请求，每个员工拿到的都是服务身份的全部权限。

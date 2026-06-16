@@ -2,8 +2,7 @@
 SQLite 连接上的默认拒绝授权器（`Connection.set_authorizer`）。
 
 应用层的 `sql_guard` 与授权关卡之后，数据库层原来只有 `file:...?mode=ro` 一道。
-审计（2026-10-14，E-02 / E-07，`04_sqlite_second_line_of_defence.py` 复现）量出
-`mode=ro` 不覆盖的几件事：
+实测下来，`mode=ro` 不覆盖的几件事：
 
 - `ATTACH` 一个别的文件，`CREATE TABLE o.x` 真的写进了那个文件；
   `ATTACH` 一个不存在的路径会在磁盘上创建它；

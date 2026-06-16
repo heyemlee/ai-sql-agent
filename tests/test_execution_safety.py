@@ -347,9 +347,9 @@ class SqlGuardAstTest(unittest.TestCase):
         self.assertEqual(denied.normalized_sql, "")
 
 
-# ---- 审计会话（2026-10-14，对 main@fb583c4）给出的用例 ----
-# 来源：runtime_data/audit-2026-10-14/sql_guard_bypass_cases.json（git 忽略，所以这里内联）。
-# 元素是 (审计编号, 方言, SQL)；方言 any 表示 sqlite / postgres / 不传方言三种都要判。
+# ---- 安全审计给出的用例 ----
+# 用例直接内联在这里，不依赖外部文件。
+# 元素是 (编号, 方言, SQL)；方言 any 表示 sqlite / postgres / 不传方言三种都要判。
 # 审计里标 pg-unverified 的用例没有在真实 PostgreSQL 上跑过，这里只验证校验层的判定。
 
 AUDIT_MUST_REJECT = [
@@ -387,7 +387,7 @@ AUDIT_MUST_STILL_ALLOW = [
     ('L06', 'any', "SELECT 'it''s; fine'"),
 ]
 
-# 资源炸弹：审计把它们归为执行层上限问题（E-03：SQLite 的 progress handler 打断不了
+# 资源炸弹：它们归为执行层上限问题（SQLite 的 progress handler 打断不了
 # 单次函数调用，结果集只有行数上限没有字节上限）。只读校验**放行**，由执行层负责——
 # 执行层的字节预算、单值长度上限在 tests/test_execution_budget.py 里逐条断言。
 # 不往禁用函数名单里加 randomblob / zeroblob：它们是无副作用的纯函数，名单拦不住
@@ -402,7 +402,7 @@ AUDIT_RESOURCE_BOMBS = [
 
 
 class SqlGuardAuditCasesTest(unittest.TestCase):
-    """审计会话交来的绕过清单与误杀清单，逐条断言（方言见每条的第二项）。"""
+    """安全审计给出的绕过清单与误杀清单，逐条断言（方言见每条的第二项）。"""
 
     @staticmethod
     def _dialects(declared):

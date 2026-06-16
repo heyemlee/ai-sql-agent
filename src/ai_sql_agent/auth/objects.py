@@ -241,7 +241,7 @@ class IntersectionPolicy:
     """
     两份策略的交集：**服务身份能做的 ∩ 最终用户能做的**（设计见 docs/authz-model.md）。
 
-    审查 P0-2：impersonation 换了 `user_id` 但保留服务密钥的角色与策略，
+    只换 `user_id` 的 impersonation 会保留服务密钥的角色与策略，
     所以 alice 和 bob 权限完全相同——一把服务 Key 替所有员工发请求，
     每个员工拿到的都是**服务身份的全部权限**。
 
@@ -429,7 +429,7 @@ def _resolve_policy(
     把多个角色的策略合并。**没有匹配到任何策略时 deny by default。**
 
     这里原来写的是 `if not matched: return full_access()`，注释是「没有配置
-    策略的角色视为全放开」。2026-09-04 的审查用一个根本不存在的角色拿到了全部
+    策略的角色视为全放开」。用一个根本不存在的角色就能拿到全部
     权限——配错一个角色名、或者新加一个角色忘了配策略，后果就是全权限，而且
     没有任何症状。安全默认值必须是拒绝：配漏了要表现为「查不到」，不是「都能查」。
 
@@ -447,7 +447,7 @@ def _resolve_policy(
         policies[role] for role in roles if role in policies
     ]
     if not matched:
-        # 声明了角色，却一条策略都没匹配上——**这才是审查复现的那个洞**。
+        # 声明了角色，却一条策略都没匹配上——**这才是复现过的那个洞**。
         # 「打错角色名」和「新加角色忘了配策略」都长这个样子，而旧代码把它翻译成
         # 全放开：配置错误静默升级成全部权限，没有任何症状。
         return fallback if fallback is not None else DataPolicy.deny_all()

@@ -3,7 +3,7 @@
 
 关卡是纯函数（策略 + SQL），按名字授权。`deny_tables: ["app.payroll"]` 拦得住
 `SELECT * FROM payroll`，拦不住 `SELECT * FROM v_payroll`——SQLite 的 authorizer 回调
-在读视图时报告的是基表被读了，而 SQL 文本里根本没有这个名字（2026-10-14 审查复现）。
+在读视图时报告的是基表被读了，而 SQL 文本里根本没有这个名字（复现过）。
 PostgreSQL 里视图以属主的权限执行，语义相同（**未在真实 PostgreSQL 上验证**）。
 
 所以关卡需要一份它自己推不出来的信息：**哪些名字是视图、视图最终读了哪些基表**。

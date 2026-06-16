@@ -1,11 +1,11 @@
 """
 执行层的第二道防线：结果字节预算、SQLite 单值长度上限、数据库层授权器。
 
-背景是 2026-10-14 审计的两条：
+背景是两个问题：
 
-- E-03：结果只限行数、不限字节。`SELECT x, zeroblob(5000000)` 每行 5 MB，
+- 结果只限行数、不限字节。`SELECT x, zeroblob(5000000)` 每行 5 MB，
   `hex(randomblob(150000000))` 是 progress handler 打不断的单次函数调用。
-- E-07 / E-02：`mode=ro` 不覆盖 ATTACH、VACUUM INTO，也不挡 sqlite_master / pragma_*。
+- `mode=ro` 不覆盖 ATTACH、VACUUM INTO，也不挡 sqlite_master / pragma_*。
 
 `sql_guard` 是应用层这一道，它有意不管资源（见 tests/test_execution_safety.py 里
 `AUDIT_RESOURCE_BOMBS` 的说明）。这个文件验的是**守卫和授权关卡都被绕过之后**，
@@ -156,7 +156,7 @@ class ResultBudgetTest(unittest.TestCase):
         self.assertEqual((caught.exception.size, caught.exception.limit), (500, 100))
 
 
-# ---- SQLite：字节预算与单值长度上限（E-03）----
+# ---- SQLite：字节预算与单值长度上限 ----
 
 
 class SqliteByteBudgetTest(_DatabaseCase):
@@ -278,7 +278,7 @@ class SqliteByteBudgetTest(_DatabaseCase):
         self.assertLess(time.monotonic() - started, 5.0)
 
 
-# ---- SQLite：数据库层授权器（E-07 / E-02）----
+# ---- SQLite：数据库层授权器 ----
 
 
 class SqliteAuthorizerTest(_DatabaseCase):
@@ -312,7 +312,7 @@ class SqliteAuthorizerTest(_DatabaseCase):
             result = self.execute(sql)
             self.assertFalse(result.success, sql)
             self.assertIn("数据库层拒绝", result.error, sql)
-        # E-07：ATTACH 不存在的路径会在磁盘上建文件。没建
+        # ATTACH 不存在的路径会在磁盘上建文件。没建
         self.assertFalse(fresh.exists())
         self.assertFalse((self.directory / "rwc.db").exists())
         self.assertEqual(self.row_count(self.other), 3)

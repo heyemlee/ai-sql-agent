@@ -51,7 +51,7 @@ class MCPProtocolExecutor:
 
     _spawn_guard = threading.BoundedSemaphore(8)
     """
-    同时能拉起几个 stdio 子进程（审查 P1-5「连接与执行开销」）。
+    同时能拉起几个 stdio 子进程（控制连接与执行开销）。
 
     这里**没有做会话复用**——每次调用仍然起一个进程、建一次会话，
     只是把并发数封了顶。诚实说明为什么只做一半：复用要维护常驻

@@ -1,5 +1,5 @@
 """
-有界连接池（审查 P1-5）。
+有界连接池。
 
 以前 `PostgresMCPExecutor` 每次执行都现建连接：握手开销被乘上 QPS，
 而且连接数没有上限——业务库的 max_connections 由客户端的心情决定。

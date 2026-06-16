@@ -515,7 +515,7 @@ def _keys_with_impersonation(app: FastAPI) -> List[str]:
 
 def _impersonating_keys_without_user_policies(app: FastAPI) -> List[str]:
     """
-    允许 impersonation、却没有 `users` 段的 Key（审查 P0-2）。
+    允许 impersonation、却没有 `users` 段的 Key。
 
     没有 `users` 段时 impersonation 只换 `user_id` 不换权限——alice 和 bob 权限
     完全相同。运行时保持这个旧行为是为了不破坏现有部署；上生产之前必须写下来。

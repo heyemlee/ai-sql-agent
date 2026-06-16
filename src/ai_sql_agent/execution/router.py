@@ -15,7 +15,7 @@ class MCPRouter:
 
     **授权不在这里判，在执行器入口判**（`ai_sql_agent.execution.authorization.enforce`）。
     路由器只是四条执行路径中最常走的那一条，绕开它直接调执行器一样能打到库——
-    审查的复现脚本就是这么干的。关卡要放在绕不开的地方。
+    复现越权的脚本就是这么干的。关卡要放在绕不开的地方。
     """
 
     def __init__(self):

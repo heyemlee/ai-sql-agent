@@ -2,7 +2,7 @@ r"""
 基于 SQL AST 的引用分析：这条 SQL 到底碰了哪些表、哪些列。
 
 原来的实现是 `\b(?:from|join)\s+` 正则加一个把 `schema.table` 砍成 `table` 的
-归一化，2026-09-04 的审查复现了三条绕过：
+归一化，被复现过三条绕过：
 
     SELECT s.value FROM public_data p, secret_data s   逗号连接的第二张表不在正则里
     SELECT private_value FROM public_data              没有列级检查
@@ -28,7 +28,7 @@ sqlglot 按方言解析，然后按作用域解析每个列引用的归属。
 当成真实列，会丢掉几类**不带前缀**的列引用：`HAVING` / `QUALIFY` 里的、名字恰好等于
 某个输出别名的 `ORDER BY` / `DISTINCT` 项（包括 `ORDER BY ssn * 1` 这种表达式）、
 表值函数的实参、`Hint`。被丢掉的列从没被问过策略，`HAVING max(salary) > n` 因此能
-当布尔探针把被禁列的值二分出来（2026-10-14 审查复现）。补回来的做法见
+当布尔探针把被禁列的值二分出来（复现过）。补回来的做法见
 `_dropped_columns`：这些名字**既可能是别名也可能是真列**，分不清就按真列问，
 任一候选拒绝就拒绝。代价是：一个输出别名恰好和被禁列同名时会被多拒一次。
 """

@@ -1,5 +1,5 @@
 """
-流式的资源调度（审查 P1-1）。
+流式的资源调度。
 
 复现条件与 `evidence/sql_probes.py` 的 `a2a_shared_executor_starvation` 一致：
 把**默认**线程池限成 2 线程、同时开 2 条流。当时的结果是
@@ -35,7 +35,7 @@ class StarvationTest(unittest.IsolatedAsyncioTestCase):
             time.sleep(0.01)
             return None
 
-        # 默认池限成 2 线程：这正是审查里让 pipeline 启动数归零的那个条件
+        # 默认池限成 2 线程：这正是曾让 pipeline 启动数归零的那个条件
         pool = ThreadPoolExecutor(max_workers=2)
         asyncio.get_running_loop().set_default_executor(pool)
 
@@ -64,7 +64,7 @@ class StarvationTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             pipeline_started, 2,
-            "两条流都该把 pipeline 跑起来；为 0 就是审查里那个饥饿又回来了",
+            "两条流都该把 pipeline 跑起来；为 0 就是那个饥饿又回来了",
         )
         self.assertEqual(completed, 2, "两条流都该正常收尾")
 
