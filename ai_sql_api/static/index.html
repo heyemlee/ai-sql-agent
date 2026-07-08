@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI SQL Agent · 自然语言查数</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --border: #e3e6ea; --text: #1f2328;
+    --muted: #6b7280; --accent: #2563eb; --ok: #15803d; --warn: #b45309;
+    --err: #b91c1c; --code-bg: #0f172a; --code-fg: #e2e8f0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --panel: #1c2024; --border: #2c3238; --text: #e6e8ea;
+      --muted: #9aa4b2; --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24;
+      --err: #f87171; --code-bg: #0b1120; --code-fg: #dbeafe;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 14px 20px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { max-width: 980px; margin: 0 auto; padding: 20px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 16px;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input, textarea, button {
+    font: inherit; color: inherit; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); padding: 9px 11px;
+  }
+  input, textarea { width: 100%; }
+  textarea { resize: vertical; min-height: 74px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > div { flex: 1 1 200px; }
+  button {
+    background: var(--accent); color: #fff; border: none; cursor: pointer;
+    padding: 10px 20px; font-weight: 600;
+  }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .banner { border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; font-size: 14px; }
+  .banner.err { background: rgba(185,28,28,.12); color: var(--err); }
+  .banner.warn { background: rgba(180,83,9,.14); color: var(--warn); }
+  .meta { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .meta code { background: var(--bg); padding: 1px 6px; border-radius: 5px; }
+  pre {
+    background: var(--code-bg); color: var(--code-fg); padding: 12px;
+    border-radius: 8px; overflow-x: auto; font-size: 13px; margin: 8px 0 0;
+  }
+  .step { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
+  .step:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+  .tag {
+    display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); margin-left: 8px;
+  }
+  .tag.ok { color: var(--ok); border-color: currentColor; }
+  .tag.err { color: var(--err); border-color: currentColor; }
+  .tag.warn { color: var(--warn); border-color: currentColor; }
+  .scroll { overflow-x: auto; margin-top: 10px; }
+  table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; white-space: nowrap; }
+  th { background: var(--bg); font-weight: 600; }
+  .examples { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .history-head { display: flex; justify-content: space-between; align-items: center; }
+  .history-head h2 { font-size: 15px; margin: 0; font-weight: 600; }
+  .history-head button {
+    background: transparent; color: var(--accent); border: 1px solid var(--border);
+    padding: 4px 10px; font-size: 13px; font-weight: 500;
+  }
+  .history-item {
+    border-top: 1px solid var(--border); padding: 10px 0; cursor: pointer;
+    display: flex; gap: 10px; align-items: baseline; justify-content: space-between;
+  }
+  .history-item:hover { background: var(--bg); }
+  .history-item .q { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .history-item .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; }
+  .dot.ok { background: var(--ok); }
+  .dot.err { background: var(--err); }
+  .dot.warn { background: var(--warn); }
+  .examples button {
+    background: transparent; color: var(--accent); border: 1px solid var(--border);
+    padding: 5px 10px; font-size: 13px; font-weight: 500;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI SQL Agent</h1>
+  <span class="sub">用中文问，系统检索 Schema、规划步骤、生成并执行只读 SQL</span>
+</header>
+
+<main>
+  <div class="card">
+    <div class="row">
+      <div>
+        <label for="apiKey">API Key<span class="hint">（存在浏览器本地，不上传）</span></label>
+        <input id="apiKey" type="password" placeholder="鉴权关闭时可留空" autocomplete="off">
+      </div>
+      <div>
+        <label for="userId">用户 ID</label>
+        <input id="userId" placeholder="li">
+      </div>
+      <div>
+        <label for="sessionId">会话 ID<span class="hint">（同一会话共享上下文）</span></label>
+        <input id="sessionId">
+      </div>
+    </div>
+
+    <div style="margin-top:14px">
+      <label for="query">你的问题</label>
+      <textarea id="query" placeholder="例如：查询准时率低于0.9的供应商名称"></textarea>
+    </div>
+
+    <div class="examples">
+      <button type="button" data-example="查询准时率低于0.9的供应商名称">单库示例</button>
+      <button type="button" data-example="查询实际成本超过预算的项目的采购总金额">跨库示例</button>
+      <button type="button" data-example="解释一下刚才的查询结果">追问示例</button>
+    </div>
+
+    <div class="actions">
+      <button id="submit">查询</button>
+      <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--muted)">
+        <input id="longTerm" type="checkbox" style="width:auto"> 启用个人知识库
+      </label>
+      <span class="hint" id="status"></span>
+    </div>
+  </div>
+
+  <div id="result"></div>
+
+  <div class="card">
+    <div class="history-head">
+      <h2>最近查询</h2>
+      <button type="button" id="refreshHistory">刷新</button>
+    </div>
+    <div id="history"><div class="hint" style="padding-top:10px">加载中…</div></div>
+  </div>
+</main>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get: (k, d) => localStorage.getItem("ai_sql." + k) || d,
+    set: (k, v) => localStorage.setItem("ai_sql." + k, v),
+  };
+
+  $("apiKey").value = store.get("apiKey", "");
+  $("userId").value = store.get("userId", "li");
+  $("sessionId").value = store.get("sessionId", "s-" + Math.random().toString(36).slice(2, 8));
+
+  document.querySelectorAll("[data-example]").forEach((button) => {
+    button.addEventListener("click", () => {
+      $("query").value = button.dataset.example;
+      $("query").focus();
+    });
+  });
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[ch]));
+  }
+
+  function renderRows(rows) {
+    if (!rows || !rows.length) return '<div class="hint">无数据行</div>';
+    const columns = Object.keys(rows[0]);
+    const head = columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("");
+    const body = rows.slice(0, 100).map(
+      (row) => `<tr>${columns.map((c) => `<td>${escapeHtml(row[c])}</td>`).join("")}</tr>`
+    ).join("");
+    const more = rows.length > 100
+      ? `<div class="hint">仅显示前 100 行，共 ${rows.length} 行</div>` : "";
+    return `<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${more}`;
+  }
+
+  function renderStep(step, index) {
+    const tag = step.success
+      ? '<span class="tag ok">成功</span>'
+      : '<span class="tag err">失败</span>';
+    const repair = step.repair_attempts && step.repair_attempts.length
+      ? `<span class="tag">自动修复 ${step.repair_attempts.length} 次</span>` : "";
+    const error = step.error
+      ? `<div class="banner err" style="margin-top:10px">${escapeHtml(step.error)}</div>` : "";
+    const truncated = step.truncated
+      ? '<span class="tag">结果已按行数上限截断</span>' : "";
+    // 软异常必须显示出来。SQL 跑通了、有结果，用户看不出任何异常，
+    // 会把错的数字当成事实——这类错误只有摆到界面上才算被拦住。
+    const findings = step.risk_findings || [];
+    const risk = findings.length
+      ? `<div class="banner warn" style="margin-top:10px">结果需要核对：<ul style="margin:6px 0 0 18px">`
+        + findings.map((f) => `<li>${escapeHtml(f.detail || f.anomaly)}</li>`).join("")
+        + `</ul></div>`
+      : "";
+    const riskTag = findings.length ? '<span class="tag warn">待核对</span>' : "";
+    return `
+      <div class="step">
+        <div><strong>步骤 ${index + 1}</strong>
+          <span class="tag">${escapeHtml(step.database)}</span>${tag}${repair}${truncated}${riskTag}
+        </div>
+        <pre>${escapeHtml(step.final_sql || step.sql)}</pre>
+        ${error}
+        ${risk}
+        ${step.success ? renderRows(step.rows) : ""}
+      </div>`;
+  }
+
+  function render(data) {
+    const banners = [];
+    if (data.degraded) {
+      banners.push(`<div class="banner warn">模型服务暂时不可用（${escapeHtml(data.degrade_reason)}）。`
+        + (data.degrade_reason === "model_unavailable_replayed_sql"
+          ? "以下结果由你上次相同问题的 SQL 重新执行得到，数据是最新的。"
+          : "本次无法生成新的 SQL，请稍后重试。") + "</div>");
+    }
+
+    if (data.has_risk) {
+      banners.push('<div class="banner warn">这条结果通过了执行，但自动校验发现了可疑之处，'
+        + '请对照下方每一步的提示核对后再使用。</div>');
+    }
+
+    const steps = data.step_logs || [];
+    const totalRows = steps.reduce((sum, step) => sum + (step.row_count || 0), 0);
+    const failed = steps.filter((step) => !step.success).length;
+
+    // 查库链路的 answer 字段是给记忆用的结果序列化文本，页面里没必要整段铺开：
+    // 下面已经有 SQL 和结果表格，这里只给一句话摘要，原文收进折叠区备查。
+    const summary = steps.length
+      ? `已完成查询：${steps.length} 个步骤，共 ${totalRows} 行结果`
+        + (failed ? `，其中 ${failed} 步失败` : "")
+      : data.answer;
+
+    const rawAnswer = steps.length
+      ? `<details style="margin-top:10px"><summary class="hint" style="cursor:pointer">查看原始答复</summary>
+           <pre style="white-space:pre-wrap">${escapeHtml(data.answer)}</pre></details>`
+      : "";
+
+    const meta = `
+      <div class="meta">
+        <span>路由：<code>${escapeHtml(data.route)}</code></span>
+        <span>置信度：<code>${data.confidence}</code></span>
+        <span>命中库：<code>${escapeHtml((data.selected_databases || []).join(", ") || "-")}</code></span>
+        <span>trace_id：<code>${escapeHtml(data.trace_id)}</code></span>
+      </div>`;
+
+    const stepsHtml = steps.map(renderStep).join("");
+
+    $("result").innerHTML = `
+      <div class="card">
+        ${banners.join("")}
+        <div style="white-space:pre-wrap">${escapeHtml(summary)}</div>
+        ${rawAnswer}
+        <div style="margin-top:12px">${meta}</div>
+        <div class="hint" style="margin-top:6px">路由理由：${escapeHtml(data.reason)}</div>
+      </div>
+      ${stepsHtml ? `<div class="card">${stepsHtml}</div>` : ""}`;
+  }
+
+  function renderError(status, detail) {
+    const tips = {
+      401: "API Key 缺失或无效，请在上方填写。",
+      403: "权限不足：这个 Key 不能以该 user_id 查询，或没有该表的访问权限。",
+      429: "触发限流或今日配额已用完，请稍后再试。",
+    };
+    $("result").innerHTML = `
+      <div class="card">
+        <div class="banner err">
+          <strong>请求失败（HTTP ${status}）</strong><br>
+          ${escapeHtml(detail)}${tips[status] ? "<br>" + tips[status] : ""}
+        </div>
+      </div>`;
+  }
+
+  async function submit() {
+    const query = $("query").value.trim();
+    if (!query) { $("query").focus(); return; }
+
+    store.set("apiKey", $("apiKey").value.trim());
+    store.set("userId", $("userId").value.trim());
+    store.set("sessionId", $("sessionId").value.trim());
+
+    $("submit").disabled = true;
+    $("status").textContent = "查询中…";
+
+    const headers = { "Content-Type": "application/json", ...authHeaders() };
+
+    const started = performance.now();
+    try {
+      const response = await fetch("/query", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          user_id: $("userId").value.trim() || "anonymous",
+          session_id: $("sessionId").value.trim() || "s1",
+          query,
+          enable_long_term: $("longTerm").checked,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        renderError(response.status, payload.detail || response.statusText);
+      } else {
+        render(payload);
+      }
+      $("status").textContent = `耗时 ${Math.round(performance.now() - started)} ms`;
+      loadHistory();
+    } catch (error) {
+      renderError(0, "无法连接服务：" + error.message);
+      $("status").textContent = "";
+    } finally {
+      $("submit").disabled = false;
+    }
+  }
+
+  function authHeaders() {
+    const key = $("apiKey").value.trim();
+    return key ? { "X-API-Key": key } : {};
+  }
+
+  function formatTime(iso) {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso;
+    const sameDay = date.toDateString() === new Date().toDateString();
+    return sameDay
+      ? date.toLocaleTimeString("zh-CN", { hour12: false })
+      : date.toLocaleString("zh-CN", { hour12: false });
+  }
+
+  function renderHistory(items) {
+    if (!items.length) {
+      $("history").innerHTML = '<div class="hint" style="padding-top:10px">还没有查询记录</div>';
+      return;
+    }
+    $("history").innerHTML = items.map((item) => {
+      const state = item.degraded ? "warn" : item.success ? "ok" : "err";
+      const note = item.degraded ? "降级" : item.success ? "" : "失败";
+      const steps = item.sqls.length ? `${item.sqls.length} 步` : "";
+      const detail = [note, steps, item.databases.join("/"), `${Math.round(item.duration_ms)}ms`]
+        .filter(Boolean).join(" · ");
+      return `
+        <div class="history-item" data-query="${escapeHtml(item.query)}" title="trace_id: ${escapeHtml(item.trace_id)}">
+          <span class="q"><span class="dot ${state}"></span>${escapeHtml(item.query)}</span>
+          <span class="when">${escapeHtml(detail)}　${escapeHtml(formatTime(item.created_at))}</span>
+        </div>`;
+    }).join("");
+
+    // 点一条就把问题填回输入框，方便改一下再问
+    $("history").querySelectorAll(".history-item").forEach((node) => {
+      node.addEventListener("click", () => {
+        $("query").value = node.dataset.query;
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        $("query").focus();
+      });
+    });
+  }
+
+  async function loadHistory() {
+    const userId = $("userId").value.trim() || "anonymous";
+    try {
+      const response = await fetch(
+        `/history?limit=15&user_id=${encodeURIComponent(userId)}`,
+        { headers: authHeaders() }
+      );
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        $("history").innerHTML =
+          `<div class="hint" style="padding-top:10px">无法加载历史（HTTP ${response.status}）：`
+          + `${escapeHtml(payload.detail || "")}</div>`;
+        return;
+      }
+      renderHistory((await response.json()).items || []);
+    } catch (error) {
+      $("history").innerHTML =
+        `<div class="hint" style="padding-top:10px">无法加载历史：${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  $("refreshHistory").addEventListener("click", loadHistory);
+  $("submit").addEventListener("click", submit);
+  $("query").addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submit();
+  });
+
+  loadHistory();
+})();
+</script>
+</body>
+</html>
