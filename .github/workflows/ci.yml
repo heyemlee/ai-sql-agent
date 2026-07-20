@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # 集成测试用的 pgvector；未启动时相关用例会自动跳过
+    services:
+      pgvector:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ai_sql
+          POSTGRES_PASSWORD: ai_sql
+          POSTGRES_DB: ai_sql
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_sql"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # 离线跑：模型走 Mock，不需要任何 API Key
+      AI_SQL_LOG_LEVEL: ERROR
+      AI_SQL_PGVECTOR_DSN: postgresql://ai_sql:ai_sql@localhost:5432/ai_sql
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 单元测试 + pgvector 集成测试
+        run: python -m unittest discover -s tests -v
+
+      - name: 端到端 Demo（单库 + 跨库，离线 Mock 模型）
+        run: python -m ai_sql_pipeline.end_to_end_demo
+
+      - name: 长短期记忆 Demo
+        run: python ai_sql_pipeline/memory_end_to_end_demo.py
+
+      - name: 评测冒烟
+        run: python -m benchmark.run_benchmark --smoke
+
+      - name: 发布门禁（冒烟样本）
+        run: python -m benchmark.gate --repeat 3 --smoke
+
+      - name: 环境自检
+        run: python env_test.py
+
+      - name: 只读账号工具冒烟
+        run: |
+          python -m ai_sql_ops sql --database ai_sql > /dev/null
+          python -m ai_sql_ops provision \
+            --admin-dsn "$AI_SQL_PGVECTOR_DSN" \
+            --database ai_sql --role ai_sql_ro_ci --password "ci-$RANDOM"
+          # 体检不合格会返回非 0，直接卡住流水线
+          python -m ai_sql_ops audit --dsn "$AI_SQL_PGVECTOR_DSN" && exit 1 || true
+
+  image:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建生产镜像
+        run: docker build -t ai-sql-agent:ci .
+
+      - name: 冒烟启动（鉴权开启，无外部依赖）
+        run: |
+          cat > /tmp/api_keys.json <<'JSON'
+          {"keys": [{"key": "ci-smoke-key", "caller": "ci", "user_id": "ci"}]}
+          JSON
+          docker run -d --name ai-sql-agent-ci -p 8000:8000 \
+            -e AI_SQL_AUTH_MODE=api_key \
+            -e AI_SQL_API_KEYS_FILE=/run/secrets/api_keys.json \
+            -v /tmp/api_keys.json:/run/secrets/api_keys.json:ro \
+            ai-sql-agent:ci
+          for i in $(seq 1 30); do
+            curl -fs localhost:8000/health && break
+            sleep 2
+          done
+          curl -fs localhost:8000/readyz
+          echo
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/query \
+            -H 'Content-Type: application/json' \
+            -d '{"user_id":"ci","session_id":"s","query":"你好"}')" = "401"
+          curl -fs -X POST localhost:8000/query \
+            -H 'Content-Type: application/json' \
+            -H 'X-API-Key: ci-smoke-key' \
+            -d '{"user_id":"ci","session_id":"s","query":"查询准时率低于0.9的供应商名称"}' > /dev/null
+          curl -fs localhost:8000/metrics | head -5
+          docker rm -f ai-sql-agent-ci
