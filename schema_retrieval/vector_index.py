@@ -49,7 +49,10 @@ class VectorIndex:
         # embeddings 和 query_vector 都已经归一化，点积等价于 cosine similarity。
         scores = self.embeddings @ query_vector
 
-        top_indices = np.argsort(-scores)[:top_k]
+        # 稳定排序：同分时按 doc_index 升序，与 pgvector 后端保持一致的名次。
+        # Hash Embedding 下大量文档相似度为 0，名次全靠平局顺序决定，
+        # 两个后端排不一致会让上层 RRF 融合的结果跟着后端变。
+        top_indices = np.argsort(-scores, kind="stable")[:top_k]
 
         return [
             (int(index), float(scores[index]))

@@ -189,6 +189,9 @@ class PgVectorIndex:
     def search(self, query: str, top_k: int = 5) -> List[Tuple[int, float]]:
         """
         余弦相似度检索，返回 (doc_index, score) 列表。
+
+        同分时按 doc_index 升序，与内存版 VectorIndex 的稳定排序对齐，
+        保证同一份索引换后端不会换名次。
         """
         query_vector = self.embedding_client.embed_texts([query])[0]
 
@@ -197,7 +200,7 @@ class PgVectorIndex:
                 f"""
                 SELECT doc_index, 1 - (embedding <=> %s::vector) AS score
                 FROM {self.table}
-                ORDER BY embedding <=> %s::vector
+                ORDER BY embedding <=> %s::vector, doc_index
                 LIMIT %s
                 """,
                 (query_vector.tolist(), query_vector.tolist(), top_k),
