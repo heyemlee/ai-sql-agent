@@ -193,8 +193,8 @@ deploy/              生产部署和运维文档
 
 ## 部署与深入阅读
 
-- [部署与运维](deploy/README.md)：Docker Compose、权限、模型接入、监控和排障
-- [端到端编排](ai_sql_pipeline/README.md)：动态路由与记忆示例
-- [Schema 检索](schema_retrieval/README.md)：混合召回与 SchemaGraph
-- [MCP 执行](mcp_router/README.md)：只读 SQL、方言与执行器
-- [评测说明](benchmark/README.md)：数据集、准确率与发布门禁
+- [部署与运维](deploy/README.zh-CN.md)：Docker Compose、权限、模型接入、监控和排障
+- [评测说明](benchmark/README.zh-CN.md)：数据集、准确率与发布门禁
+- [端到端编排](ai_sql_pipeline/README.md)：动态路由与记忆示例（英文）
+- [Schema 检索](schema_retrieval/README.md)：混合召回与 SchemaGraph（英文）
+- [MCP 执行](mcp_router/README.md)：只读 SQL、方言与执行器（英文）

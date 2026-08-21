@@ -1,30 +1,49 @@
-# AI SQL Agent 长短期记忆
+# Short- and long-term memory
 
-该模块不依赖 Web 框架，可由后续 API、动态路由器或当前 Text2SQL Pipeline 直接调用。
+This module depends on no web framework; the API layer, the dynamic router and
+the Text2SQL pipeline all call it directly.
 
-## 短期记忆
+## Short-term memory
 
-- SQLite 持久化完整原始消息；
-- 同时按最近消息数和估算 Token 数维护滑动窗口；
-- 窗口外消息由后台线程增量压缩；
-- 摘要带版本与 `through_message_id` 游标，避免重复或遗漏；
-- 摘要运行时读取上一已完成版本，不阻塞当前请求；
-- 摘要保留用户目标、业务口径、筛选条件、SQL 结果、分析结论和任务状态。
+- Full raw messages are persisted in SQLite;
+- a sliding window is maintained by both recent-message count and estimated token
+  count;
+- messages that fall out of the window are compacted incrementally on a
+  background thread;
+- summaries carry a version and a `through_message_id` cursor, so nothing is
+  duplicated or skipped;
+- a summarization run reads the last completed version, so it never blocks the
+  current request;
+- summaries preserve the user's goal, business definitions, filters, SQL results,
+  analytical conclusions and task status.
 
-配置模型凭证（`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`）后，统一服务默认使用项目已有的模型 Client 生成摘要；没有 Key 时使用离线抽取式摘要，便于本地运行。也可以向 `ConversationMemoryService` 注入其他 `MemorySummarizer`。
+With model credentials configured (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`), the
+service summarizes using the project's existing model client. Without a key it
+falls back to offline extractive summarization, which keeps local runs working.
+Any other `MemorySummarizer` can be injected into `ConversationMemoryService`.
 
-## 长期记忆
+## Long-term memory
 
-- 只有显式调用保存方法时才会写入；
-- 结构化与非结构化内容统一保存“检索摘要 + 原始内容 + 元信息 + 向量”；
-- 结构化元信息支持数据库、表、字段、筛选条件、CoT 和 SQL；
-- 召回严格按 `user_id` 隔离，并支持类型与元信息过滤；
-- Rerank 为可选注入能力；未配置时按向量相似度排序；
-- 只有 `enable_long_term=True` 时才会检索个人知识库。
+- Nothing is written unless the save method is called explicitly;
+- structured and unstructured entries are stored the same way — retrieval summary
+  plus raw content plus metadata plus vector;
+- structured metadata covers database, tables, columns, filters, plan and SQL;
+- recall is strictly isolated by `user_id`, with optional type and metadata
+  filters;
+- reranking is an optional injected capability; without it, results are ordered
+  by vector similarity;
+- the personal knowledge base is only searched when `enable_long_term=True`.
 
-默认使用 SQLite 保存原文、元信息与本地向量，适合 Demo。配置 `AI_SQL_PGVECTOR_DSN`（或 `MemoryServiceConfig(pgvector_dsn="...")`）后会启用 pgvector 向量索引——与 Schema 检索共用同一个 Postgres 实例，项目只维护一套向量栈。检索先在 pgvector 中按 `user_id` 和记忆类型过滤召回（HNSW + 余弦距离），再读取 SQLite 原文并做元信息过滤与可选 Rerank；连接失败时自动回退 SQLite 全量打分。
+By default SQLite holds the raw content, metadata and local vectors, which is
+enough for the demo. Setting `AI_SQL_PGVECTOR_DSN` (or
+`MemoryServiceConfig(pgvector_dsn="...")`) switches on a pgvector index that
+shares one Postgres instance with schema retrieval, so the project maintains a
+single vector stack. Retrieval first filters and recalls in pgvector by `user_id`
+and memory type (HNSW, cosine distance), then reads the raw content from SQLite
+for metadata filtering and optional reranking. If the connection fails it falls
+back to scoring the full set in SQLite.
 
-## 基本用法
+## Basic usage
 
 ```python
 from ai_sql_memory import ConversationMemoryService
@@ -34,32 +53,32 @@ memory = ConversationMemoryService()
 context = memory.begin_user_turn(
     user_id="user-1",
     session_id="session-1",
-    query="上次查的门板材质是什么？",
+    query="What was the on-time rate we looked up last time?",
     enable_long_term=True,
 )
 
-# 把 context.to_prompt_context() 交给对话模型或查询链路。
+# Hand context.to_prompt_context() to the chat model or the query pipeline.
 memory.record_assistant_message(
     user_id="user-1",
     session_id="session-1",
-    content="查询结果为 3.5%",
+    content="The result was 3.5%",
     message_type="sql_result",
-    payload={"door_material": "烤漆"},
+    payload={"on_time_rate": 0.87},
 )
 
-# 仅响应用户的“保存到个人知识库”动作。
+# Only in response to an explicit "save to my knowledge base" action.
 memory.save_structured_result(
     user_id="user-1",
-    query="查询订单门板材质",
-    result={"door_material": "烤漆"},
-    database="showroom_db",
-    tables=["order_item"],
-    columns=["door_material"],
-    sql="SELECT door_material FROM order_item ...",
+    query="Look up supplier on-time rates",
+    result={"on_time_rate": 0.87},
+    database="erp_db",
+    tables=["supplier"],
+    columns=["on_time_rate"],
+    sql="SELECT supplier_name, on_time_rate FROM supplier ...",
 )
 ```
 
-接入现有 Text2SQL：
+Wiring it into an existing Text2SQL setup:
 
 ```python
 from ai_sql_pipeline import Text2SQLPipeline, DynamicSqlAgentService
@@ -68,36 +87,41 @@ service = DynamicSqlAgentService(Text2SQLPipeline(), memory)
 response = service.run(
     user_id="user-1",
     session_id="session-1",
-    query="那这些订单的定金呢？",
+    query="And what about the purchase orders for those?",
     enable_long_term=True,
 )
 
-# 用户确认保存后再调用：
+# Call this only after the user confirms the save:
 service.save_result_to_personal_knowledge_base(
     user_id="user-1",
     result=response.pipeline_result,
 )
 ```
 
-## 端到端 Demo
+## End-to-end demo
 
-直接运行普通 Python 文件：
+As a plain Python file:
 
 ```bash
 python ai_sql_pipeline/memory_end_to_end_demo.py
 ```
 
-或按模块运行：
+Or as a module:
 
 ```bash
 python -m ai_sql_pipeline.memory_end_to_end_demo
 ```
 
-Demo 会依次展示第一轮 Text2SQL、短期窗口、用户主动保存长期记忆、第二轮长期召回、异步摘要完成后的最终上下文。默认记忆文件为 `runtime_data/memory_demo.db`。
+The demo walks through a first Text2SQL turn, the short-term window, a
+user-initiated save into long-term memory, long-term recall on the second turn,
+and the final context once async summarization completes. The memory file
+defaults to `runtime_data/memory_demo.db`.
 
-Demo 同时启用了动态路由：第一轮获取新数据会进入 `database_query`；第二轮追问历史结果会进入 `data_qa`，不会重复访问数据库。
+The demo also exercises dynamic routing: the first turn fetches new data and goes
+to `database_query`; the second turn follows up on a past result and goes to
+`data_qa`, without touching the database again.
 
-## 验证
+## Verifying
 
 ```bash
 python -m unittest discover -s tests -v

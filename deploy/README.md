@@ -1,120 +1,137 @@
-# AI SQL Agent 部署与运维
+# Deployment and operations
 
-面向公司内部自用部署：单实例、无多租户、服务自校验身份。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 一、首次部署
+Written for an internal single-instance deployment: no multi-tenancy, the service
+verifies caller identity itself.
+
+## 1. First deployment
 
 ```bash
-# 1. 生成 API Key 配置
+# 1. Generate the API key configuration
 cp deploy/api_keys.example.json deploy/api_keys.json
-python -c "import secrets; print(secrets.token_urlsafe(32))"   # 每个调用方生成一个
-# 编辑 deploy/api_keys.json，替换 key 并按团队实际情况改 roles / policies
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # one per caller
+# Edit deploy/api_keys.json: replace the keys and adjust roles / policies
 
-# 2. 配置模型凭证
+# 2. Configure model credentials
 cat > .env <<'ENV'
-AI_SQL_MODEL_PROVIDER=openai          # 或 anthropic
+AI_SQL_MODEL_PROVIDER=openai          # or anthropic
 OPENAI_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://api.kabi.pro/v1
+OPENAI_BASE_URL=https://api.openai.com/v1
 # ANTHROPIC_API_KEY=sk-ant-xxx
-# ANTHROPIC_BASE_URL=https://api.kabi.pro
-POSTGRES_PASSWORD=改成强密码
+# ANTHROPIC_BASE_URL=https://api.anthropic.com
+POSTGRES_PASSWORD=use-a-strong-password
 ENV
 
-# 3. 起服务
+# 3. Start the stack
 docker compose -f docker-compose.prod.yml up -d --build
 
-# 4. 验收
+# 4. Verify
 curl -s localhost:8000/health
 curl -s localhost:8000/readyz | python -m json.tool
 ```
 
-`deploy/api_keys.json` 已在 `.dockerignore` 里，不会进镜像，只以只读方式挂载。
-换 Key 只需改文件并 `docker compose restart app`。
+`deploy/api_keys.json` is listed in `.dockerignore`, so it never enters the image;
+it is mounted read-only instead. Rotating a key means editing the file and running
+`docker compose restart app`.
 
-## 二、配置项
+## 2. Configuration
 
-| 环境变量 | 生产建议 | 说明 |
+| Environment variable | Production value | Notes |
 | --- | --- | --- |
-| `AI_SQL_MODEL_PROVIDER` | `openai` | `openai`=OpenAI 兼容协议，`anthropic`=Messages 协议 |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 按厂商填 | provider=openai 时的凭证与端点 |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | 按厂商填 | provider=anthropic 时的凭证与端点 |
-| `AI_SQL_AUTH_MODE` | `api_key` | `disabled` 会放行所有请求，只允许本地开发 |
-| `AI_SQL_API_KEYS_FILE` | `/run/secrets/api_keys.json` | Key 与数据权限策略 |
-| `AI_SQL_PGVECTOR_DSN` | 指向内网 PG | Schema 向量、长期记忆、审计共用 |
-| `AI_SQL_MAX_ROWS` | `1000` | 单查询返回行数上限 |
-| `AI_SQL_MAX_EXECUTION_SECONDS` | `10` | 单查询执行超时（数据库侧中断） |
-| `AI_SQL_HTTP_MAX_RETRIES` | `2` | 模型 429/5xx 退避重试次数 |
-| `AI_SQL_DEFAULT_RATE_LIMIT_PER_MINUTE` | `60` | 未在 Key 上单独配置时的默认限流 |
-| `AI_SQL_DEFAULT_DAILY_TOKEN_QUOTA` | 按预算设 | 0 表示不限，建议设上限保护模型账单 |
-| `AI_SQL_SCHEMA_REFRESH_SECONDS` | `300` | Schema 变更轮询间隔，0 为关闭 |
-| `AI_SQL_LOG_FORMAT` | `json` | 便于日志系统采集 |
+| `AI_SQL_MODEL_PROVIDER` | `openai` | `openai` = OpenAI-compatible protocol, `anthropic` = Messages protocol |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | per vendor | Credentials and endpoint when provider=openai |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | per vendor | Credentials and endpoint when provider=anthropic |
+| `AI_SQL_AUTH_MODE` | `api_key` | `disabled` lets every request through — local development only |
+| `AI_SQL_API_KEYS_FILE` | `/run/secrets/api_keys.json` | Keys and data-permission policies |
+| `AI_SQL_PGVECTOR_DSN` | internal PG | Shared by schema vectors, long-term memory and audit |
+| `AI_SQL_MAX_ROWS` | `1000` | Row cap per query |
+| `AI_SQL_MAX_EXECUTION_SECONDS` | `10` | Per-query timeout, aborted on the database side |
+| `AI_SQL_HTTP_MAX_RETRIES` | `2` | Backoff retries on model 429/5xx |
+| `AI_SQL_DEFAULT_RATE_LIMIT_PER_MINUTE` | `60` | Default when a key has no override |
+| `AI_SQL_DEFAULT_DAILY_TOKEN_QUOTA` | per budget | 0 means unlimited; set a cap to protect the model bill |
+| `AI_SQL_SCHEMA_REFRESH_SECONDS` | `300` | Schema-change poll interval; 0 disables it |
+| `AI_SQL_LOG_FORMAT` | `json` | For log collectors |
 
-## 二·五、模型部署形态（公网 API / 内网 vLLM）
+## 2.5. Where the model runs: public API or self-hosted vLLM
 
-本项目支持两套协议：**OpenAI 兼容**（`POST /chat/completions` + `Authorization: Bearer`）
-与 **Anthropic Messages**（`POST /v1/messages` + `x-api-key`），由 `AI_SQL_MODEL_PROVIDER`
-选择；服务地址与模型名全部由配置项决定。因此模型跑在哪里、用哪家对应用代码是透明的，
-换厂商或换部署形态**不需要改任何代码**，只改环境变量。
-自建推理服务（vLLM / SGLang / Ollama）都走 OpenAI 兼容那一套。
+The project speaks two protocols — **OpenAI-compatible**
+(`POST /chat/completions` + `Authorization: Bearer`) and **Anthropic Messages**
+(`POST /v1/messages` + `x-api-key`) — selected by `AI_SQL_MODEL_PROVIDER`. Service
+addresses and model names all come from configuration, so where the model runs and
+whose model it is stays transparent to application code: switching vendor or
+deployment shape **requires no code change**, only environment variables.
+Self-hosted inference servers (vLLM, SGLang, Ollama) all use the OpenAI-compatible
+path.
 
-### 两种形态对比
+### The two shapes compared
 
-| | 公网 API | 内网自建 vLLM |
+| | Public API | Self-hosted vLLM |
 |---|---|---|
-| 编排文件 | `docker-compose.prod.yml` | `docker-compose.vllm.yml` |
-| 数据出网 | 问题原文与 Schema 会发给外部服务 | **数据不出内网** |
-| 硬件成本 | 无 | 需要 GPU（14B bf16 约 32GB 显存） |
-| 单次延迟 | 受公网与厂商排队影响 | 取决于本地 GPU，通常更稳定 |
-| 模型能力 | 可用最新商业模型 | 受限于可私有化部署的开源模型 |
-| 适用 | 数据敏感度低、不想维护 GPU | 客户信息、成本价等不允许出内网 |
+| Compose file | `docker-compose.prod.yml` | `docker-compose.vllm.yml` |
+| Data leaving the network | Questions and schema are sent to an external service | **Nothing leaves the network** |
+| Hardware cost | None | Needs a GPU (~32GB VRAM for a 14B model in bf16) |
+| Per-request latency | Subject to the public internet and vendor queueing | Depends on the local GPU, usually steadier |
+| Model capability | Latest commercial models available | Limited to models that can be self-hosted |
+| Fits when | Data is not sensitive and you do not want to run GPUs | Customer data, cost prices and the like must stay internal |
 
-选择依据是**数据合规要求**，不是性能。合同金额、客户与供应商信息、批次成本单价
-这类数据如果不允许离开内网，就只能用自建形态。
+The deciding factor is **data compliance, not performance**. If contract amounts,
+customer and supplier information, or batch unit costs are not allowed to leave
+the network, self-hosting is the only option.
 
-### 切到内网 vLLM
+### Switching to self-hosted vLLM
 
 ```bash
-# 1. 起 vLLM（OpenAI 兼容 server）
+# 1. Start vLLM (an OpenAI-compatible server)
 docker compose -f docker-compose.vllm.yml up -d
 
-# 2. 或者对已有服务，只改这几个环境变量
+# 2. Or, for an existing deployment, change only these variables
 AI_SQL_CHAT_URL=http://vllm-chat:8000/v1/chat/completions
 AI_SQL_EMBEDDING_URL=http://vllm-embed:8000/v1/embeddings
-AI_SQL_MODEL_PROVIDER=openai                  # vLLM 是 OpenAI 兼容 server
-OPENAI_API_KEY=sk-internal-vllm               # vLLM --api-key 的值
-AI_SQL_CHAT_MODEL=Qwen2.5-14B-Instruct        # 需与 --served-model-name 一致
+AI_SQL_MODEL_PROVIDER=openai                  # vLLM is an OpenAI-compatible server
+OPENAI_API_KEY=sk-internal-vllm               # whatever vLLM's --api-key is set to
+AI_SQL_CHAT_MODEL=Qwen2.5-14B-Instruct        # must match --served-model-name
 AI_SQL_CODER_MODEL=Qwen2.5-Coder-14B-Instruct
 AI_SQL_EMBEDDING_MODEL=bge-m3
 AI_SQL_EMBEDDING_DIMENSIONS=1024
 ```
 
-### 注意事项
+### Things to watch
 
-- **模型名必须与 vLLM 的 `--served-model-name` 完全一致**，否则 vLLM 返回 404。
-- **`--max-model-len` 要覆盖 Token 预算**。本项目单次查询预算约 8k，建议设 16384 留一倍余量。
-- **Embedding 维度要和索引一致**。换 Embedding 模型后维度若变化，必须重建向量索引
-  （`POST /admin/schema/reload`），否则维度不匹配会报错。
-- **Rerank 不是 OpenAI 标准协议**，走的是厂商自定义格式，vLLM 不直接兼容。
-  留空 `AI_SQL_RERANK_URL` 时字段级精排退化为本地词面覆盖度打分——可用，
-  但弱于交叉编码精排；要恢复需自建 rerank 服务并加一层格式适配。
-- **超时可以收紧**。本地推理没有公网抖动，`AI_SQL_HTTP_TIMEOUT_SECONDS` 从 60 降到 45 更合适。
+- **The model name must match vLLM's `--served-model-name` exactly**, or vLLM
+  returns 404.
+- **`--max-model-len` has to cover the token budget.** A single query here budgets
+  around 8k, so 16384 leaves a comfortable margin.
+- **Embedding dimensions must match the index.** If a new embedding model changes
+  the dimension, the vector index must be rebuilt
+  (`POST /admin/schema/reload`) or the mismatch raises an error.
+- **Reranking is not part of the OpenAI protocol** — it uses a vendor-specific
+  format that vLLM does not implement. Leaving `AI_SQL_RERANK_URL` empty degrades
+  column-level reranking to local lexical-overlap scoring: usable, but weaker than
+  a cross-encoder. Restoring it means self-hosting a rerank service and adding a
+  format adapter.
+- **Timeouts can be tightened.** Local inference has none of the public internet's
+  jitter, so `AI_SQL_HTTP_TIMEOUT_SECONDS` fits better at 45 than at 60.
 
-### 兼容性验证
+### Compatibility test
 
-`tests/test_openai_compatible_endpoint.py` 起了一个最小 OpenAI 兼容服务作为被测端点，
-验证四件事：配置可整体切换、chat 按 OpenAI 格式收发且鉴权头正确、embedding 同理、
-以及**整条 Text2SQL 链路跑在自建端点上能产出可执行 SQL 与真实结果**。
-改动模型接入相关代码后跑这个测试即可确认没有破坏兼容性。
+`tests/test_openai_compatible_endpoint.py` stands up a minimal OpenAI-compatible
+server as the endpoint under test and verifies four things: that the configuration
+switches over as a whole, that chat requests and responses follow the OpenAI format
+with the right auth header, that embedding does the same, and that **the whole
+Text2SQL chain running against a self-hosted endpoint produces executable SQL and
+real results**. Run it after touching anything in the model integration path.
 
 ```bash
 python -m pytest tests/test_openai_compatible_endpoint.py -v
 ```
 
-## 三、权限配置
+## 3. Permissions
 
-`api_keys.json` 里的 `policies` 决定每个角色能看哪些表。生效在两处：
-检索阶段（无权表不会进入 Prompt，模型看不到）与执行阶段
-（SQL 里引用了无权表直接拒绝，不落到数据库）。
+The `policies` block in `api_keys.json` decides which tables each role can see. It
+takes effect in two places: during retrieval (unauthorized tables never enter the
+prompt, so the model cannot see them) and before execution (SQL referencing an
+unauthorized table is rejected and never reaches the database).
 
 ```json
 "policies": {
@@ -126,24 +143,26 @@ python -m pytest tests/test_openai_compatible_endpoint.py -v
 }
 ```
 
-- `deny` 优先于 `allow`；
-- 一个 Key 配多个角色时权限取并集；
-- `can_impersonate: true` 只给服务端调用方（如 BI 门户），
-  个人 Key 不要开——否则改一下请求体的 `user_id` 就能读到别人的个人知识库。
+- `deny` wins over `allow`;
+- a key with several roles gets the union of their permissions;
+- `can_impersonate: true` is for server-side callers only, such as a BI portal.
+  Never enable it on a personal key — otherwise changing `user_id` in the request
+  body reads someone else's personal knowledge base.
 
-## 四、探针
+## 4. Probes
 
-| 端点 | 用途 | 编排配置 |
+| Endpoint | Purpose | Orchestrator setting |
 | --- | --- | --- |
-| `/health` | 存活：只看进程，不查依赖 | livenessProbe |
-| `/readyz` | 就绪：查记忆库、审计库、pgvector | readinessProbe |
-| `/metrics` | Prometheus 抓取 | ServiceMonitor / scrape_config |
-| `/` | 查询界面（单页，无构建步骤） | 内网直接访问 |
+| `/health` | Liveness: process only, no dependency checks | livenessProbe |
+| `/readyz` | Readiness: memory store, audit store, pgvector | readinessProbe |
+| `/metrics` | Prometheus scrape | ServiceMonitor / scrape_config |
+| `/` | Query console (single page, no build step) | Reachable directly on the network |
 
-依赖抖动时 `/readyz` 返回 503 摘掉流量，但 `/health` 仍然 200，
-避免编排系统把进程反复重启。
+When a dependency wobbles, `/readyz` returns 503 and traffic is pulled, while
+`/health` still returns 200 — that keeps the orchestrator from restarting the
+process in a loop.
 
-Kubernetes 片段：
+Kubernetes snippet:
 
 ```yaml
 livenessProbe:
@@ -156,153 +175,165 @@ readinessProbe:
   periodSeconds: 10
 ```
 
-副本扩容优先加 replica，不要加 uvicorn worker：
-Pipeline 与 Schema 索引在进程内共享，多 worker 会各建一份。
+Scale out with replicas, not with uvicorn workers: the pipeline and the schema
+index are shared inside the process, and every worker would build its own copy.
 
-## 五、监控指标
+## 5. Metrics
 
-`GET /metrics` 暴露（Prometheus 文本格式，零外部依赖自实现）：
+`GET /metrics` exposes the following in Prometheus text format, implemented
+in-project with no external dependency:
 
-| 指标 | 类型 | 用途 |
+| Metric | Type | Purpose |
 | --- | --- | --- |
-| `ai_sql_requests_total{method,path,status}` | counter | QPS、错误率 |
-| `ai_sql_request_duration_seconds` | histogram | P95/P99 延迟 |
-| `ai_sql_stage_duration_seconds{stage,status}` | histogram | 哪一段慢（检索/规划/生成/执行/修复） |
-| `ai_sql_model_calls_total{component,status,error_category}` | counter | 模型失败率、限流次数 |
-| `ai_sql_model_tokens_total{component,kind}` | counter | Token 消耗与成本 |
-| `ai_sql_sql_executions_total{database,status}` | counter | SQL 成功率、越权次数 |
-| `ai_sql_sql_repairs_total{result}` | counter | 修复回路的实际收益 |
-| `ai_sql_access_denied_total{database}` | counter | 数据权限拦截 |
-| `ai_sql_limit_rejections_total{reason}` | counter | 限流/配额拒绝 |
-| `ai_sql_degraded_responses_total{reason,failed_stage}` | counter | 模型不可用触发的降级 |
-| `ai_sql_schema_reloads_total{result}` | counter | Schema 索引重建 |
-| `ai_sql_circuit_state{component}` | gauge | 熔断状态 0=闭合 1=半开 2=断开 |
-| `ai_sql_circuit_trips_total{component}` | counter | 熔断跳闸次数 |
+| `ai_sql_requests_total{method,path,status}` | counter | QPS and error rate |
+| `ai_sql_request_duration_seconds` | histogram | P95/P99 latency |
+| `ai_sql_stage_duration_seconds{stage,status}` | histogram | Which stage is slow (retrieval/planning/generation/execution/repair) |
+| `ai_sql_model_calls_total{component,status,error_category}` | counter | Model failure rate, rate-limit hits |
+| `ai_sql_model_tokens_total{component,kind}` | counter | Token consumption and cost |
+| `ai_sql_sql_executions_total{database,status}` | counter | SQL success rate, permission violations |
+| `ai_sql_sql_repairs_total{result}` | counter | What the repair loop actually recovers |
+| `ai_sql_access_denied_total{database}` | counter | Permission blocks |
+| `ai_sql_limit_rejections_total{reason}` | counter | Rate-limit and quota rejections |
+| `ai_sql_degraded_responses_total{reason,failed_stage}` | counter | Degradations caused by model unavailability |
+| `ai_sql_schema_reloads_total{result}` | counter | Schema index rebuilds |
+| `ai_sql_circuit_state{component}` | gauge | Circuit state: 0=closed, 1=half-open, 2=open |
+| `ai_sql_circuit_trips_total{component}` | counter | Circuit trips |
 
-常用 PromQL：
+Useful PromQL:
 
 ```promql
-# P95 查询延迟
+# P95 query latency
 histogram_quantile(0.95, sum(rate(ai_sql_request_duration_seconds_bucket{path="/query"}[5m])) by (le))
 
-# SQL 执行成功率
+# SQL execution success rate
 sum(rate(ai_sql_sql_executions_total{status="ok"}[5m]))
   / sum(rate(ai_sql_sql_executions_total[5m]))
 
-# 修复回路救回来的比例
+# Share of failures the repair loop recovers
 sum(rate(ai_sql_sql_repairs_total{result="repaired"}[1h]))
   / sum(rate(ai_sql_sql_repairs_total[1h]))
 
-# 今日 Token 消耗
+# Token consumption today
 sum(increase(ai_sql_model_tokens_total[24h])) by (component)
 ```
 
-建议告警：模型失败率 > 5%、`/query` P95 > 10s、`ai_sql_limit_rejections_total`
-突增（说明配额设小了或有人写了循环）、`/readyz` 连续失败、
-`ai_sql_circuit_state > 0` 持续 5 分钟（模型侧真的挂了）。
+Alerts worth setting: model failure rate > 5%; `/query` P95 > 10s; a spike in
+`ai_sql_limit_rejections_total` (the quota is too tight, or someone wrote a loop);
+`/readyz` failing repeatedly; and `ai_sql_circuit_state > 0` for five minutes,
+which means the model side is genuinely down.
 
-## 六、排查一次失败查询
+## 6. Debugging a failed query
 
-每个响应都带 `trace_id`（响应体字段与 `X-Trace-Id` 响应头），日志与审计都按它检索：
+Every response carries a `trace_id`, both as a body field and as the `X-Trace-Id`
+header. Logs and audit records are both searchable by it:
 
 ```bash
-# 1. 从日志捞全链路（JSON 格式下用 jq）
+# 1. Pull the whole chain out of the logs (use jq with JSON format)
 docker compose -f docker-compose.prod.yml logs app | grep <trace_id>
 
-# 2. 从审计表看这次查询做了什么
+# 2. See what this query actually did, from the audit table
 docker compose -f docker-compose.prod.yml exec postgres \
   psql -U ai_sql -d ai_sql -c \
   "SELECT created_at, caller, user_id, query, route, databases, sqls, success, error
      FROM ai_sql_audit_log WHERE trace_id = '<trace_id>'"
 ```
 
-日志里能看到每一段：`stage.retrieval`（命中哪些库表）、`stage.planning`
-（拆了几步）、`stage.sql_generation`（生成的 SQL）、`stage.execution`
-（成功与否、行数）、`repair.attempt`（修复过程）、`model.call`（模型耗时与重试）。
+The logs show each stage: `stage.retrieval` (which databases and tables matched),
+`stage.planning` (how many steps), `stage.sql_generation` (the SQL produced),
+`stage.execution` (success and row count), `repair.attempt` (the repair process)
+and `model.call` (model latency and retries).
 
-## 七、常用运维查询
+## 7. Everyday operational queries
 
 ```sql
--- 今天各用户用量（配额判断用的就是这张表）
+-- Today's usage per user (this is the table the quota check reads)
 SELECT user_id, COUNT(*) AS queries, SUM(prompt_tokens + completion_tokens) AS tokens
 FROM ai_sql_audit_log
 WHERE created_at >= date_trunc('day', now())
 GROUP BY user_id ORDER BY tokens DESC;
 
--- 最近失败的查询
+-- Recent failures
 SELECT created_at, user_id, query, error
 FROM ai_sql_audit_log
 WHERE NOT success ORDER BY id DESC LIMIT 20;
 
--- 越权访问尝试（谁在试图查没权限的表）
+-- Permission violations: who is trying to query tables they cannot see
 SELECT created_at, caller, user_id, query, denied_tables
 FROM ai_sql_audit_log
 WHERE jsonb_array_length(denied_tables) > 0 ORDER BY id DESC;
 
--- 高频问题（值得沉淀成固定报表的）
+-- Frequently asked questions, worth turning into fixed reports
 SELECT query, COUNT(*) FROM ai_sql_audit_log
 WHERE created_at > now() - interval '7 days'
 GROUP BY query ORDER BY 2 DESC LIMIT 20;
 ```
 
-## 八、Schema 变更后
+## 8. After a schema change
 
-设了 `AI_SQL_SCHEMA_REFRESH_SECONDS` 就不用管：后台按周期比对指纹，
-变了自动重建（日志 `schema_watcher.change_detected` → `schema.reloaded`）。
+With `AI_SQL_SCHEMA_REFRESH_SECONDS` set there is nothing to do: a background task
+compares fingerprints on a cycle and rebuilds when they differ (look for
+`schema_watcher.change_detected` → `schema.reloaded` in the logs).
 
-不想等下一个周期，或想确认当前状态：
+To skip the wait, or to check the current state:
 
 ```bash
 curl -H "X-API-Key: $ADMIN_KEY" localhost:8000/admin/schema/status
 curl -XPOST -H "X-API-Key: $ADMIN_KEY" localhost:8000/admin/schema/reload
 ```
 
-这两个接口要求 Key 带 `"is_admin": true`。彻底强制重算向量：
+Both endpoints require a key with `"is_admin": true`. To force a full
+re-embedding:
 
 ```sql
 DELETE FROM ai_sql_vector_meta;
 ```
 
-## 八之二、模型不可用时会发生什么
+## 8.2. What happens when the model is unavailable
 
-不会返回 5xx。规划/生成阶段模型失败时，系统会取该用户同一问题上次
-成功的 SQL 重放（数据实时查、权限重新校验）；没有可重放的历史就返回
-明确的降级说明。响应里的 `degraded` 与审计表的 `degraded` 列都能查到。
+Not a 5xx. When the model fails during planning or generation, the system replays
+the SQL that last succeeded for the same question from the same user — the data is
+still queried live and permissions are re-checked. With no replayable history it
+returns an explicit degradation notice instead. Both the `degraded` field in the
+response and the `degraded` column in the audit table record this.
 
 ```promql
-# 降级率突增说明模型侧有问题
+# A spike in the degradation rate means something is wrong on the model side
 sum(rate(ai_sql_degraded_responses_total[5m])) by (reason, failed_stage)
 ```
 
 ```sql
--- 最近发生过降级的查询
+-- Recent degraded queries
 SELECT created_at, user_id, query, degraded FROM ai_sql_audit_log
 WHERE degraded ORDER BY id DESC LIMIT 20;
 ```
 
-## 八之三、业务库只读账号
+## 8.3. Read-only accounts on the business databases
 
-只读的第三层防线是数据库账号本身。配错了平时看不出来，
-所以服务启动会自动体检并在日志里喊（`readonly_audit.violation`），
-`/readyz` 的 `business_db_accounts` 也能看到。
+The third layer of read-only enforcement is the database account itself. A
+misconfigured account is invisible in normal operation, so the service audits it at
+startup and complains in the logs (`readonly_audit.violation`); `/readyz` surfaces
+the same thing under `business_db_accounts`.
 
 ```bash
-# 建最小权限只读角色
+# Create a least-privilege read-only role
 python -m ai_sql_ops provision \
   --admin-dsn "postgresql://postgres:***@db:5432/yourdb" \
   --database yourdb --host db
 
-# 体检（只查系统目录，不写数据，退出码非 0 表示不合格，可以进 CI）
+# Audit it (reads system catalogs only, writes nothing; a non-zero exit code means
+# it failed, so this can run in CI)
 python -m ai_sql_ops audit --dsn "$AI_SQL_BUSINESS_DSN"
 ```
 
-角色自带 `statement_timeout`、`idle_in_transaction_session_timeout`
-和 `default_transaction_read_only = on`：应用层配置失效时数据库仍然兜底。
+The role carries `statement_timeout`, `idle_in_transaction_session_timeout` and
+`default_transaction_read_only = on`, so the database still holds the line if the
+application-level configuration is wrong.
 
-## 九、备份
+## 9. Backups
 
-需要备份的是 PostgreSQL 一个库（Schema 向量、长期记忆向量、审计）
-加上容器卷里的 `runtime_data`（记忆原文 SQLite）：
+What needs backing up is one PostgreSQL database (schema vectors, long-term memory
+vectors, audit) plus `runtime_data` in the container volume (the SQLite store of
+raw memory content):
 
 ```bash
 docker compose -f docker-compose.prod.yml exec postgres \

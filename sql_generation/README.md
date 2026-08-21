@@ -1,43 +1,43 @@
 # sql_generation
 
-SQL 生成模块，位于 CoT 规划之后、SQL 执行之前。
+SQL generation, running after chain-of-thought planning and before execution.
 
-## 目录结构
+## Layout
 
 ```text
 sql_generation/
 ├── __init__.py
-├── objects.py              # SQL生成数据结构
-├── cot_parser.py           # 正则解析CoT四元组
-├── schema_store.py         # 局部Schema存储与提取
-├── prompt_builder.py       # Coder Prompt构建
-├── coder_client.py         # Coder模型调用
-├── sql_generator.py        # SQL生成主流程
+├── objects.py              # SQL generation data structures
+├── cot_parser.py           # Regex parsing of the plan's four-field steps
+├── schema_store.py         # Local schema storage and extraction
+├── prompt_builder.py       # Coder prompt assembly
+├── coder_client.py         # Coder model calls
+├── sql_generator.py        # Generation entry point
 └── sql_generation_demo.py  # Demo
 ```
 
-## 运行
+## Running
 
 ```bash
 python -m sql_generation.sql_generation_demo
 ```
 
-不配置环境变量时走 Mock。
+With no environment variables set, the demo uses a mock.
 
-配置真实模型：
+To use a real model:
 
 ```bash
-export DASHSCOPE_API_KEY="你的APIKey"
+export DASHSCOPE_API_KEY="your-api-key"
 export DASHSCOPE_CODER_MODEL="qwen-plus"
 
 python -m sql_generation.sql_generation_demo
 ```
 
-## 执行请求格式
+## Request format
 
 ```json
 {
-  "database": "showroom_db",
+  "database": "erp_db",
   "sql": "SELECT ..."
 }
 ```
