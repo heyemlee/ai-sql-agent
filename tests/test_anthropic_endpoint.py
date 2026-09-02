@@ -99,6 +99,28 @@ class AnthropicPayloadTest(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], 1024)
         self.assertEqual([m["role"] for m in payload["messages"]], ["user"])
 
+    def test_claude_5_payload_omits_deprecated_temperature(self):
+        # Claude 5 起 temperature 被废弃，带上它整个请求会被 400 拒绝
+        payload = build_chat_payload(
+            [{"role": "user", "content": "x"}],
+            model="claude-sonnet-5",
+            temperature=0.0,
+            provider="anthropic",
+            max_tokens=64,
+        )
+        self.assertNotIn("temperature", payload)
+
+    def test_older_claude_payload_still_carries_temperature(self):
+        # 老模型仍然接受，全链路靠 temperature=0 拿确定性输出，不能一刀切删掉
+        payload = build_chat_payload(
+            [{"role": "user", "content": "x"}],
+            model="claude-haiku-4-5",
+            temperature=0.0,
+            provider="anthropic",
+            max_tokens=64,
+        )
+        self.assertEqual(payload["temperature"], 0.0)
+
     def test_openai_payload_keeps_system_in_messages(self):
         payload = build_chat_payload(
             [
