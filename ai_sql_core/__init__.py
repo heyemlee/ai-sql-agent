@@ -27,6 +27,7 @@ from .trace import (
     new_trace_id,
     record_usage,
     stage,
+    usage_scope,
     usage_summary,
     use_trace_id,
 )
@@ -68,6 +69,7 @@ __all__ = [
     "render_metrics",
     "reload_settings",
     "stage",
+    "usage_scope",
     "usage_summary",
     "use_trace_id",
 ]
