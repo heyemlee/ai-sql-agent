@@ -127,7 +127,7 @@ class AnthropicPayloadTest(unittest.TestCase):
                 {"role": "system", "content": "你是字段解析助手"},
                 {"role": "user", "content": "用户Query：准时率"},
             ],
-            model="gpt-4o-mini",
+            model="gpt-5.6-luna",
             provider="openai",
         )
         self.assertNotIn("system", payload)
