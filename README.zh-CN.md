@@ -193,6 +193,7 @@ deploy/              生产部署和运维文档
 
 ## 部署与深入阅读
 
+- [项目详解手册](WALKTHROUGH.zh-CN.md)：从 0 通读全项目——逐模块拆解、五条设计主线、讲解脚本与练习
 - [部署与运维](deploy/README.zh-CN.md)：Docker Compose、权限、模型接入、监控和排障
 - [评测说明](benchmark/README.zh-CN.md)：数据集、准确率与发布门禁
 - [端到端编排](ai_sql_pipeline/README.md)：动态路由与记忆示例（英文）
