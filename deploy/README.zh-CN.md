@@ -16,9 +16,9 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"   # 每个调用方
 cat > .env <<'ENV'
 AI_SQL_MODEL_PROVIDER=openai          # 或 anthropic
 OPENAI_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://api.kabi.pro/v1
+OPENAI_BASE_URL=https://relay.example.com/v1
 # ANTHROPIC_API_KEY=sk-ant-xxx
-# ANTHROPIC_BASE_URL=https://api.kabi.pro
+# ANTHROPIC_BASE_URL=https://relay.example.com
 POSTGRES_PASSWORD=改成强密码
 ENV
 

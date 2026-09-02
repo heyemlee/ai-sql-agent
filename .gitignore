@@ -5,6 +5,9 @@ __pycache__/
 
 # 密钥与本机配置
 .env
+# .env.bak / .env.local 这类副本一样带真 key，只放行模板
+.env.*
+!.env.example
 deploy/api_keys.json
 
 # 本机运行期产物（记忆库、审计库、Demo 数据）

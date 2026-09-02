@@ -30,16 +30,16 @@ class SettingsTest(unittest.TestCase):
         with env(
             AI_SQL_MODEL_PROVIDER="openai",
             AI_SQL_OPENAI_API_KEY="sk-openai",
-            OPENAI_BASE_URL="https://api.kabi.pro/v1",
+            OPENAI_BASE_URL="https://relay.example.com/v1",
             AI_SQL_CHAT_URL=None,
             AI_SQL_EMBEDDING_URL=None,
             AI_SQL_CHAT_MODEL=None,
         ) as settings:
             self.assertEqual(
-                settings.chat_url, "https://api.kabi.pro/v1/chat/completions"
+                settings.chat_url, "https://relay.example.com/v1/chat/completions"
             )
             self.assertEqual(
-                settings.embedding_url, "https://api.kabi.pro/v1/embeddings"
+                settings.embedding_url, "https://relay.example.com/v1/embeddings"
             )
             self.assertEqual(settings.resolved_chat_api_key(), "sk-openai")
             self.assertTrue(settings.has_model_credentials)
@@ -49,13 +49,13 @@ class SettingsTest(unittest.TestCase):
             AI_SQL_MODEL_PROVIDER="anthropic",
             AI_SQL_OPENAI_API_KEY="sk-openai",
             AI_SQL_ANTHROPIC_API_KEY="sk-ant",
-            ANTHROPIC_BASE_URL="https://api.kabi.pro",
+            ANTHROPIC_BASE_URL="https://relay.example.com",
             AI_SQL_CHAT_URL=None,
             # 用空串而不是 None：None 只删环境变量，Settings 仍会读到项目根目录
             # .env 里钉死的型号，这条断言就变成了「你的 .env 配了什么」。
             AI_SQL_CHAT_MODEL="",
         ) as settings:
-            self.assertEqual(settings.chat_url, "https://api.kabi.pro/v1/messages")
+            self.assertEqual(settings.chat_url, "https://relay.example.com/v1/messages")
             self.assertEqual(settings.resolved_chat_api_key(), "sk-ant")
             self.assertTrue(settings.chat_model.startswith("claude"))
             # Embedding 没有 Anthropic 实现，始终留在 OpenAI 兼容通道
@@ -65,7 +65,7 @@ class SettingsTest(unittest.TestCase):
     def test_explicit_chat_url_beats_provider_default(self):
         with env(
             AI_SQL_MODEL_PROVIDER="openai",
-            OPENAI_BASE_URL="https://api.kabi.pro/v1",
+            OPENAI_BASE_URL="https://relay.example.com/v1",
             AI_SQL_CHAT_URL="http://vllm-chat:8000/v1/chat/completions",
         ) as settings:
             self.assertEqual(

@@ -21,8 +21,8 @@ DEFAULT_CODER_MODEL = {
 def build_endpoint(base_url: str, path: str) -> str:
     """把 BASE_URL 拼成完整端点，容忍它带不带 `/v1` 后缀。
 
-    OPENAI_BASE_URL 通常写到 `/v1`（https://api.kabi.pro/v1），
-    ANTHROPIC_BASE_URL 通常不带（https://api.kabi.pro），两种都要能用。
+    OPENAI_BASE_URL 通常写到 `/v1`（https://relay.example.com/v1），
+    ANTHROPIC_BASE_URL 通常不带（https://relay.example.com），两种都要能用。
     """
     base = base_url.rstrip("/")
     if not base.endswith("/v1"):
