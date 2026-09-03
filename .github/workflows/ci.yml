@@ -52,6 +52,19 @@ jobs:
       - name: 长短期记忆 Demo
         run: python ai_sql_pipeline/memory_end_to_end_demo.py
 
+      - name: 语义元数据校验（导出模板 → 校验 → 与 Demo 库比对结构）
+        run: |
+          python -m ai_sql_semantic export /tmp/semantic
+          python -m ai_sql_semantic validate /tmp/semantic
+          # 内置元数据必须自洽：它同时是接真实库时的模板，
+          # 模板本身有错的话，照着改出来的也是错的
+          python -m ai_sql_semantic show
+
+      - name: 反馈回路冒烟
+        run: |
+          python -m ai_sql_feedback stats
+          python -m ai_sql_feedback export-dataset /tmp/fb.json
+
       - name: 评测冒烟
         run: python -m benchmark.run_benchmark --smoke
 
