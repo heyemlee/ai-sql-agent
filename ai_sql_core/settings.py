@@ -218,6 +218,25 @@ class SqlAgentSettings(BaseSettings):
         AI_SQL_SEMANTIC_DIR=semantic/
     """
 
+    # ---- 用户反馈 ----
+    feedback_enabled: bool = True
+    """
+    收集用户对答案的对错反馈。
+
+    关掉之后 /feedback 返回 404，认证 SQL 复用与 `python -m ai_sql_feedback`
+    也就没有数据来源了。
+    """
+
+    certified_sql_enabled: bool = True
+    """
+    把用户标记「正确」的查询作为认证范例注入生成 Prompt。
+
+    只用同一用户/同一权限下确认过的 SQL，且执行前照常过权限校验。
+    """
+
+    certified_sql_top_k: int = 2
+    """单次查询最多注入几条认证范例。多了会挤占 Schema 的 Token 预算。"""
+
     # ---- 存储 ----
     pgvector_dsn: str = ""
     """配置后 Schema 向量索引与长期记忆向量索引都切到 PostgreSQL + pgvector。"""

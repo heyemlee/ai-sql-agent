@@ -4,7 +4,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -12,7 +12,13 @@ from pydantic import BaseModel, Field
 
 from ai_sql_audit import AuditRecord, create_audit_store
 from ai_sql_auth import ApiKeyRecord
-from ai_sql_core.metrics import REQUEST_DURATION, REQUESTS
+from ai_sql_feedback import (
+    CertifiedSqlLibrary,
+    FeedbackRecord,
+    Verdict,
+    create_feedback_store,
+)
+from ai_sql_core.metrics import FEEDBACK_SUBMITTED, REQUEST_DURATION, REQUESTS
 from ai_sql_core import (
     CIRCUIT_REGISTRY,
     configure_logging,
@@ -109,6 +115,30 @@ class HistoryResponse(BaseModel):
     items: List[HistoryItem] = []
 
 
+class FeedbackRequest(BaseModel):
+    """
+    用户对一次回答的判定。
+
+    只收 trace_id 与判定本身：问题原文与实际执行的 SQL 从审计记录回填，
+    不接受客户端传。否则「这条 SQL 是对的」就成了客户端说了算，
+    而认证 SQL 会被注入后续查询的生成 Prompt。
+    """
+
+    trace_id: str = Field(min_length=1)
+    verdict: Literal["correct", "wrong", "unsure"]
+    comment: str = Field(default="", max_length=2000)
+
+
+class FeedbackResponse(BaseModel):
+    recorded: bool
+    trace_id: str
+    verdict: str
+    certified: bool = False
+    """这条查询是否会作为认证范例参与后续生成。"""
+
+    message: str = ""
+
+
 class SaveMemoryRequest(BaseModel):
     """用户主动保存结构化结果到个人知识库。"""
 
@@ -149,9 +179,25 @@ async def lifespan(app: FastAPI):
 
     memory = ConversationMemoryService()
     audit_store = app.state.audit
+    app.state.feedback = create_feedback_store()
+
+    # 用户点过「对」的查询 → 同类问题的生成范例。
+    # 关掉开关时不注入：这条链路会占 Prompt 预算，值不值得要能对照测量。
+    certified_library = (
+        CertifiedSqlLibrary(
+            loader=lambda user_id: app.state.feedback.certified(user_id=user_id),
+            top_k=settings.certified_sql_top_k,
+        )
+        if settings.certified_sql_enabled and settings.feedback_enabled
+        else None
+    )
+    app.state.certified_library = certified_library
+
     pipeline = Text2SQLPipeline(
         # 模型不可用时可以重放这位用户同一问题上次成功的 SQL
         sql_history_lookup=audit_store.last_successful_sqls,
+        # 模型正常时，把确认过正确的相似查询当写法参考注入
+        certified_lookup=certified_library.lookup if certified_library else None,
     )
 
     app.state.memory = memory
@@ -527,6 +573,7 @@ def query(
 
     audit.success = failed_steps == 0 and not degraded
     audit.degraded = degraded
+    audit.has_risk = has_risk
     audit.failed_steps = failed_steps
     audit.repaired_steps = repaired_steps
     _write_audit(audit, started, principal)
@@ -641,6 +688,138 @@ def history(
     ]
 
     return HistoryResponse(user_id=target, items=items)
+
+
+@app.post("/feedback", response_model=FeedbackResponse)
+def submit_feedback(
+    request: FeedbackRequest,
+    api_key: Optional[ApiKeyRecord] = Depends(require_api_key),
+) -> FeedbackResponse:
+    """
+    记录用户对一次回答的判定（对 / 错 / 说不准）。
+
+    这是让工具越用越准的那条回路：
+
+    - 标记「错」的问题进反面教材清单，用 `python -m ai_sql_feedback export-dataset`
+      导进评测集——评测集原本全是我们自己出的模板题，真实用户问法与它的差距，
+      正是线上准确率与评测跑分的差距；
+    - 标记「对」的查询成为认证范例，注入后续同类问题的生成 Prompt。
+
+    问题原文与 SQL 都按 trace_id 从审计记录回填，不接受客户端传。
+    """
+    settings = get_settings()
+    if not settings.feedback_enabled:
+        raise HTTPException(status_code=404, detail="反馈功能未启用。")
+
+    principal = app.state.auth.resolve_principal(api_key, "")
+
+    audited = app.state.audit.get_by_trace(request.trace_id)
+    if audited is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"没有找到 trace_id={request.trace_id} 的查询记录。",
+        )
+
+    owner = str(audited.get("user_id") or "")
+    if owner != principal.user_id and not principal.is_admin:
+        # 反馈会影响别人的认证范例，越权表态等于替别人认证 SQL
+        log_event(
+            _logger,
+            logging.WARNING,
+            "feedback.denied",
+            caller=principal.caller,
+            trace_id=request.trace_id,
+            owner=owner,
+        )
+        raise HTTPException(status_code=403, detail="只能对自己的查询提交反馈。")
+
+    verdict = Verdict(request.verdict)
+    feedback = FeedbackRecord(
+        trace_id=request.trace_id,
+        user_id=owner or principal.user_id,
+        verdict=verdict,
+        query=str(audited.get("query") or ""),
+        databases=list(audited.get("databases") or []),
+        tables=list(audited.get("tables") or []),
+        sqls=[
+            item for item in (audited.get("sqls") or []) if isinstance(item, dict)
+        ],
+        comment=request.comment.strip(),
+        caller=principal.caller,
+        route=str(audited.get("route") or ""),
+        had_risk=bool(audited.get("has_risk")),
+    )
+
+    try:
+        app.state.feedback.record(feedback)
+    except Exception as exc:
+        log_event(
+            _logger,
+            logging.ERROR,
+            "feedback.write_failed",
+            trace_id=request.trace_id,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise HTTPException(status_code=500, detail="反馈写入失败。") from exc
+
+    certified = feedback.is_certifiable and get_settings().certified_sql_enabled
+
+    log_event(
+        _logger,
+        logging.INFO,
+        "feedback.recorded",
+        trace_id=request.trace_id,
+        user_id=feedback.user_id,
+        verdict=verdict.value,
+        had_risk=feedback.had_risk,
+        certified=certified,
+        has_comment=bool(feedback.comment),
+    )
+    FEEDBACK_SUBMITTED.inc(verdict=verdict.value, had_risk=str(feedback.had_risk).lower())
+
+    if verdict == Verdict.CORRECT:
+        message = (
+            "已记录。这条查询会作为参考写法用于后续同类问题。"
+            if certified
+            else "已记录。"
+        )
+    elif verdict == Verdict.WRONG:
+        message = "已记录。这条会进待改进清单，用于补评测集和排查元数据缺口。"
+    else:
+        message = "已记录，会有人来看一眼。"
+
+    return FeedbackResponse(
+        recorded=True,
+        trace_id=request.trace_id,
+        verdict=verdict.value,
+        certified=certified,
+        message=message,
+    )
+
+
+@app.get("/feedback/stats")
+def feedback_stats(principal=Depends(require_admin)) -> Dict[str, Any]:
+    """
+    线上反馈汇总：真实用户口径的准确率与静默错误率。
+
+    与 benchmark 的区别是题目来自真实用户，不是我们自己出的。
+    两个数差得远时，以这个为准——评测集只代表我们想到的问法。
+    """
+    stats = app.state.feedback.stats()
+    unresolved = app.state.feedback.recent(limit=10, verdict=Verdict.WRONG.value)
+    return {
+        "stats": stats.to_dict(),
+        "recent_wrong": [
+            {
+                "trace_id": item.get("trace_id"),
+                "query": item.get("query"),
+                "comment": item.get("comment"),
+                "had_risk": item.get("had_risk"),
+                "resolved": item.get("resolved"),
+            }
+            for item in unresolved
+        ],
+    }
 
 
 @app.post("/memory/save")

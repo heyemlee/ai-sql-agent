@@ -36,6 +36,15 @@ class AuditRecord:
     degraded: bool = False
     """模型不可用时走了降级链路。"""
 
+    has_risk: bool = False
+    """
+    返回给用户时带了软异常提示（空结果 / 基数异常 / 语义不一致）。
+
+    落进审计是为了让「线上静默错误率」算得出来：用户事后标记这条答错时，
+    要能分辨他当时是**被提醒过**还是毫无察觉。后者才是最贵的那一类错误，
+    而它恰恰是评测集之外唯一能测到它的地方。
+    """
+
     status_code: int = 200
     failed_steps: int = 0
     repaired_steps: int = 0
@@ -66,6 +75,7 @@ class AuditRecord:
             "denied_tables": self.denied_tables,
             "success": self.success,
             "degraded": self.degraded,
+            "has_risk": self.has_risk,
             "status_code": self.status_code,
             "failed_steps": self.failed_steps,
             "repaired_steps": self.repaired_steps,

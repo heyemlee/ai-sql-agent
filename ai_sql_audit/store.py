@@ -29,6 +29,8 @@ class AuditStore(Protocol):
         self, user_id: str, query: str
     ) -> List[Tuple[str, str]]: ...
 
+    def get_by_trace(self, trace_id: str) -> Optional[dict]: ...
+
 
 def _day_start_iso() -> str:
     now = datetime.now(timezone.utc)
@@ -80,6 +82,7 @@ class SQLiteAuditStore:
                     prompt_tokens INTEGER NOT NULL DEFAULT 0,
                     completion_tokens INTEGER NOT NULL DEFAULT 0,
                     degraded INTEGER NOT NULL DEFAULT 0,
+                    has_risk INTEGER NOT NULL DEFAULT 0,
                     error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_user_time
@@ -98,7 +101,10 @@ class SQLiteAuditStore:
             row["name"]
             for row in conn.execute(f"PRAGMA table_info({TABLE_NAME})").fetchall()
         }
-        for column, ddl in (("degraded", "INTEGER NOT NULL DEFAULT 0"),):
+        for column, ddl in (
+            ("degraded", "INTEGER NOT NULL DEFAULT 0"),
+            ("has_risk", "INTEGER NOT NULL DEFAULT 0"),
+        ):
             if column not in existing:
                 conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN {column} {ddl}")
 
@@ -110,8 +116,9 @@ class SQLiteAuditStore:
                     trace_id, created_at, caller, user_id, session_id, query,
                     route, databases, tables, sqls, denied_tables,
                     success, status_code, failed_steps, repaired_steps,
-                    duration_ms, prompt_tokens, completion_tokens, degraded, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    duration_ms, prompt_tokens, completion_tokens, degraded,
+                    has_risk, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.trace_id,
@@ -133,6 +140,7 @@ class SQLiteAuditStore:
                     record.prompt_tokens,
                     record.completion_tokens,
                     int(record.degraded),
+                    int(record.has_risk),
                     record.error,
                 ),
             )
@@ -182,6 +190,20 @@ class SQLiteAuditStore:
             rows = conn.execute(query, tuple(params)).fetchall()
         return [_row_to_dict(dict(row)) for row in rows]
 
+    def get_by_trace(self, trace_id: str) -> Optional[dict]:
+        """按 trace_id 取一条审计记录。
+
+        用户反馈只报 trace_id，问题原文与实际执行的 SQL 一律以审计记录为准——
+        让客户端把 SQL 一并传上来的话，「这条 SQL 是对的」这句话就等于
+        客户端说了算，认证 SQL 复用会变成一个可以往 Prompt 里塞任意内容的入口。
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                f"SELECT * FROM {TABLE_NAME} WHERE trace_id = ? ORDER BY id DESC LIMIT 1",
+                (trace_id,),
+            ).fetchone()
+        return _row_to_dict(dict(row)) if row else None
+
 
 class PostgresAuditStore:
     """PostgreSQL 审计存储：已经在用 pgvector 时顺带落到同一实例。"""
@@ -215,6 +237,7 @@ class PostgresAuditStore:
                 prompt_tokens INTEGER NOT NULL DEFAULT 0,
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
                 degraded BOOLEAN NOT NULL DEFAULT FALSE,
+                has_risk BOOLEAN NOT NULL DEFAULT FALSE,
                 error TEXT
             )
             """
@@ -223,6 +246,10 @@ class PostgresAuditStore:
         self.conn.execute(
             f"ALTER TABLE {TABLE_NAME} "
             f"ADD COLUMN IF NOT EXISTS degraded BOOLEAN NOT NULL DEFAULT FALSE"
+        )
+        self.conn.execute(
+            f"ALTER TABLE {TABLE_NAME} "
+            f"ADD COLUMN IF NOT EXISTS has_risk BOOLEAN NOT NULL DEFAULT FALSE"
         )
         self.conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_audit_user_time "
@@ -244,10 +271,11 @@ class PostgresAuditStore:
                     trace_id, created_at, caller, user_id, session_id, query,
                     route, databases, tables, sqls, denied_tables,
                     success, status_code, failed_steps, repaired_steps,
-                    duration_ms, prompt_tokens, completion_tokens, degraded, error
+                    duration_ms, prompt_tokens, completion_tokens, degraded,
+                    has_risk, error
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -270,6 +298,7 @@ class PostgresAuditStore:
                     record.prompt_tokens,
                     record.completion_tokens,
                     record.degraded,
+                    record.has_risk,
                     record.error,
                 ),
             )
@@ -317,6 +346,16 @@ class PostgresAuditStore:
             rows = self.conn.execute(sql, tuple(params)).fetchall()
         return [row[0] for row in rows]
 
+    def get_by_trace(self, trace_id: str) -> Optional[dict]:
+        """按 trace_id 取一条审计记录（见 SQLiteAuditStore.get_by_trace）。"""
+        with self._lock:
+            row = self.conn.execute(
+                f"SELECT to_jsonb(t) FROM {TABLE_NAME} t "
+                f"WHERE t.trace_id = %s ORDER BY t.id DESC LIMIT 1",
+                (trace_id,),
+            ).fetchone()
+        return row[0] if row else None
+
     def close(self) -> None:
         self.conn.close()
 
@@ -335,6 +374,9 @@ class NullAuditStore:
 
     def last_successful_sqls(self, user_id: str, query: str) -> List[Tuple[str, str]]:
         return []
+
+    def get_by_trace(self, trace_id: str) -> Optional[dict]:
+        return None
 
 
 def _parse_steps(databases, sqls) -> List[Tuple[str, str]]:
@@ -368,6 +410,7 @@ def _row_to_dict(row: dict) -> dict:
             row[key] = json.loads(row[key])
     row["success"] = bool(row.get("success"))
     row["degraded"] = bool(row.get("degraded"))
+    row["has_risk"] = bool(row.get("has_risk"))
     return row
 
 
