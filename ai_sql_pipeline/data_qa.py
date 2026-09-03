@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 from ai_sql_memory import ConversationMemoryContext
 
@@ -10,20 +10,41 @@ class DataQAClient(Protocol):
     def answer(self, query: str, context: ConversationMemoryContext) -> str: ...
 
 
+def _load_metric_definitions() -> Dict[str, str]:
+    """当前语义层里的业务指标定义。取不到时返回空表，问答链路照常工作。"""
+    try:
+        from ai_sql_semantic import active_semantic_layer
+
+        return dict(active_semantic_layer().metric_definitions)
+    except Exception:
+        # 指标定义是增强项：语义层配错了应该在启动与校验时暴露，
+        # 不该让一次「这个指标什么意思」的提问变成 500。
+        return {}
+
+
 class RuleBasedDataQAClient:
     """无模型环境下的对话问答降级实现，用于验证路由与结果复用。"""
 
-    BUSINESS_DEFINITIONS = {
-        "超预算": "超预算指项目实际成本已超过立项时批准的预算金额（actual_cost > budget_amt）。",
-        "合同额": "合同额是与甲方签订的不含税合同总价，与 ERP 中含税的订单金额口径不同。",
-        "准时率": "准时率是供应商按约定交期到货的批次占比，用于评估供应商交付表现。",
-        "良率": "良率是质检合格数量与送检数量之比，反映工单的一次交检合格水平。",
-        "安全库存": "安全库存是为应对需求波动设定的最低库存量，在库数量低于它即需补货。",
-    }
+    def __init__(self, definitions: Optional[Dict[str, str]] = None):
+        """
+        definitions 为空时从语义层读取。
+
+        以前这份定义是写死在类里的常量，只覆盖四个演示库的指标；
+        接真实业务库时用户问「这个口径怎么算」只能得到「没有足够信息」。
+        现在它跟着 semantic/_shared.yaml 的 metric_definitions 走。
+        """
+        self.definitions = (
+            definitions if definitions is not None else _load_metric_definitions()
+        )
+
+    @property
+    def BUSINESS_DEFINITIONS(self) -> Dict[str, str]:
+        """兼容旧调用方的别名。"""
+        return self.definitions
 
     def answer(self, query: str, context: ConversationMemoryContext) -> str:
         if any(term in query for term in ("什么是", "含义", "定义", "口径", "什么意思")):
-            for name, definition in self.BUSINESS_DEFINITIONS.items():
+            for name, definition in self.definitions.items():
                 if name in query:
                     return definition
 
@@ -37,7 +58,7 @@ class RuleBasedDataQAClient:
                 f"{index}. {summary}" for index, summary in enumerate(summaries, start=1)
             )
 
-        for name, definition in self.BUSINESS_DEFINITIONS.items():
+        for name, definition in self.definitions.items():
             if name in query:
                 return definition
 
@@ -85,17 +106,38 @@ class RuleBasedDataQAClient:
 class ModelDataQAClient:
     """基于记忆上下文回答，不具备数据库执行能力。"""
 
-    def __init__(self, client):
+    def __init__(self, client, definitions: Optional[Dict[str, str]] = None):
         self.client = client
+        self.definitions = (
+            definitions if definitions is not None else _load_metric_definitions()
+        )
+        """
+        业务指标定义，来自语义层。
+
+        注入它是因为口径问题不能靠模型编：用户问「超预算怎么算的」，
+        模型按常识答一个听起来合理的定义，与这家公司实际的算法可能不同，
+        而用户无从分辨。有定义就照抄，没有就明说不知道。
+        """
 
     def answer(self, query: str, context: ConversationMemoryContext) -> str:
         context_text = context.to_prompt_context()
         if len(context_text) > 12000:
             context_text = context_text[-12000:]
+        glossary = "\n".join(
+            f"- {term}：{definition}" for term, definition in self.definitions.items()
+        )
+        glossary_section = (
+            f"""
+业务指标口径（这是本公司的口径，解释指标时必须以此为准，不要按常识另行发挥）：
+{glossary}
+"""
+            if glossary
+            else ""
+        )
         prompt = f"""你是 AI SQL Agent 数据问答助手。请只依据给定上下文回答当前问题。
 你负责结果解释、指标说明、数据分析、历史结果追问和业务知识问答。
 不得声称执行了新的数据库查询；上下文不足时明确说明缺少什么信息。
-
+{glossary_section}
 上下文：
 {context_text or '无'}
 

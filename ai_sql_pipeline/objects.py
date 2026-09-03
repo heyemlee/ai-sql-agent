@@ -29,8 +29,19 @@ class PipelineConfig:
     database_name: str = "erp_db"
     db_path: str | Path = "runtime_data/erp_demo.db"
     sample_size: int = 5
-    # 多库配置；None 时默认使用 ERP / 项目管理 / 生产 / 仓储 四个 Demo 库
+    # 多库配置；None 时按语义层里声明的库连接（默认是四个 Demo 库）
     databases: Optional[List[DatabaseConfig]] = None
+
+    semantic_layer: Optional[Any] = None
+    """
+    业务语义层（ai_sql_semantic.SemanticLayer）。
+
+    None 时按 AI_SQL_SEMANTIC_DIR 解析：配了目录读目录，没配用内置演示元数据。
+    显式传入主要用于测试与「同一进程里跑两套元数据」这种场景。
+
+    类型写成 Any 是为了不让 objects 模块反向依赖 ai_sql_semantic——
+    那会绕成 pipeline → semantic → demo_data → pipeline 的循环导入。
+    """
     # 单次查询 ~8k Token 预算
     prompt_budget: Optional[PromptBudgetConfig] = None
     # SQL 执行治理：单条查询最大返回行数与最长执行时间

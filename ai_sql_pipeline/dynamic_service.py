@@ -55,8 +55,16 @@ class DynamicSqlAgentService:
         self.router = router or DynamicIntentRouter(
             model_classifier=(ModelIntentClassifier(model_client) if model_client else None)
         )
+        # 指标口径从 Pipeline 已经解析好的语义层取，而不是让问答类自己再读一次文件：
+        # 注入自定义语义层时（测试、一个进程跑两套元数据），两边必须是同一份，
+        # 否则会出现「查得对但口径解释来自另一套元数据」这种极难排查的错位。
+        definitions = dict(
+            getattr(getattr(pipeline, "semantic", None), "metric_definitions", {}) or {}
+        )
         self.data_qa_client = data_qa_client or (
-            ModelDataQAClient(model_client) if model_client else RuleBasedDataQAClient()
+            ModelDataQAClient(model_client, definitions=definitions)
+            if model_client
+            else RuleBasedDataQAClient(definitions=definitions)
         )
 
     def run(

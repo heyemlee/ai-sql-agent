@@ -204,6 +204,20 @@ class SqlAgentSettings(BaseSettings):
     circuit_reset_seconds: float = 30.0
     """跳闸后多久放一次试探请求。"""
 
+    # ---- 业务语义元数据 ----
+    semantic_dir: str = ""
+    """
+    业务语义元数据目录（每个库一个 YAML，见 ai_sql_semantic）。
+
+    留空时使用内置的四个演示库元数据——**接真实业务库必须配置这一项**：
+    模型认识业务全靠这份元数据，缺了它检索只能按字段名字面匹配，
+    口语问法基本召不回来，现象是「模型答不准」，实际是没告诉它业务是什么。
+
+        python -m ai_sql_semantic export semantic/     # 导出模板
+        python -m ai_sql_semantic validate semantic/   # 校验并与真实库比对
+        AI_SQL_SEMANTIC_DIR=semantic/
+    """
+
     # ---- 存储 ----
     pgvector_dsn: str = ""
     """配置后 Schema 向量索引与长期记忆向量索引都切到 PostgreSQL + pgvector。"""
