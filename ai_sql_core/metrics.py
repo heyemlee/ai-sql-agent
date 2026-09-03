@@ -284,6 +284,13 @@ SCHEMA_RELOADS = REGISTRY.register(
 LIMIT_REJECTIONS = REGISTRY.register(
     Counter("ai_sql_limit_rejections_total", "限流/配额拒绝次数", ("reason",))
 )
+FEEDBACK_SUBMITTED = REGISTRY.register(
+    Counter(
+        "ai_sql_feedback_total",
+        "用户对回答的判定（对/错/说不准）；had_risk 区分当时有没有给风险提示",
+        ("verdict", "had_risk"),
+    )
+)
 BUILD_INFO = REGISTRY.register(Gauge("ai_sql_up", "服务存活标记"))
 BUILD_INFO.set(1)
 

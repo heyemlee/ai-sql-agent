@@ -123,6 +123,7 @@ class Text2SQLPipeline:
         sql_history_lookup: Optional[
             Callable[[str, str], Sequence[Tuple[str, str]]]
         ] = None,
+        certified_lookup: Optional[Callable[..., Sequence[object]]] = None,
     ):
         self.config = config or PipelineConfig()
         self.sql_history_lookup = sql_history_lookup
@@ -131,6 +132,15 @@ class Text2SQLPipeline:
 
         模型不可用时用它重放：SQL 是缓存的，数据仍然是实时查出来的。
         由 API 层注入（数据源是审计表），Pipeline 不直接依赖审计模块。
+        """
+
+        self.certified_lookup = certified_lookup
+        """
+        取「用户确认过答对了」的相似查询，作为写法参考注入 SQL 生成 Prompt。
+
+        与 sql_history_lookup 的分工：那个是模型挂了之后**重放同一个问题**的
+        原样 SQL；这个是模型正常时给**相似问题**当范例，永远不直接执行。
+        同样由 API 层注入（数据源是反馈表），Pipeline 不依赖反馈模块。
         """
         self.prompt_budget = PromptBudgetManager(self.config.prompt_budget)
 
@@ -440,6 +450,13 @@ class Text2SQLPipeline:
 
             local_schema = schema_store.extract_local_schema(sql_cot_step)
 
+            certified_examples = self._certified_examples(
+                query=effective_query,
+                database=sql_cot_step.database,
+                user_id=user_id,
+                access=access,
+            )
+
             with stage(
                 "sql_generation",
                 _logger,
@@ -447,12 +464,14 @@ class Text2SQLPipeline:
                 database=sql_cot_step.database,
                 dialect=step_dialect,
                 with_backfill=bool(previous_results),
+                certified_examples=bool(certified_examples),
             ) as generation_stage:
                 try:
                     sql_result = sql_generator.generate(
                         sql_cot_step,
                         sql_dialect=step_dialect,
                         previous_results=previous_results,
+                        certified_examples=certified_examples,
                     )
                 except ModelCallError as exc:
                     generation_error = exc
@@ -475,6 +494,7 @@ class Text2SQLPipeline:
                     dialect=step_dialect,
                     previous_results=previous_results,
                     step_index=step_index,
+                    certified_examples=certified_examples,
                 )
 
             if generation_error is not None:
@@ -663,6 +683,7 @@ class Text2SQLPipeline:
         dialect: str,
         previous_results: str,
         step_index: int,
+        certified_examples: str = "",
     ):
         """
         校验 SQL 只引用当前步骤目标库的表；越界则带提示重生成一次。
@@ -712,6 +733,7 @@ class Text2SQLPipeline:
                 retry_step,
                 sql_dialect=dialect,
                 previous_results=previous_results,
+                certified_examples=certified_examples,
             )
         except ModelCallError:
             return sql_result
@@ -722,6 +744,57 @@ class Text2SQLPipeline:
             if table not in available
         ]
         return sql_result if still_foreign else retried
+
+    def _certified_examples(
+        self,
+        *,
+        query: str,
+        database: str,
+        user_id: str,
+        access,
+    ) -> str:
+        """
+        取已确认正确的相似查询，渲染成 Prompt 段落。
+
+        没有配置反馈来源、没有 user_id、或者一条都不相似时返回空串——
+        这一段是可有可无的增强，任何异常都不应该影响正常生成。
+        """
+        if self.certified_lookup is None or not user_id:
+            return ""
+
+        try:
+            examples = self.certified_lookup(
+                query=query,
+                database=database,
+                user_id=user_id,
+                access=access,
+            )
+        except Exception as exc:
+            log_event(
+                _logger,
+                logging.WARNING,
+                "certified.lookup_failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return ""
+
+        # 只物化一次：lookup 返回生成器时，第二次 list() 会拿到空，
+        # 结果是「日志说注入了 0 条，Prompt 里却有内容」这种对不上的现象
+        materialized = list(examples or [])
+        if not materialized:
+            return ""
+
+        from ai_sql_feedback import render_certified_examples
+
+        rendered = render_certified_examples(materialized)
+        log_event(
+            _logger,
+            logging.INFO,
+            "certified.injected",
+            database=database,
+            count=len(materialized),
+        )
+        return rendered
 
     def _tables_of(self, database: str) -> set:
         """目标库里可用的表名集合。"""

@@ -127,6 +127,15 @@ class SqlGenerationRequest:
     需要把上一步结果集回填进 Prompt，由模型将其改写为字面量条件。
     """
 
+    certified_examples: str = ""
+    """
+    已被用户确认正确的相似查询（渲染好的 Prompt 段落）。
+
+    来自反馈回路：用户点「对」的查询会成为同类问题的参考写法。
+    与 few-shot 的区别是它来自这套库上真实答对过的查询，
+    表名、口径、join 路径都是这家公司的，不是通用示例。
+    """
+
 
 @dataclass
 class SqlGenerationResult:

@@ -21,6 +21,10 @@ class SqlPromptBuilder:
         schema_context = request.local_schema.to_prompt_context()
         dialect_rules = get_dialect(request.sql_dialect).to_prompt_rules()
 
+        certified_section = ""
+        if request.certified_examples.strip():
+            certified_section = f"\n{request.certified_examples.strip()}\n"
+
         previous_results_section = ""
         if request.previous_results.strip():
             previous_results_section = f"""
@@ -52,7 +56,7 @@ class SqlPromptBuilder:
 
 # 方言约束
 {dialect_rules}
-
+{certified_section}
 # 当前步骤CoT
 处理对象：{cot_step.processing_objects}
 操作指令：{cot_step.operation_instruction}

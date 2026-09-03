@@ -34,12 +34,14 @@ class SqlGenerator:
         cot_step: CotStep,
         sql_dialect: str = "sqlite",
         previous_results: str = "",
+        certified_examples: str = "",
     ) -> SqlGenerationResult:
         """
         根据 CoT 步骤生成 SQL。
 
         sql_dialect 由 Pipeline 按目标库注入，决定 Prompt 里的方言约束；
-        previous_results 用于跨库多步执行时回填上一步结果集。
+        previous_results 用于跨库多步执行时回填上一步结果集；
+        certified_examples 是用户确认过正确的相似查询，作为写法参考注入。
         """
         local_schema = self.schema_store.extract_local_schema(cot_step)
 
@@ -48,6 +50,7 @@ class SqlGenerator:
             local_schema=local_schema,
             sql_dialect=sql_dialect,
             previous_results=previous_results,
+            certified_examples=certified_examples,
         )
 
         prompt = self.prompt_builder.build(request)
