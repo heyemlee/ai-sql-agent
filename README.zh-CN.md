@@ -124,7 +124,26 @@ curl -X POST http://localhost:8000/query \
 
 本地默认关闭 API Key 校验。生产环境请开启 `AI_SQL_AUTH_MODE=api_key`，并配置权限文件。
 
-### 3. 接入真实模型（可选）
+### 3. 接入自己的业务库
+
+Demo 自带四个演示库。换成自己的库时，需要写一份**语义元数据**：每张表每个字段
+是什么意思、业务上怎么称呼、几个库之间靠什么字段对应。检索、规划和口径解释
+全都读它。
+
+```bash
+python -m ai_sql_semantic export semantic/     # 导出演示元数据当模板
+# 按真实库改写 semantic/*.yaml：表名字段名、业务说法、连接方式
+python -m ai_sql_semantic validate semantic/   # 与真实库比对结构
+```
+
+`validate` 会连上真实库双向比对：元数据里有、库里没有的表和字段（模型会照着
+写 SQL，执行必报错），以及库里有、元数据没写的表（对模型完全不存在，涉及它的
+问题永远答不出来）。改完把 `AI_SQL_SEMANTIC_DIR=semantic/` 配上即可。
+
+不配这一项，检索只能按字段名字面匹配，口语问法基本召不回来——现象是「模型
+答不准」，实际是没告诉它业务是什么。
+
+### 4. 接入真实模型（可选）
 
 ```bash
 cp .env.example .env
@@ -149,6 +168,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 | 主题 | 实现方式 |
 | --- | --- |
+| 业务语义 | 表/字段含义、别名、跨库关联键、指标口径写在可编辑的 YAML 里，不在代码里。这是模型对业务的全部认知，接真实库时它是准确率的首要抓手 |
+| 越用越准 | 用户标记回答对错：答错的进评测集，确认对的成为参考写法，注入后续同类问题的生成 Prompt |
 | Schema 检索 | 先定位数据库，再找表和字段；混合检索后构建 SchemaGraph，并按 Token 预算裁剪 |
 | 跨库查询 | 规划阶段明确每步目标库；上一条查询结果会被转为筛选条件回填到下一步 |
 | SQL 安全 | 仅允许 `SELECT` / `WITH`；拒绝多语句和写操作；连接层再使用只读事务或只读连接兜底 |
@@ -165,6 +186,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 | `POST /query` | 自然语言查询入口 |
 | `GET /history` | 查询历史（默认只返回自己的记录） |
 | `POST /memory/save` | 将结果保存到个人长期记忆 |
+| `POST /feedback` | 标记这条回答对不对（答错的进评测集，答对的成为参考写法） |
+| `GET /feedback/stats` | 真实使用中的准确率与静默错误率（管理员） |
 | `GET /health` | 存活检查 |
 | `GET /readyz` | 就绪检查（存储与向量后端） |
 | `GET /metrics` | Prometheus 指标 |
@@ -186,6 +209,8 @@ mcp_router/          SQL 安全校验与多方言执行
 ai_sql_memory/       短期会话与长期记忆
 ai_sql_auth/         API Key、身份与表列权限
 ai_sql_audit/        审计记录
+ai_sql_semantic/     业务语义元数据：表/字段含义、别名、跨库关联键、指标口径
+ai_sql_feedback/     用户判定：答错的进评测集，答对的成为认证范例
 ai_sql_core/         配置、模型传输、日志、指标、熔断
 benchmark/           评测集与发布门禁
 deploy/              生产部署和运维文档

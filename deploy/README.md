@@ -44,6 +44,9 @@ it is mounted read-only instead. Rotating a key means editing the file and runni
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | per vendor | Credentials and endpoint when provider=anthropic |
 | `AI_SQL_AUTH_MODE` | `api_key` | `disabled` lets every request through — local development only |
 | `AI_SQL_API_KEYS_FILE` | `/run/secrets/api_keys.json` | Keys and data-permission policies |
+| `AI_SQL_SEMANTIC_DIR` | `semantic/` | Business metadata for your databases. **Required for real deployments** — see §2.6 |
+| `AI_SQL_FEEDBACK_ENABLED` | `true` | Collect right/wrong verdicts from users |
+| `AI_SQL_CERTIFIED_SQL_ENABLED` | `true` | Reuse confirmed-correct queries as reference examples |
 | `AI_SQL_PGVECTOR_DSN` | internal PG | Shared by schema vectors, long-term memory and audit |
 | `AI_SQL_MAX_ROWS` | `1000` | Row cap per query |
 | `AI_SQL_MAX_EXECUTION_SECONDS` | `10` | Per-query timeout, aborted on the database side |
@@ -125,6 +128,86 @@ real results**. Run it after touching anything in the model integration path.
 ```bash
 python -m pytest tests/test_openai_compatible_endpoint.py -v
 ```
+
+## 2.6. Business semantics: the metadata the model reads
+
+This is the largest piece of work when connecting real databases, and it is not a
+coding task. Someone who knows the business has to write down what each table and
+column means, what people actually call them, and how the databases relate.
+
+The service ships with metadata for four demo databases. Connect real ones and that
+metadata no longer applies: retrieval falls back to matching column names literally,
+so `safety_stock` stops resolving for "we're running low on stock". The symptom is
+"the model is not accurate", but the model was never told what the business means.
+
+```bash
+python -m ai_sql_semantic export semantic/     # export demo metadata as a template
+# edit semantic/*.yaml, one file per database, plus _shared.yaml
+python -m ai_sql_semantic validate semantic/   # compare against the live schema
+python -m ai_sql_semantic show                 # which metadata is currently active
+```
+
+Each database file carries the table and column descriptions, aliases, semantic
+roles and sample values. `_shared.yaml` carries what spans databases: join keys
+(these systems have no foreign keys between them, so the planner can only split
+steps correctly if you declare them), metric disambiguation (which field "purchase
+amount" actually means), and metric definitions (how "over budget" is computed).
+
+`validate` connects to the real databases and reports both directions:
+
+| Finding | Why it matters |
+| --- | --- |
+| Documented table or column that does not exist | Retrieval offers it to the model, the generated SQL fails |
+| Table that exists but is undocumented | Invisible to the model; those questions can never be answered |
+| Cross-database link pointing at an unknown column | Cross-database planning silently breaks |
+| Connection string written into the file | The file goes into version control; use `dsn_env` instead |
+
+It exits non-zero on errors, so it can gate a deploy. Run it again after every
+schema change, alongside `POST /admin/schema/reload`.
+
+Mount the directory read-only in production:
+
+```yaml
+volumes:
+  - ./semantic:/app/semantic:ro
+environment:
+  AI_SQL_SEMANTIC_DIR: /app/semantic
+```
+
+## 2.7. Feedback: how the system gets better with use
+
+The console shows a "was this right?" prompt under every answer. That verdict is the
+only data source that does not depend on us writing the test questions ourselves.
+
+- **Wrong** goes on a to-fix list. Most wrong answers trace back to missing
+  metadata, and the user's comment usually names it directly.
+- **Correct** becomes a certified query: the next similar question gets it as a
+  reference in the generation prompt, so your house style for joins and metrics
+  carries forward instead of being re-guessed each time.
+
+```bash
+python -m ai_sql_feedback stats                    # live accuracy and silent-error rate
+python -m ai_sql_feedback wrong                    # what to fix, with the user's comment
+python -m ai_sql_feedback export-dataset new.json  # turn wrong answers into eval cases
+python -m ai_sql_feedback resolve <trace_id>       # mark one handled
+```
+
+`export-dataset` writes a draft: the question, the SQL the model produced, and the
+user's comment. A person still has to supply the correct SQL — the model got it
+wrong, so nothing in the system knows the right answer. Merge the completed entries
+into `benchmark/dataset.json` and rerun the gate. Questions real users got wrong
+then become regressions that cannot silently come back.
+
+Two numbers matter operationally, both from `feedback stats`:
+
+| Metric | Reading |
+| --- | --- |
+| Live accuracy | Correct over decided verdicts. Compare against the benchmark; when they diverge, trust this one |
+| Live silent-error rate | Wrong answers that carried no risk warning. The expensive kind — the user had no reason to double-check |
+
+Feedback is scoped per user: people can only judge their own queries, and certified
+examples are only reused for the user who confirmed them, since a query carries
+table names that the permission layer may not grant to everyone.
 
 ## 3. Permissions
 

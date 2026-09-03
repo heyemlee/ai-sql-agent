@@ -124,7 +124,27 @@ curl -X POST http://localhost:8000/query \
 
 API key checks are off by default for local runs. In production, set `AI_SQL_AUTH_MODE=api_key` and provide a permissions file.
 
-### 3. Connect a real model (optional)
+### 3. Point it at your own databases
+
+The demo ships with four sample databases. To use your own, describe them in a
+semantic metadata directory: what each table and column means, what people call
+them, and how the databases relate. Retrieval, planning and metric explanations
+all read from it.
+
+```bash
+python -m ai_sql_semantic export semantic/     # export the demo metadata as a template
+# edit semantic/*.yaml: real table and column names, business wording, connections
+python -m ai_sql_semantic validate semantic/   # checks it against the real databases
+```
+
+`validate` compares the metadata with the live schema and reports both directions:
+tables you documented that do not exist (the model will write SQL against them and
+fail), and tables that exist but are undocumented (invisible to the model, so those
+questions can never be answered). Point the service at it with
+`AI_SQL_SEMANTIC_DIR=semantic/`. Without it, retrieval falls back to literal column
+name matching and everyday phrasing stops working.
+
+### 4. Connect a real model (optional)
 
 ```bash
 cp .env.example .env
@@ -149,6 +169,8 @@ Self-hosted vLLM, Ollama and other OpenAI-compatible endpoints work too; see the
 
 | Topic | Approach |
 | --- | --- |
+| Business semantics | Table and column meanings, aliases, cross-database join keys and metric definitions live in editable per-database YAML, not in code. This is what the model knows about the business; with real databases it is the main accuracy lever |
+| Getting better with use | Users mark answers right or wrong. Wrong ones become eval cases, confirmed ones become reference queries injected into later prompts for similar questions |
 | Schema retrieval | Locate the database first, then tables and columns; hybrid retrieval feeds a SchemaGraph, which is trimmed to a token budget |
 | Cross-database queries | The plan names a target database per step; each result is converted into filter literals for the next step |
 | SQL safety | Only `SELECT` / `WITH` are allowed; multiple statements and writes are rejected; the connection layer adds a read-only transaction or connection as a backstop |
@@ -165,6 +187,8 @@ Self-hosted vLLM, Ollama and other OpenAI-compatible endpoints work too; see the
 | `POST /query` | Natural-language query entry point |
 | `GET /history` | Query history (own records only by default) |
 | `POST /memory/save` | Save a result into personal long-term memory |
+| `POST /feedback` | Mark an answer right or wrong (feeds the eval set and certified queries) |
+| `GET /feedback/stats` | Live accuracy and silent-error rate from real usage (admin) |
 | `GET /health` | Liveness check |
 | `GET /readyz` | Readiness check (storage and vector backend) |
 | `GET /metrics` | Prometheus metrics |
@@ -186,6 +210,8 @@ mcp_router/          SQL guard and multi-dialect execution
 ai_sql_memory/       Short-term sessions and long-term memory
 ai_sql_auth/         API keys, identity, table and column permissions
 ai_sql_audit/        Audit records
+ai_sql_semantic/     Business semantics per database: meanings, aliases, join keys, metrics
+ai_sql_feedback/     User verdicts: wrong answers to the eval set, right ones to certified queries
 ai_sql_core/         Settings, model transport, logging, metrics, circuit breaker
 benchmark/           Evaluation set and release gate
 deploy/              Production deployment and operations docs

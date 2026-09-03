@@ -42,6 +42,9 @@ curl -s localhost:8000/readyz | python -m json.tool
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | 按厂商填 | provider=anthropic 时的凭证与端点 |
 | `AI_SQL_AUTH_MODE` | `api_key` | `disabled` 会放行所有请求，只允许本地开发 |
 | `AI_SQL_API_KEYS_FILE` | `/run/secrets/api_keys.json` | Key 与数据权限策略 |
+| `AI_SQL_SEMANTIC_DIR` | `semantic/` | 业务语义元数据目录。**接真实库必配**，见 §二·六 |
+| `AI_SQL_FEEDBACK_ENABLED` | `true` | 收集用户对回答的对错判定 |
+| `AI_SQL_CERTIFIED_SQL_ENABLED` | `true` | 把确认正确的查询作为参考写法复用 |
 | `AI_SQL_PGVECTOR_DSN` | 指向内网 PG | Schema 向量、长期记忆、审计共用 |
 | `AI_SQL_MAX_ROWS` | `1000` | 单查询返回行数上限 |
 | `AI_SQL_MAX_EXECUTION_SECONDS` | `10` | 单查询执行超时（数据库侧中断） |
@@ -111,6 +114,79 @@ AI_SQL_EMBEDDING_DIMENSIONS=1024
 ```bash
 python -m pytest tests/test_openai_compatible_endpoint.py -v
 ```
+
+## 二·六、业务语义元数据：模型对业务的全部认知
+
+接真实业务库时，这是工作量最大的一块，而且它不是编码工作——需要懂业务的人
+把每张表每个字段是什么意思、业务上怎么称呼、几个库之间靠什么对应写下来。
+
+服务自带四个演示库的元数据。换成真实库之后那份元数据就不适用了：检索退化成
+按字段名字面匹配，「料快没了」再也匹配不到 `safety_stock`。现象是「模型答不准」，
+实际是没人告诉过它业务是什么。
+
+```bash
+python -m ai_sql_semantic export semantic/     # 导出演示元数据当模板
+# 编辑 semantic/*.yaml：一个库一个文件，外加 _shared.yaml
+python -m ai_sql_semantic validate semantic/   # 与真实库比对结构
+python -m ai_sql_semantic show                 # 当前生效的是哪一份
+```
+
+每个库的文件里是表和字段的业务描述、别名、语义角色和样例值；`_shared.yaml`
+放跨库的部分：关联键（这些系统之间没有外键，不显式声明规划就没法正确拆步）、
+指标口径消歧（「采购金额」到底指哪个字段）、指标定义（「超预算」怎么算）。
+
+`validate` 会连上真实库双向比对：
+
+| 发现 | 后果 |
+| --- | --- |
+| 元数据里有、库里没有的表或字段 | 检索会把它推给模型，生成的 SQL 必定报错 |
+| 库里有、元数据没写的表 | 对模型完全不存在，涉及它的问题永远答不出来 |
+| 跨库关联键指向不存在的字段 | 跨库规划会静默失效 |
+| 连接串直接写在文件里 | 文件要进版本库，密码不能——改用 `dsn_env` |
+
+有错误时返回非 0，可以直接卡在发布流水线里。每次业务库改结构后都要重跑一次，
+和 `POST /admin/schema/reload` 一起做。
+
+生产部署把目录只读挂进去：
+
+```yaml
+volumes:
+  - ./semantic:/app/semantic:ro
+environment:
+  AI_SQL_SEMANTIC_DIR: /app/semantic
+```
+
+## 二·七、反馈回路：让工具越用越准
+
+页面上每条回答下面都有「这条回答对吗」。这个判定是唯一不依赖我们自己出题的
+数据来源。
+
+- **答错**进待改进清单。绝大多数答错都能追溯到元数据缺失，而用户那句补充说明
+  往往直接点出缺的是哪一条；
+- **答对**成为认证范例：下次遇到相似问题，它会作为参考写法进生成 Prompt，
+  把这家公司的 join 路径和口径固化下来，而不是每次重新猜。
+
+```bash
+python -m ai_sql_feedback stats                    # 线上准确率与静默错误率
+python -m ai_sql_feedback wrong                    # 待处理清单，带用户说明
+python -m ai_sql_feedback export-dataset new.json  # 把答错的问题导成评测集草稿
+python -m ai_sql_feedback resolve <trace_id>       # 标记某条已处理
+```
+
+`export-dataset` 导出的是草稿：问题原文、模型答错的 SQL、用户的说明都摆好了，
+但正确 SQL 得人来补——模型答错了，系统里没有任何地方知道正确答案。补完并进
+`benchmark/dataset.json` 再重跑门禁，真实用户答错过的题就成了以后不能悄悄
+退化回去的红线。
+
+运维上主要看两个数（都来自 `feedback stats`）：
+
+| 指标 | 怎么读 |
+| --- | --- |
+| 线上准确率 | 有明确判定的样本里答对的占比。与 benchmark 对照，两边差得远时以这个为准 |
+| 线上静默错误率 | 答错且当时没有任何风险提示的占比。最贵的一类——用户没有任何理由去核对 |
+
+反馈按人隔离：只能对自己的查询表态，认证范例也只回给确认它的那个人——
+一条查询里带着表名，等于绕过权限层看 Schema。
 
 ## 三、权限配置
 
