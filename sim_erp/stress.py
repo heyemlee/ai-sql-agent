@@ -67,6 +67,29 @@ CASES = [
      q("wms", """SELECT COUNT(*) FROM inventory i JOIN material m ON m.sku=i.sku
                  WHERE (i.on_hand_qty - i.allocated_qty) < m.safety_stock"""),
      "(on_hand - allocated) < safety_stock"),
+
+    # ── 补的 7 类：原来 17 类边界情况里没出过题的那些 ──
+    ("S11", "有多少个工程还没下生产工单？", "sold/cancelled 不投产，内连接会静默丢掉它们",
+     q("erp", "SELECT COUNT(*) FROM job WHERE job_status IN ('sold','cancelled')"),
+     "按状态数，或与 prod 左连接后数 NULL"),
+    ("S12", "商业工程有多少个？", "商业工程的 subdivision 是 NULL，不是空串",
+     q("erp", "SELECT COUNT(*) FROM job WHERE subdivision IS NULL"),
+     "subdivision IS NULL（等价于 job_type='commercial'）"),
+    ("S13", "有多少个物料从来没有盘点过？", "没盘过的 last_counted 是 NULL",
+     q("wms", "SELECT COUNT(*) FROM inventory WHERE last_counted IS NULL"),
+     "last_counted IS NULL"),
+    ("S14", "现在有多少张工单是挂起状态？", "挂起才有 hold_reason，其余为 NULL",
+     q("prod", "SELECT COUNT(*) FROM work_order WHERE wo_status='on_hold'"),
+     "wo_status='on_hold'"),
+    ("S15", "有多少张发票是部分收款的？", "partial 既不是未付也不是已付，最容易被漏掉",
+     q("erp", "SELECT COUNT(*) FROM invoice WHERE invoice_status='partial'"),
+     "invoice_status='partial'"),
+    ("S16", "有多少个不同的小区？", "商业工程 subdivision 为 NULL，COUNT(DISTINCT) 会自动跳过",
+     q("erp", "SELECT COUNT(DISTINCT subdivision) FROM job WHERE subdivision IS NOT NULL"),
+     "COUNT(DISTINCT subdivision)，NULL 不计"),
+    ("S17", "Sterling Ranch 这个小区有多少个工程？", "lot 号跨小区重复，定位工程必须靠小区名",
+     q("erp", "SELECT COUNT(*) FROM job WHERE subdivision='Sterling Ranch'"),
+     "subdivision='Sterling Ranch'"),
 ]
 
 results = []
