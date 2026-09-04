@@ -181,14 +181,18 @@ class SqlAgentSettings(BaseSettings):
     """API Key 配置文件路径，推荐（K8s Secret / Docker secret 挂载）。"""
 
     # ---- A2A ----
-    a2a_streaming: bool = False
+    a2a_streaming: bool = True
     """
     A2A `message/stream` 开关。关 = Card 报 streaming:false、message/stream 返回
     -32004，调用方退回 message/send（契约 §6.2 的回滚路径）。
 
-    默认关，尽管契约 §6.2 建议默认开——契约 v1.3 把「调用方先补好 -32004 降级分支」
-    列为硬阻断：那条分支没上线之前打开这个开关，要关的时候就不是降级而是全线故障。
-    调用方那边验证过降级分支真的接得住之后再翻成 True。
+    默认开。契约 v1.3 曾把「调用方先补好 -32004 降级分支」列为硬阻断，2026-09-03
+    两条路都做过实机回滚演练才翻开的：
+      · Card 路径——开关关掉、调用方不重启，Card 过期后读到 streaming:false，
+        直接走 send，答案正确；
+      · -32004 路径——把调用方的 Card 缓存强行写成 streaming:true（模拟「开关刚关，
+        手上还是旧 Card」），发 message/stream 收到 -32004，自动改发 send。
+    两条都验过，关这个开关是降级而不是故障。
     """
 
     # ---- 限流与配额 ----
