@@ -439,7 +439,11 @@ def build_semantic(sim_dir: Path, out_dir: Path) -> list[str]:
             {"term": "工程总额 / 最终金额（含变更）",
              "correct": "erp_db.change_order.amount_delta",
              "wrong": "erp_db.job.contract_amount（只有它会漏掉变更单增减；见 metric_definitions 的算法）"},
-            {"term": "未付余额 / 尾款还差多少 / 欠款",
+            {"term": "还欠多少 / 还有多少钱没付 / 未付总额",
+             "correct": "erp_db.job.contract_amount",
+             "wrong": "erp_db.invoice.amount（只汇总已开票的发票会漏掉尚未开票的尾款——"
+                      "尾款常常没开，客户会以为快付清了。算法见 metric_definitions 的「工程未付总额」）"},
+            {"term": "当前到期应付 / 这张发票还差多少",
              "correct": "erp_db.payment_received.amount",
              "wrong": "erp_db.invoice.invoice_status（状态只有 open/partial/paid，读不出还差多少钱）"},
             {"term": "可用库存 / 能不能发货",
@@ -451,7 +455,13 @@ def build_semantic(sim_dir: Path, out_dir: Path) -> list[str]:
         ],
         "metric_definitions": {
             "逾期发票": "开票已过到期日（due_date < 今天）且仍未收清（invoice_status 不是 paid）的发票。",
-            "未付余额": "一张发票的应收减去该发票下所有回款之和，即 invoice.amount − SUM(payment_received.amount)。",
+            "单张发票未付余额": "**一张发票**的应收减去该发票下所有回款之和，"
+                        "即 invoice.amount − SUM(payment_received.amount)。只管这一张，不代表整个工程。",
+            "当前到期应付": "该工程**已开出**的所有发票金额合计，减去已收回款合计。"
+                       "尾款未开票时它会明显小于工程欠款总额。",
+            "工程未付总额": "整个工程还欠多少：合同额 + 已批准变更单增减 − 已收回款合计。"
+                       "**客户问「还有多少钱没付」「还欠多少」通常指的是这个**，"
+                       "因为它包含了尚未开票的尾款。只报「当前到期应付」会让客户以为快付清了。",
             "在制": "生产工单状态为 in_progress 或 on_hold，即已下达车间但尚未完工。",
             "逾期送货": "计划送货日已过（scheduled_date < 今天）但实际送达日仍为空的送货单。",
             "准时率": "供应商按承诺日期到货的批次占比，用于评估供应商交付表现。",
