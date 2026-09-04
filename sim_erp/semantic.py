@@ -74,8 +74,10 @@ ERP_TABLES: dict[str, tuple[str, list[str], list[Col]]] = {
             ("city", "城市。", ["城市", "city"], "filter", "按区域统计时用。"),
             ("state", "州（两位缩写）。",
              ["州", "state"], "filter",
-             "**大小写不统一**：绝大多数是 CA/NV，有少量手工录入成 Ca/Nv。"
-             "`WHERE state = 'CA'` 会漏掉它们，稳妥写法是 UPPER(state) = 'CA'。"),
+             "**这一列大小写不统一，任何按州筛选的查询都必须写 UPPER(state) = 'CA'**。"
+             "绝大多数行是 CA/NV，但有约 3% 是手工录入的 Ca/Nv；写 `state = 'CA'` "
+             "会静默漏掉它们（实测 862 vs 893，差 31 行）。这不是可选的写法偏好，"
+             "是这一列的数据事实。"),
             ("job_type", "工程类型：production 量产房 / semi_custom 半定制 / commercial 商业 / service 售后服务单。",
              ["工程类型", "订单类型", "job type"], "filter", "四类的金额量级和交付流程都不同。"),
             ("contract_amount", "合同金额（美元，**不含税**）。变更单的增减不在这个数里。",
@@ -124,7 +126,10 @@ ERP_TABLES: dict[str, tuple[str, list[str], list[Col]]] = {
              "**待审为 NULL**，统计审批时长必须排除它们。"),
             ("co_status", "状态：pending 待审 / approved 已批 / rejected 已驳回。",
              ["变更状态", "审批状态", "co status"], "filter",
-             "**只有 approved 的才计入工程金额**，把 pending 和 rejected 算进去会高估。"),
+             "**算工程金额时只计入 approved**，把 pending 和 rejected 算进去会高估。"
+             "但这只管「这个工程实际多少钱」这类问题——**用户问「所有变更单」「一共提过多少变更」"
+             "时指的就是全部，不要自作主张加 co_status 过滤**。加不加这个条件取决于问题问的是"
+             "「生效的金额」还是「提过的单子」。"),
         ],
     ),
     "invoice": (
