@@ -180,6 +180,17 @@ class SqlAgentSettings(BaseSettings):
     api_keys_file: str = ""
     """API Key 配置文件路径，推荐（K8s Secret / Docker secret 挂载）。"""
 
+    # ---- A2A ----
+    a2a_streaming: bool = False
+    """
+    A2A `message/stream` 开关。关 = Card 报 streaming:false、message/stream 返回
+    -32004，调用方退回 message/send（契约 §6.2 的回滚路径）。
+
+    默认关，尽管契约 §6.2 建议默认开——契约 v1.3 把「调用方先补好 -32004 降级分支」
+    列为硬阻断：那条分支没上线之前打开这个开关，要关的时候就不是降级而是全线故障。
+    调用方那边验证过降级分支真的接得住之后再翻成 True。
+    """
+
     # ---- 限流与配额 ----
     default_rate_limit_per_minute: int = 60
     default_daily_query_quota: int = 0
