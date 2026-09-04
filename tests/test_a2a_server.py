@@ -5,6 +5,7 @@ A2A 服务端：契约 a2a-streaming-contract.md（v1.3）里能在单测里钉�
 """
 import json
 import unittest
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -12,10 +13,16 @@ from ai_sql_api.app import app
 from ai_sql_core import get_settings
 
 
-def _rpc(method, text="查询准时率低于0.9的供应商名称", user_id="u_a2a", **extra):
+# 会话 id 每次运行都要新的：runtime_data/memory.db 跨运行持久化，复用同一个
+# session 时 ai-sql-agent 会认出「这问题本会话已经答过」，路由到「解释上一条结果」
+# 而不是重新查库——那是它的设计，不是故障，但会让断言查库结果的用例第二次跑就挂。
+SESSION = f"s_a2a_{uuid.uuid4().hex[:8]}"
+
+
+def _rpc(method, text="查询准时率低于0.9的供应商名称", user_id="u_a2a", session=None, **extra):
     return {"jsonrpc": "2.0", "id": "req-1", "method": method,
             "params": {"message": {"kind": "message", "role": "user", "messageId": "m1",
-                                   "contextId": "s_a2a",
+                                   "contextId": session or SESSION,
                                    "parts": [{"kind": "text", "text": text}],
                                    "metadata": {"user_id": user_id}, **extra}}}
 
@@ -86,7 +93,7 @@ class A2ATest(unittest.TestCase):
         task = r.json()["result"]
         self.assertEqual(task["kind"], "task")
         self.assertEqual(task["status"]["state"], "completed")
-        self.assertEqual(task["contextId"], "s_a2a")
+        self.assertEqual(task["contextId"], SESSION)
         parts = task["artifacts"][0]["parts"]
         text = next(p for p in parts if p["kind"] == "text")["text"]
         data = next(p for p in parts if p["kind"] == "data")["data"]
@@ -98,8 +105,9 @@ class A2ATest(unittest.TestCase):
         self.assertEqual(data["route"], "database_query")
         self.assertTrue(data["steps"] and data["steps"][0]["success"])
         # 与 /query 跑同一个问题比对
-        q = self.client.post("/query", json={"user_id": "u_a2a", "session_id": "s_cmp",
-                                              "query": "查询准时率低于0.9的供应商名称"}).json()
+        q = self.client.post("/query", json={
+            "user_id": "u_a2a", "session_id": f"s_cmp_{uuid.uuid4().hex[:8]}",
+            "query": "查询准时率低于0.9的供应商名称"}).json()
         self.assertEqual(data["selected_databases"], q["selected_databases"])
         self.assertEqual(data["steps"][0]["final_sql"], q["step_logs"][0]["final_sql"])
 
@@ -180,11 +188,15 @@ class A2ATest(unittest.TestCase):
         """
         §5.5：一次 stream = 一次 /query = 一条审计。
 
-        用独立 user_id：/history 有 20 条上限，共用 u_a2a 时前面的用例攒满之后
-        before 和 after 都是 20，这条断言就永远成立不了——单跑过、全量跑挂。
+        user_id 必须每次运行都不一样。两轮都栽在这上面：
+          · 一开始共用 u_a2a——/history 有 20 条上限，前面的用例攒满之后
+            before 和 after 都是 20，断言永远不成立；
+          · 改成固定的 u_audit_once 仍然不行——runtime_data/audit.db **跨运行
+            持久化**，第二次跑就读到上一次留下的那条，`items == []` 挂掉。
+        随机 id 才真的每次从零开始。
         """
         get_settings().a2a_streaming = True
-        user = "u_audit_once"
+        user = f"u_audit_{uuid.uuid4().hex[:8]}"
         self.assertEqual(self.client.get("/history", params={"user_id": user}).json()["items"], [])
         with self.client.stream("POST", "/a2a", json=_rpc("message/stream", user_id=user)) as r:
             r.read()
