@@ -34,7 +34,16 @@ CREATE TABLE job (
     plan_name           TEXT,        -- builder's floor plan name, NULL on commercial
     address             TEXT NOT NULL,
     city                TEXT NOT NULL,
-    state               TEXT NOT NULL,
+    state               TEXT NOT NULL,   -- 原始录入值，大小写不统一（CA 与 Ca 混用），别拿它筛选
+    -- 规范化后的州。生成列而不是让每条查询自己写 UPPER()：
+    -- 语义层里把「必须写 UPPER(state)」写到最硬的措辞，三轮压测里仍有两轮写成
+    -- `state = 'CA'`，静默漏掉 3% 的行。描述能引导，不能保证——真 ERP 里这类
+    -- 脏数据同样改不了源头，通行做法就是在报表层建一个规范化的列或视图，
+    -- 让查询有一个无歧义的目标，而不是指望每次都记得加函数。
+    -- 普通列而不是 GENERATED：SQLite 的 PRAGMA table_info 不返回生成列，
+    -- 语义层校验（ai_sql_semantic validate）会判定「元数据里有、真实库里没有」。
+    -- 物化一列也更接近真 ERP 报表层的做法。
+    state_norm          TEXT NOT NULL,
     job_type            TEXT NOT NULL,   -- production | semi_custom | commercial | service
     contract_amount     REAL NOT NULL,   -- excludes tax
     sold_date           TEXT NOT NULL,

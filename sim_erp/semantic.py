@@ -72,12 +72,14 @@ ERP_TABLES: dict[str, tuple[str, list[str], list[Col]]] = {
              ["户型", "图号", "plan", "plan name"], "filter", "量产房按户型批量下单时用。"),
             ("address", "施工地址。", ["地址", "工地地址", "address"], "text", "送货与安装用地址。"),
             ("city", "城市。", ["城市", "city"], "filter", "按区域统计时用。"),
-            ("state", "州（两位缩写）。",
-             ["州", "state"], "filter",
-             "**这一列大小写不统一，任何按州筛选的查询都必须写 UPPER(state) = 'CA'**。"
-             "绝大多数行是 CA/NV，但有约 3% 是手工录入的 Ca/Nv；写 `state = 'CA'` "
-             "会静默漏掉它们（实测 862 vs 893，差 31 行）。这不是可选的写法偏好，"
-             "是这一列的数据事实。"),
+            ("state", "州的原始录入值（两位缩写）。**大小写不统一，不要用它做筛选**。",
+             ["州原始值", "state raw"], "dimension",
+             "只用于原样展示。绝大多数行是 CA/NV，但约 3% 是手工录入的 Ca/Nv，"
+             "`state = 'CA'` 会静默漏掉它们（862 vs 893）。**按州筛选一律用 state_norm**。"),
+            ("state_norm", "规范化后的州（大写去空格），按州筛选、分组一律用这一列。",
+             ["州", "state", "哪个州", "加州", "内华达"], "filter",
+             "生成列，等于 UPPER(TRIM(state))。它存在的理由就是给按州的查询一个无歧义的目标——"
+             "原始 state 列大小写不统一，靠每条查询自己记得加 UPPER() 不可靠。"),
             ("job_type", "工程类型：production 量产房 / semi_custom 半定制 / commercial 商业 / service 售后服务单。",
              ["工程类型", "订单类型", "job type"], "filter", "四类的金额量级和交付流程都不同。"),
             ("contract_amount", "合同金额（美元，**不含税**）。变更单的增减不在这个数里。",
