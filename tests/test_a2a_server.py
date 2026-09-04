@@ -12,12 +12,12 @@ from ai_sql_api.app import app
 from ai_sql_core import get_settings
 
 
-def _rpc(method, text="查询准时率低于0.9的供应商名称", **extra):
+def _rpc(method, text="查询准时率低于0.9的供应商名称", user_id="u_a2a", **extra):
     return {"jsonrpc": "2.0", "id": "req-1", "method": method,
             "params": {"message": {"kind": "message", "role": "user", "messageId": "m1",
                                    "contextId": "s_a2a",
                                    "parts": [{"kind": "text", "text": text}],
-                                   "metadata": {"user_id": "u_a2a"}, **extra}}}
+                                   "metadata": {"user_id": user_id}, **extra}}}
 
 
 def _events(resp):
@@ -177,13 +177,20 @@ class A2ATest(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "artifact-update" for e in events))
 
     def test_stream_and_send_share_one_audit_shape(self):
-        """§5.5：一次 stream = 一次 /query = 一条审计。跑一次流式后 history 里多一条。"""
+        """
+        §5.5：一次 stream = 一次 /query = 一条审计。
+
+        用独立 user_id：/history 有 20 条上限，共用 u_a2a 时前面的用例攒满之后
+        before 和 after 都是 20，这条断言就永远成立不了——单跑过、全量跑挂。
+        """
         get_settings().a2a_streaming = True
-        before = len(self.client.get("/history", params={"user_id": "u_a2a"}).json()["items"])
-        with self.client.stream("POST", "/a2a", json=_rpc("message/stream")) as r:
+        user = "u_audit_once"
+        self.assertEqual(self.client.get("/history", params={"user_id": user}).json()["items"], [])
+        with self.client.stream("POST", "/a2a", json=_rpc("message/stream", user_id=user)) as r:
             r.read()
-        after = len(self.client.get("/history", params={"user_id": "u_a2a"}).json()["items"])
-        self.assertEqual(after, before + 1)
+        items = self.client.get("/history", params={"user_id": user}).json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["route"], "database_query")
 
 
 if __name__ == "__main__":
