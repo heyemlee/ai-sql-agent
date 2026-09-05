@@ -1509,16 +1509,20 @@ async function loadHistory() {
 }
 
 function normalize(payload, ms) {
+  // 契约 §4.4.1：逐步骤日志的契约面名字是 `steps`；`step_logs` 是 /query 的
+  // 历史名字，过渡期两个字段同时发。**两个都认、steps 优先**——
+  // 服务端按 §6 删掉 step_logs 那天，这里一行都不用改。
+  const steps = payload.steps || payload.step_logs || [];
   return {
     trace_id: payload.trace_id || '—',
     route: payload.route, reason: payload.reason || '', answer: payload.answer || '',
     confidence: typeof payload.confidence === 'number' ? payload.confidence : null,
     queried_database: !!payload.queried_database,
     selected_databases: payload.selected_databases || [],
-    retrieved: (payload.step_logs || []).map((s) => s.database),
+    retrieved: steps.map((s) => s.database),
     degraded: !!payload.degraded, degrade_reason: payload.degrade_reason || '',
     duration_ms: ms, total_tokens: null,   // /query 不返回用量，稍后从 /history 回填
-    step_logs: (payload.step_logs || []).map((s) => {
+    step_logs: steps.map((s) => {
       const cols = (s.rows || []).reduce((acc, r) => {
         Object.keys(r).forEach((k) => { if (!acc.includes(k)) acc.push(k); });
         return acc;

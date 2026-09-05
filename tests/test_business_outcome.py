@@ -29,7 +29,7 @@ from ai_sql_api.result_summary import (
     StepLogResponse,
     compute_execution_status,
 )
-from ai_sql_api.trust import trust_verdict
+from ai_sql_api.trust import execution_status_of, trust_verdict
 from ai_sql_core import get_settings
 from mcp_router.objects import MCPExecutionResult
 
@@ -177,10 +177,14 @@ class AllStepsFailedTest(unittest.TestCase):
 
 class TransportIsomorphismTest(unittest.TestCase):
     """
-    契约 §4.4：两条 transport 返回**同一套** §4.6 字段。
+    契约 §4.4 / §4.4.1：**三个**承载者返回同一套 §4.6 字段。
 
-    这不是一句愿望——它是 §6.2 回滚能成立的前提：回滚落在 send 上，
-    如果 send 的载荷和 stream 不一样，回滚就是静默降级。
+    v1.8 由两条改为三条：直连 `POST /query` 一直在契约的保护范围之外，
+    而它是 `SQL_AGENT_TRANSPORT` 的默认值——**跑生产流量的那条路**，
+    也是整条 A2A 关掉时 §6.2 的回滚落点。
+
+    回滚会依次落在 send 和直连 /query 上，任何一个的载荷和 stream 不一样，
+    回滚就是静默降级——正是 §6.2 反复要防的那种。
     """
 
     @classmethod
@@ -224,6 +228,43 @@ class TransportIsomorphismTest(unittest.TestCase):
                     p["data"] for p in event["artifact"]["parts"] if p["kind"] == "data"
                 )
         return None
+
+    def _query_data(self) -> Dict[str, Any]:
+        """第三个承载者：直连 /query，data part 就在响应体顶层（§4.4.1）。"""
+        return self.client.post("/query", json={
+            "user_id": "u_iso",
+            "session_id": f"iso_q_{uuid.uuid4().hex[:8]}",
+            "query": QUERY,
+        }).json()
+
+    def test_query_endpoint_emits_the_contract_field_name_steps(self):
+        """
+        §4.4.1 点名的那个静默缺陷：/query 把逐步骤日志叫 `step_logs`，
+        A2A 那两条叫 `steps`——同一个 StepLogResponse，两个名字。
+
+        后果不是「字段名不好看」：调用方按 §4.6.7 处理缺失字段，`steps` 取不到
+        就按「缺失 = 不可信」处置 ⇒ **每一次直连查询都不再是出处**，
+        而链路看起来完全正常，没有报错、没有降级事件、没有任何症状。
+        """
+        body = self._query_data()
+        self.assertIn("steps", body, "契约面的名字是 steps（§4.4.1）")
+        self.assertEqual(
+            body["steps"], body["step_logs"],
+            "过渡期两个字段同时发，内容必须是同一份数据",
+        )
+
+    def test_query_payload_is_trusted_the_same_way_as_a2a(self):
+        """同一份判据读三个承载者，结论必须一致——否则回滚就是静默降级。"""
+        self.assertEqual(trust_verdict(self._query_data()), trust_verdict(self._send_data()))
+
+    def test_all_three_carriers_carry_the_same_business_fields(self):
+        send, stream, query = self._send_data(), self._stream_data(), self._query_data()
+        self.assertIsNotNone(stream)
+        for key in ("route", "execution_status", "queried_database", "has_risk",
+                    "degraded", "result_truncated", "succeeded_steps",
+                    "failed_steps", "repaired_steps", "currency"):
+            self.assertEqual(send[key], stream[key], f"send vs stream: {key}")
+            self.assertEqual(send[key], query[key], f"send vs /query: {key}")
 
     def test_both_transports_carry_the_same_field_set(self):
         send, stream = self._send_data(), self._stream_data()
@@ -283,6 +324,44 @@ class ProducedPayloadMatchesContractTest(unittest.TestCase):
 
             import tests.test_contract_fixtures as fixtures  # noqa: F401
         self.assertTrue(validator_ok, f"产出的 data part 不过契约 schema：{data}")
+
+    def test_query_endpoint_payload_also_passes_the_contract_schema(self):
+        """
+        §4.4.1：载荷形状的规则适用于**全部三个承载者**，直连 /query 也不例外。
+        它在 v1.8 之前一直没有契约用例覆盖——而它是跑生产流量的那条路。
+        """
+        body = self.client.post("/query", json={
+            "user_id": "u_schema",
+            "session_id": f"schema_q_{uuid.uuid4().hex[:8]}",
+            "query": QUERY,
+        }).json()
+        self.assertTrue(
+            _is_valid("schema/artifact-data-part.schema.json", body),
+            f"/query 的响应体不过契约 schema：{ {k: v for k, v in body.items() if k != 'steps'} }",
+        )
+
+    def test_our_own_payload_reports_status_source_contract(self):
+        """
+        CONSUMER-TESTS 的 C 组把 `dp-trust-01` 拆成两条断言（v1.7 改），
+        第二条是 **`status_source == "contract"`**：结论必须来自服务端下发的字段，
+        不是调用方自己 reduce。
+
+        **缺口的实质不是「结论错」，是「结论由谁定义」**——§4.6.2 警告过
+        「三个汇总数调用方不应自己 reduce，reduce 的口径会漂」。
+        只要来源还是 derived，那句警告就还成立，缺口就没真关。
+
+        这一条对**我方产出的载荷**必须是 contract，而且三个承载者都得是。
+        """
+        for label, payload in (
+            ("send", self._data_part()),
+            ("/query", self.client.post("/query", json={
+                "user_id": "u_src",
+                "session_id": f"src_{uuid.uuid4().hex[:8]}",
+                "query": QUERY,
+            }).json()),
+        ):
+            _status, source = execution_status_of(payload)
+            self.assertEqual(source, "contract", f"{label} 的 status_source")
 
     def test_real_data_part_has_the_new_business_outcome_fields(self):
         data = self._data_part()
