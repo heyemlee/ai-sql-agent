@@ -195,20 +195,17 @@ def _progress_frame(task_id: str, context_id: str, stage: str, fields: Dict[str,
 
 
 def _artifact(task_id: str, summary, trace_id: str) -> Dict[str, Any]:
-    """结果载荷：文本 part（答案）+ data part。send 与 stream **完全同构**（契约 §4.4）。"""
+    """
+    结果载荷：文本 part（答案）+ data part。send 与 stream **完全同构**（契约 §4.4）。
+
+    data part 的字段集来自 `ResultSummary.data_part()`——`/query` 用的是同一个
+    函数。同构不是靠两边都记得改，是靠只有一份。
+    """
     return {
         "artifactId": uuid.uuid4().hex, "name": "answer",
         "parts": [
             {"kind": "text", "text": summary.answer},
-            {"kind": "data", "data": {
-                "route": summary.route, "confidence": summary.confidence,
-                "queried_database": summary.queried_database,
-                "has_risk": summary.has_risk, "degraded": summary.degraded,
-                "degrade_reason": summary.degrade_reason,
-                "selected_databases": summary.selected_databases,
-                "trace_id": trace_id,
-                "steps": [s.model_dump() for s in summary.step_logs],
-            }},
+            {"kind": "data", "data": {**summary.data_part(), "trace_id": trace_id}},
         ],
     }
 

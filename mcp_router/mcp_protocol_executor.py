@@ -71,6 +71,9 @@ class MCPProtocolExecutor:
             row_count=int(payload.get("row_count") or 0),
             error=payload.get("error"),
             truncated=bool(payload.get("truncated")),
+            row_limit=payload.get("row_limit"),
+            as_of=str(payload.get("as_of") or ""),
+            as_of_source=str(payload.get("as_of_source") or ""),
         )
 
     async def _call_tool_async(self, request: MCPExecutionRequest) -> dict:
