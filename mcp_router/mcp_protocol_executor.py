@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,18 @@ class MCPProtocolExecutor:
     dialect = "sqlite"
     """远端 mcp_server 目前挂的是 SQLite 演示库；解析 SQL 时按它的方言。"""
 
+    _spawn_guard = threading.BoundedSemaphore(8)
+    """
+    同时能拉起几个 stdio 子进程（审查 P1-5「连接与执行开销」）。
+
+    这里**没有做会话复用**——每次调用仍然起一个进程、建一次会话，
+    只是把并发数封了顶。诚实说明为什么只做一半：复用要维护常驻
+    `ClientSession` 的生命周期与失败重连，而这条路径今天只在
+    `use_mcp_protocol=True` 的演示配置里走，生产链路用的是进程内执行器。
+    封顶挡住的是真实风险（并发一上来把进程数打爆），会话复用省的是
+    这条路径上今天没人付的开销。
+    """
+
     def execute(self, request: MCPExecutionRequest) -> MCPExecutionResult:
         """
         通过 MCP tool call 执行 SQL。
@@ -53,7 +66,8 @@ class MCPProtocolExecutor:
         import anyio
 
         try:
-            payload = anyio.run(self._call_tool_async, request)
+            with self._spawn_guard:
+                payload = anyio.run(self._call_tool_async, request)
         except Exception as exc:
             return MCPExecutionResult(
                 database=request.database,
