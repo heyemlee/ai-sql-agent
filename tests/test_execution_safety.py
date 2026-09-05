@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ai_sql_auth import authorization_scope
 from mcp_router import MCPExecutionRequest, SQLiteMCPExecutor, check_readonly_sql
+from schema_retrieval.access import ALLOW_ALL
 from mcp_router.dialects import POSTGRES, SQLITE, get_dialect
 
 
@@ -66,7 +68,13 @@ class SQLiteExecutorSafetyTest(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def execute(self, sql):
-        return self.executor.execute(MCPExecutionRequest(database="test_db", sql=sql))
+        # 执行器入口现在有强制授权关卡：不绑作用域一律拒绝（这是有意的默认值，
+        # 见 ai_sql_auth.enforcement）。这组用例验的是只读约束与行数上限，
+        # 所以显式绑一个全放开的策略，把权限这一维度排除掉。
+        with authorization_scope(ALLOW_ALL):
+            return self.executor.execute(
+                MCPExecutionRequest(database="test_db", sql=sql)
+            )
 
     def test_select_succeeds(self):
         result = self.execute("SELECT id FROM t ORDER BY id")
@@ -94,14 +102,18 @@ class SQLiteExecutorSafetyTest(unittest.TestCase):
 
     def test_missing_database_file_reports_clearly(self):
         executor = SQLiteMCPExecutor(database="test_db", db_path="/nonexistent/x.db")
-        result = executor.execute(MCPExecutionRequest(database="test_db", sql="SELECT 1"))
+        with authorization_scope(ALLOW_ALL):
+            result = executor.execute(
+                MCPExecutionRequest(database="test_db", sql="SELECT 1")
+            )
         self.assertFalse(result.success)
         self.assertIn("不存在", result.error)
 
     def test_wrong_database_is_not_executed(self):
-        result = self.executor.execute(
-            MCPExecutionRequest(database="other_db", sql="SELECT 1")
-        )
+        with authorization_scope(ALLOW_ALL):
+            result = self.executor.execute(
+                MCPExecutionRequest(database="other_db", sql="SELECT 1")
+            )
         self.assertFalse(result.success)
         self.assertIn("路由错误", result.error)
 

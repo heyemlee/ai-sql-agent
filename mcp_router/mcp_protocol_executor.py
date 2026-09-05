@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from .authorization import enforce
 from .objects import MCPExecutionRequest, MCPExecutionResult
 
 
@@ -35,10 +36,20 @@ class MCPProtocolExecutor:
         ]
         self.working_dir = working_dir or str(Path(__file__).resolve().parents[1])
 
+    dialect = "sqlite"
+    """远端 mcp_server 目前挂的是 SQLite 演示库；解析 SQL 时按它的方言。"""
+
     def execute(self, request: MCPExecutionRequest) -> MCPExecutionResult:
         """
         通过 MCP tool call 执行 SQL。
+
+        本地先判一次权限：远端进程有它自己的授权作用域，但 contextvar 不跨进程，
+        调用方这一侧的策略只能在这里落实。
         """
+        denied = enforce(request, self.dialect)
+        if denied is not None:
+            return denied
+
         import anyio
 
         try:
