@@ -11,6 +11,17 @@
 
     # 体检某个连接串是不是真的只读（只读系统目录，生产库也能跑）
     python -m ai_sql_ops audit --dsn "$AI_SQL_BUSINESS_DSN"
+
+    # 按 API Key 里的 DataPolicy 生成数据库侧最小授权（列级 GRANT）
+    python -m ai_sql_ops least-privilege \
+        --dsn "$AI_SQL_BUSINESS_DSN" --keys deploy/api_keys.json \
+        --role ai_sql_ro --policy estimating --database wms_db
+
+    # 连上受限角色，验证「该拒的真的拒了」
+    python -m ai_sql_ops verify-privileges \
+        --dsn "$AI_SQL_BUSINESS_DSN" --readonly-dsn "$AI_SQL_RO_DSN" \
+        --keys deploy/api_keys.json --role ai_sql_ro \
+        --policy estimating --database wms_db
 """
 
 from __future__ import annotations
@@ -76,6 +87,25 @@ def main(argv=None) -> int:
     audit_parser.add_argument("--dsn", required=True)
     audit_parser.add_argument("--schema", default="public")
 
+    # 最小授权：把应用层的 DataPolicy 在数据库侧再落一次。
+    # 应用层检查是第二道防线，不能是唯一一道——只读账号只挡写，不挡读密列。
+    for name, help_text in (
+        ("least-privilege", "按 DataPolicy 生成数据库侧最小授权 SQL（列级 GRANT）"),
+        ("verify-privileges", "连上受限角色，验证该拒的真的拒了"),
+    ):
+        item = sub.add_parser(name, help=help_text)
+        item.add_argument("--dsn", required=True, help="读表结构用的连接串")
+        item.add_argument("--keys", required=True, help="API Key 配置 JSON")
+        item.add_argument("--policy", required=True, help="要落地的角色名（policies 里的键）")
+        item.add_argument("--database", required=True, help="策略里的业务库名，如 erp_db")
+        item.add_argument("--role", default="ai_sql_ro", help="数据库侧的受限角色")
+        item.add_argument("--schema", default="public")
+        item.add_argument("--apply", action="store_true",
+                          help="直接执行（默认只打印，先给 DBA 审）")
+        if name == "verify-privileges":
+            item.add_argument("--readonly-dsn", required=True,
+                              help="受限角色自己的连接串——要用它去查才算数")
+
     args = parser.parse_args(argv)
 
     if args.command == "sql":
@@ -90,7 +120,65 @@ def main(argv=None) -> int:
         print(f'  python -m ai_sql_ops audit --dsn "{spec.dsn(args.host, args.port)}"')
         return 0
 
+    if args.command in ("least-privilege", "verify-privileges"):
+        return _least_privilege(args)
+
     return 0 if _print_audit(audit_readonly(args.dsn, schema=args.schema)) else 1
+
+
+def _load_policy(keys_path: str, role: str):
+    import json
+    from pathlib import Path
+
+    from ai_sql_auth import DataPolicy
+
+    payload = json.loads(Path(keys_path).read_text(encoding="utf-8"))
+    rules = (payload.get("policies") or {}).get(role)
+    if rules is None:
+        available = sorted((payload.get("policies") or {}).keys())
+        raise SystemExit(
+            f"{keys_path} 里没有名为 {role!r} 的策略。已有：{'、'.join(available) or '（无）'}"
+        )
+    return DataPolicy.from_dict(rules)
+
+
+def _least_privilege(args) -> int:
+    from .least_privilege import TableInventory, build_plan, verify_least_privilege
+
+    policy = _load_policy(args.keys, args.policy)
+    inventory = TableInventory.from_database(args.dsn, schema=args.schema)
+    plan = build_plan(
+        policy, inventory,
+        database=args.database, role=args.role, schema=args.schema,
+    )
+
+    if args.command == "least-privilege":
+        print(plan.to_sql())
+        if not args.apply:
+            print("-- 以上只是打印。确认无误后加 --apply 执行。")
+            return 0
+        import psycopg
+
+        conn = psycopg.connect(args.dsn, autocommit=True)
+        try:
+            conn.execute(plan.to_sql())
+        finally:
+            conn.close()
+        print("-- 已执行。接着跑 verify-privileges 确认真的生效了。")
+        return 0
+
+    report = verify_least_privilege(args.readonly_dsn, plan)
+    print(f"角色            : {report.role}")
+    print(f"验证的表 / 列   : {len(report.findings)}")
+    problems = report.problems()
+    if problems:
+        print("\n数据库侧没拦住：")
+        for item in problems:
+            print(f"  ✗ {item}")
+        print("\n应用层检查是第二道防线，不能是唯一一道——先把上面这些补上。")
+        return 1
+    print("\n✅ 策略禁止的表与列，数据库侧确实拒绝了")
+    return 0
 
 
 if __name__ == "__main__":

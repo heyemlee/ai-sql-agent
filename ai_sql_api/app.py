@@ -216,10 +216,100 @@ async def lifespan(app: FastAPI):
 
     app.state.readonly_audits = _audit_business_databases(pipeline)
 
+    # 生产模式的启动闸：不合格就**不启动**，不是打个警告继续跑。
+    check_production_readiness(app)
+
     try:
         yield
     finally:
         _shutdown(app)
+
+
+class ProductionReadinessError(RuntimeError):
+    """生产模式下配置不合格。进程应当起不来。"""
+
+
+def check_production_readiness(app: FastAPI) -> List[str]:
+    """
+    生产模式（`AI_SQL_APP_ENV=production`）的启动闸。
+
+    以前这些都是「警告」：readiness 明确把「缺模型凭证走 Mock」当成可就绪，
+    启动只读审计发现违规也只是 log 一条 WARNING。**警告在生产里等于没有**——
+    没有人会在凌晨看日志，而这几项里任何一项不合格，服务都会以一种看起来
+    完全正常的方式给出错误答案：Mock 模型编 SQL、示例库返回演示数据、
+    权限没配就是全放开、账号能写就等着某天模型生成一条 DELETE。
+
+    开发模式下全部降级为警告——本地跑 demo 与测试不该被这些挡住。
+    返回问题清单，方便测试直接断言。
+    """
+    settings = get_settings()
+    problems: List[str] = []
+
+    if not settings.has_model_credentials:
+        problems.append(
+            "没有模型凭证，链路会走 Mock。Mock 会编出语法正确但内容错误的 SQL，"
+            "而且不会有任何症状。"
+        )
+    if settings.auth_mode != "api_key":
+        problems.append(
+            f"AI_SQL_AUTH_MODE={settings.auth_mode}：鉴权关闭时所有请求都是"
+            "匿名身份、全部权限。"
+        )
+    if settings.unknown_role_policy != "deny":
+        problems.append(
+            "AI_SQL_UNKNOWN_ROLE_POLICY=full_access：角色没匹配到策略就给全部权限，"
+            "配错一个角色名的后果是全库可读。"
+        )
+    if not settings.semantic_dir:
+        problems.append(
+            "没有配置 AI_SQL_SEMANTIC_DIR，用的是内置演示元数据与演示库。"
+        )
+
+    keys_without_roles = _keys_without_roles(app)
+    if keys_without_roles:
+        problems.append(
+            "这些 API Key 没有声明 roles，等于不做数据权限限制："
+            + "、".join(keys_without_roles)
+        )
+
+    writable = [
+        user
+        for user, verdict in getattr(app.state, "readonly_audits", {}).items()
+        if verdict != "readonly"
+    ]
+    if writable:
+        problems.append(
+            "这些业务库账号不是只读：" + "、".join(writable)
+            + "。应用层校验是第二道防线，不能是唯一一道。"
+        )
+
+    if settings.app_env != "production":
+        for problem in problems:
+            log_event(_logger, logging.WARNING, "production_readiness.warning",
+                      problem=problem, app_env=settings.app_env)
+        return problems
+
+    if problems:
+        for problem in problems:
+            log_event(_logger, logging.ERROR, "production_readiness.failed",
+                      problem=problem)
+        raise ProductionReadinessError(
+            "生产模式启动检查未通过：\n  - " + "\n  - ".join(problems)
+        )
+
+    log_event(_logger, logging.INFO, "production_readiness.ok")
+    return []
+
+
+def _keys_without_roles(app: FastAPI) -> List[str]:
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    if store is None:
+        return []
+    return sorted(
+        record.caller
+        for record in store.records.values()
+        if not record.roles
+    )
 
 
 def _audit_business_databases(pipeline) -> Dict[str, Any]:
@@ -264,9 +354,11 @@ def _audit_business_databases(pipeline) -> Dict[str, Any]:
 
 def _shutdown(app: FastAPI) -> None:
     """优雅关闭：等待记忆摘要线程收尾，释放 HTTP 连接池。"""
+    from ai_sql_a2a.server import shutdown_stream_executor
     from ai_sql_core.transport import close_http_client
 
     log_event(_logger, logging.INFO, "api.shutdown", stage="begin")
+    shutdown_stream_executor()
 
     watcher = getattr(app.state, "schema_watcher", None)
     if watcher is not None:
@@ -394,9 +486,14 @@ def readyz() -> Dict[str, Any]:
     else:
         checks["pgvector"] = "not_configured (内存向量索引)"
 
-    checks["model_credentials"] = (
-        "ok" if settings.has_model_credentials else "missing (模型走 Mock)"
-    )
+    if settings.has_model_credentials:
+        checks["model_credentials"] = "ok"
+    else:
+        # 生产模式下这不是「降级」，是不就绪。Mock 会编出语法正确、内容错误的
+        # SQL，而且从响应上看不出区别——把它算成 ready 等于把编造当成服务。
+        checks["model_credentials"] = "missing (模型走 Mock)"
+        if settings.app_env == "production":
+            ready = False
     checks["model_provider"] = f"{settings.model_provider} ({settings.chat_model})"
     checks["auth_mode"] = settings.auth_mode
 
