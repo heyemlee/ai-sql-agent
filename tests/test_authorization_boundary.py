@@ -374,3 +374,184 @@ class RepairPathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RowScopeTest(unittest.TestCase):
+    """
+    行范围（审查 P0-2 的一半）。设计见 deploy/authz-model.md。
+
+    三态是这条设计的全部要点：**「没声明」和「声明了全放」必须分得开**，
+    否则默认值会兜出一个静默的全放行——那就是 `full_access` 的老毛病
+    换个维度复发。
+    """
+
+    def setUp(self):
+        self.policy = DataPolicy.from_dict({
+            "allow_tables": ["erp_db.*"],
+            "row_filters": [
+                {"table": "erp_db.job",
+                 "predicate": "owner_id = current_setting('app.user_id', true)"},
+                {"table": "erp_db.*", "predicate": "*"},
+            ],
+        })
+
+    def test_declared_predicate_is_returned(self):
+        self.assertIn("owner_id", self.policy.row_predicate("erp_db", "job"))
+
+    def test_explicit_all_rows_is_an_empty_string_not_none(self):
+        self.assertEqual(self.policy.row_predicate("erp_db", "invoice"), "")
+
+    def test_undeclared_is_none_not_an_empty_string(self):
+        self.assertIsNone(self.policy.row_predicate("wms_db", "batch"))
+
+    def test_a_policy_without_row_filters_declares_nothing(self):
+        self.assertIsNone(DataPolicy().row_predicate("erp_db", "job"))
+
+    def test_first_match_wins(self):
+        """规则按声明顺序取第一条匹配——通配那条放在最后才是「其余全放」。"""
+        policy = DataPolicy.from_dict({
+            "allow_tables": ["erp_db.*"],
+            "row_filters": [
+                {"table": "erp_db.*", "predicate": "*"},
+                {"table": "erp_db.job", "predicate": "owner_id = 'x'"},
+            ],
+        })
+        self.assertEqual(policy.row_predicate("erp_db", "job"), "")
+
+
+class ImpersonationIntersectionTest(unittest.TestCase):
+    """
+    impersonation 取交集（审查 P0-2 的另一半）。
+
+    以前只换 `user_id` 不换权限，所以 alice 和 bob 权限完全相同——
+    一把服务 Key 替所有员工发请求，每个员工拿到的都是服务身份的全部权限。
+    """
+
+    CONFIG = {
+        "keys": [{"key": "k-svc", "caller": "portal", "roles": ["analyst"],
+                  "can_impersonate": True}],
+        "policies": {
+            "analyst": {"allow_tables": ["erp_db.*", "wms_db.*"]},
+            "estimating": {"allow_tables": ["erp_db.job"]},
+            "workshop": {"allow_tables": ["wms_db.*"]},
+        },
+        "users": {"alice": {"roles": ["estimating"]}, "bob": {"roles": ["workshop"]}},
+    }
+
+    def setUp(self):
+        self.store = ApiKeyStore.from_dict(self.CONFIG)
+
+    def test_two_users_of_one_service_key_get_different_permissions(self):
+        alice = self.store.resolve("k-svc", "alice").policy
+        bob = self.store.resolve("k-svc", "bob").policy
+        self.assertTrue(alice.allows_table("erp_db", "job"))
+        self.assertFalse(alice.allows_table("wms_db", "batch"))
+        self.assertFalse(bob.allows_table("erp_db", "job"))
+        self.assertTrue(bob.allows_table("wms_db", "batch"))
+
+    def test_intersection_not_replacement(self):
+        """
+        交集不是二选一：服务身份没有的，用户有也不给。
+        两份策略都是上界，都要守。
+        """
+        store = ApiKeyStore.from_dict({
+            "keys": [{"key": "k", "caller": "svc", "roles": ["narrow"],
+                      "can_impersonate": True}],
+            "policies": {
+                "narrow": {"allow_tables": ["erp_db.job"]},
+                "wide": {"allow_tables": ["erp_db.*"]},
+            },
+            "users": {"alice": {"roles": ["wide"]}},
+        })
+        policy = store.resolve("k", "alice").policy
+        self.assertTrue(policy.allows_table("erp_db", "job"))
+        self.assertFalse(
+            policy.allows_table("erp_db", "invoice"),
+            "服务身份没有的表，用户策略再宽也不该给",
+        )
+
+    def test_undeclared_user_gets_nothing(self):
+        """「不知道他能看什么」不等于「他什么都能看」。"""
+        policy = self.store.resolve("k-svc", "carol").policy
+        self.assertFalse(policy.allows_table("erp_db", "job"))
+        self.assertFalse(policy.allows_table("wms_db", "batch"))
+
+    def test_without_a_users_section_behaviour_is_unchanged(self):
+        """
+        没配 `users` 的老部署照常跑（不破坏现网）——生产模式的启动检查
+        会把它拦下来，见 tests/test_production_gate.py。
+        """
+        config = {k: v for k, v in self.CONFIG.items() if k != "users"}
+        store = ApiKeyStore.from_dict(config)
+        policy = store.resolve("k-svc", "alice").policy
+        self.assertTrue(policy.allows_table("wms_db", "batch"))
+
+    def test_non_impersonating_key_is_untouched(self):
+        store = ApiKeyStore.from_dict({
+            "keys": [{"key": "k-li", "caller": "li", "user_id": "li",
+                      "roles": ["analyst"]}],
+            "policies": {"analyst": {"allow_tables": ["erp_db.*"]}},
+            "users": {"li": {"roles": ["estimating"]}},
+            })
+        self.assertTrue(store.resolve("k-li", "li").policy.allows_table("erp_db", "x"))
+
+    def test_intersection_is_enforced_by_the_sql_gate(self):
+        """交集要真的落到执行前的 SQL 判定上，不只是 allows_table 好看。"""
+        policy = self.store.resolve("k-svc", "alice").policy
+        self.assertTrue(
+            check_sql_access(policy, database="erp_db", sql="SELECT a FROM job").allowed
+        )
+        self.assertFalse(
+            check_sql_access(
+                policy, database="wms_db", sql="SELECT a FROM batch"
+            ).allowed
+        )
+
+    def test_intersection_keeps_column_restrictions_from_either_side(self):
+        store = ApiKeyStore.from_dict({
+            "keys": [{"key": "k", "caller": "svc", "roles": ["svc"],
+                      "can_impersonate": True}],
+            "policies": {
+                "svc": {"allow_tables": ["erp_db.*"]},
+                "u": {"allow_tables": ["erp_db.*"],
+                      "deny_columns": ["erp_db.job.margin"]},
+            },
+            "users": {"alice": {"roles": ["u"]}},
+        })
+        policy = store.resolve("k", "alice").policy
+        self.assertFalse(policy.allows_column("erp_db", "job", "margin"))
+        self.assertTrue(policy.allows_column("erp_db", "job", "job_no"))
+        # 有列级限制 ⇒ SELECT * 要被拒（执行器那层没有 schema，展不开通配符）
+        self.assertTrue(policy.restricts_columns("erp_db", "job"))
+
+
+class ConfigParsingTest(unittest.TestCase):
+    """配置文件里的注释键不能把解析炸掉——这份文件本来就用 `$comment` 写说明。"""
+
+    def test_comment_keys_are_skipped(self):
+        store = ApiKeyStore.from_dict({
+            "$comment": "顶层说明",
+            "keys": [{"key": "k", "caller": "c", "roles": ["r"], "can_impersonate": True}],
+            "policies": {"$comment": "策略说明", "r": {"allow_tables": ["erp_db.*"]}},
+            "users": {"$comment": "用户说明", "alice": {"roles": ["r"]}},
+        })
+        self.assertEqual(sorted(store.policies), ["r"])
+        self.assertEqual(sorted(store.users), ["alice"])
+
+    def test_shipped_example_config_parses(self):
+        """示例配置要能被自己解析——它是运维照抄的模板。"""
+        import json
+        from pathlib import Path
+
+        payload = json.loads(
+            (Path(__file__).resolve().parents[1] / "deploy/api_keys.example.json")
+            .read_text(encoding="utf-8")
+        )
+        store = ApiKeyStore.from_dict(payload)
+        self.assertTrue(store.policies)
+        self.assertTrue(store.users)
+        for role, policy in store.policies.items():
+            self.assertIsNotNone(
+                policy.row_predicate("erp_db", "job"),
+                f"示例里的 {role} 应当显式声明行范围（哪怕是 predicate=*）",
+            )

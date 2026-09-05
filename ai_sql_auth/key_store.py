@@ -8,7 +8,15 @@ from typing import Dict, List, Optional
 
 from ai_sql_core import get_logger, get_settings, log_event
 
-from .objects import ApiKeyRecord, DataPolicy, Principal
+from dataclasses import replace
+
+from .objects import (
+    ApiKeyRecord,
+    DataPolicy,
+    IntersectionPolicy,
+    Principal,
+    _resolve_policy,
+)
 
 _logger = get_logger("auth")
 
@@ -43,6 +51,7 @@ class ApiKeyStore:
         self,
         records: Optional[List[ApiKeyRecord]] = None,
         policies: Optional[Dict[str, DataPolicy]] = None,
+        users: Optional[Dict[str, tuple]] = None,
     ):
         self.records: Dict[str, ApiKeyRecord] = {}
         for record in records or []:
@@ -55,6 +64,16 @@ class ApiKeyStore:
             self.records[record.key] = record
 
         self.policies = policies or {}
+
+        self.users: Dict[str, tuple] = users or {}
+        """
+        最终用户 → 角色。impersonation 时用来解析**这个人**的策略。
+
+        空 dict 表示这份配置没有声明过用户权限——那时 impersonation 保持
+        2026-09-04 之前的行为（用服务身份的策略），但生产模式启动会拒绝
+        （见 `ai_sql_api.app.check_production_readiness`）。
+        迁移路径见 deploy/authz-model.md。
+        """
 
     # ------------------------------------------------------------------
     # 加载
@@ -93,9 +112,12 @@ class ApiKeyStore:
 
     @classmethod
     def from_dict(cls, payload: dict) -> "ApiKeyStore":
+        # `$` 开头的键是注释，不是配置。这个文件本来就用 `$comment` 写说明，
+        # 不跳过的话会被当成一个叫 "$comment" 的角色/用户，然后在解析时炸。
         policies = {
             role: DataPolicy.from_dict(rule)
             for role, rule in (payload.get("policies") or {}).items()
+            if not role.startswith("$") and isinstance(rule, dict)
         }
 
         records: List[ApiKeyRecord] = []
@@ -120,7 +142,16 @@ class ApiKeyStore:
                 )
             )
 
-        return cls(records=records, policies=policies)
+        users: Dict[str, tuple] = {}
+        for user_id, rule in (payload.get("users") or {}).items():
+            if user_id.startswith("$") or not isinstance(rule, dict):
+                continue
+            roles = rule.get("roles") or []
+            if isinstance(roles, str):
+                roles = [roles]
+            users[str(user_id)] = tuple(str(item) for item in roles)
+
+        return cls(records=records, policies=policies, users=users)
 
     # ------------------------------------------------------------------
     # 校验
@@ -146,10 +177,51 @@ class ApiKeyStore:
                 )
             requested_user_id = bound_user
 
-        return record.to_principal(
+        principal = record.to_principal(
             requested_user_id,
             self.policies,
             unknown_role_policy=self.unknown_role_policy(),
+        )
+        if record.can_impersonate:
+            principal = self._apply_user_policy(principal)
+        return principal
+
+    def _apply_user_policy(self, principal: Principal) -> Principal:
+        """
+        impersonation 时按**最终用户**再解析一次策略，与服务身份的策略取交集。
+
+        审查 P0-2：以前只换 `user_id`、不换权限，所以 alice 和 bob 权限相同——
+        一把服务 Key 替所有员工发请求，每个员工拿到的都是服务身份的全部权限。
+
+        交集不是二选一：两份策略都是上界，都要守。
+
+        `users` 段没配时保持旧行为（不破坏现有部署），但生产模式下有
+        `can_impersonate` 的 Key 而没有 `users` 段会**拒绝启动**——
+        又是那条原则：显式的宽松可以接受，默认的宽松不行。
+        """
+        if not self.users:
+            return principal
+
+        roles = self.users.get(principal.user_id)
+        if roles is None:
+            # 这个人的权限从来没声明过，推不出来 → 拒绝。
+            # 「不知道他能看什么」不等于「他什么都能看」。
+            log_event(
+                _logger,
+                logging.WARNING,
+                "auth.impersonated_user_not_declared",
+                caller=principal.caller,
+                user_id=principal.user_id,
+            )
+            return replace(principal, policy=DataPolicy.deny_all())
+
+        user_policy = _resolve_policy(
+            roles, self.policies, fallback=self.unknown_role_policy()
+        )
+        return replace(
+            principal,
+            roles=tuple(dict.fromkeys(principal.roles + tuple(roles))),
+            policy=IntersectionPolicy(service=principal.policy, user=user_policy),
         )
 
     @staticmethod

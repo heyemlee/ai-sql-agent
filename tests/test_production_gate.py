@@ -18,9 +18,10 @@ from ai_sql_core import get_settings, reload_settings
 
 class _FakeApp:
     def __init__(self, readonly_audits=None, records=None, policies=None, databases=None):
-        store = SimpleNamespace(records=records or {}, policies=policies or {})
+        store = SimpleNamespace(records=records or {}, policies=policies or {}, users={})
         pipeline = SimpleNamespace(
-            databases=[SimpleNamespace(name=n) for n in (databases or [])]
+            databases=[SimpleNamespace(name=n) for n in (databases or [])],
+            business_metas={},
         )
         self.state = SimpleNamespace(
             auth=SimpleNamespace(store=store),
@@ -159,3 +160,87 @@ class ProductionModeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuthorizationModelGateTest(unittest.TestCase):
+    """
+    审查 P0-2 的两半在生产模式下的启动检查。设计见 deploy/authz-model.md。
+
+    两条都是「运行时宽松、配置校验时严格」：不破坏现有部署，
+    但**宽松必须是有人写下来的**，不能是默认值兜出来的。
+    """
+
+    def _app(self, **kwargs):
+        return _FakeApp(**kwargs)
+
+    def test_impersonating_key_without_users_section_blocks_startup(self):
+        from ai_sql_auth import ApiKeyRecord
+
+        with _EnvPatch(AI_SQL_APP_ENV="production"):
+            app = self._app(
+                records={"k": ApiKeyRecord(key="k", caller="bi-portal",
+                                           roles=("analyst",), can_impersonate=True)},
+            )
+            with self.assertRaises(ProductionReadinessError) as caught:
+                check_production_readiness(app)
+        message = str(caught.exception)
+        self.assertIn("bi-portal", message)
+        self.assertIn("impersonation", message)
+
+    def test_declaring_users_clears_it(self):
+        from ai_sql_api.app import _impersonating_keys_without_user_policies
+        from ai_sql_auth import ApiKeyRecord
+
+        app = self._app(
+            records={"k": ApiKeyRecord(key="k", caller="bi", can_impersonate=True)},
+        )
+        app.state.auth.store.users = {"alice": ("analyst",)}
+        self.assertEqual(_impersonating_keys_without_user_policies(app), [])
+
+    def test_non_impersonating_keys_are_not_flagged(self):
+        from ai_sql_api.app import _impersonating_keys_without_user_policies
+        from ai_sql_auth import ApiKeyRecord
+
+        app = self._app(
+            records={"k": ApiKeyRecord(key="k", caller="li", can_impersonate=False)},
+        )
+        self.assertEqual(_impersonating_keys_without_user_policies(app), [])
+
+    def test_table_without_row_scope_is_flagged(self):
+        from ai_sql_api.app import _tables_without_row_scope
+        from ai_sql_auth import DataPolicy
+
+        app = self._app(policies={"analyst": DataPolicy(allow_tables=("erp_db.*",))})
+        app.state.pipeline.business_metas = {"erp_db": {"job": {}, "invoice": {}}}
+        self.assertEqual(
+            _tables_without_row_scope(app),
+            ["analyst:erp_db.invoice", "analyst:erp_db.job"],
+        )
+
+    def test_explicit_all_rows_declaration_clears_it(self):
+        """
+        `predicate: "*"` 是**显式**声明「这张表不做行隔离」——它和「没配」
+        不是一回事，正是这条区分让默认值不再兜出一个静默的全放行。
+        """
+        from ai_sql_api.app import _tables_without_row_scope
+        from ai_sql_auth import DataPolicy
+
+        policy = DataPolicy.from_dict({
+            "allow_tables": ["erp_db.*"],
+            "row_filters": [
+                {"table": "erp_db.job",
+                 "predicate": "owner_id = current_setting('app.user_id', true)"},
+                {"table": "erp_db.*", "predicate": "*"},
+            ],
+        })
+        app = self._app(policies={"analyst": policy})
+        app.state.pipeline.business_metas = {"erp_db": {"job": {}, "invoice": {}}}
+        self.assertEqual(_tables_without_row_scope(app), [])
+
+    def test_tables_the_policy_denies_are_not_flagged(self):
+        from ai_sql_api.app import _tables_without_row_scope
+        from ai_sql_auth import DataPolicy
+
+        app = self._app(policies={"r": DataPolicy(allow_tables=("erp_db.job",))})
+        app.state.pipeline.business_metas = {"erp_db": {"job": {}, "secret": {}}}
+        self.assertEqual(_tables_without_row_scope(app), ["r:erp_db.job"])
