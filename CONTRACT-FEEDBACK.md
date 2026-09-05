@@ -95,3 +95,69 @@ CONSUMER-TESTS 说「normalization 上线后改断言集合，改集合的那个
 | §4.6.5：`currency` / `column_units` | **已关闭** | 语义层新增 `unit` 键；`ai_sql_pipeline/provenance.py` |
 | §4.6.6：`source_records` | **部分关闭** | 结果集带主键列时给得出来，聚合结果给不出来（那时退回 `trace_id` + `final_sql`） |
 | §4.5：`database` 生效清单可拉取 | **已关闭** | Agent Card 的 `databases` 字段 + `GET /a2a/databases` |
+
+---
+
+## 第二轮（对照 v1.8，2026-09-05）
+
+> v1.7 采纳了第一轮的三条，v1.8 又加了 §4.4.1 与币种三分。实现这两条时撞到
+> 下面这条，外加一条状态同步。
+
+### 1.（建议改）`dp-trust-01` 的 xfail 摘不掉——它盯的是一份不会变的 fixture
+
+CONSUMER-TESTS 的 C 组把 `dp-trust-01` 拆成两条断言，第二条是：
+
+| 判定来源 | `xfail(strict=True)` | `status_source == "contract"` |
+
+并写着「摘掉 xfail 的时机不变（**服务端上线 `execution_status`**）」。
+
+**这两句凑不到一起。** 那条断言的输入是
+`fixtures/data-part/trust-negative/01-failed-step.json`，而这份 fixture
+**没有 `execution_status` 字段**。服务端上线之后：
+
+- 真实流量的 `status_source` 变成 `contract` ✅
+- 但**这份 fixture 永远是 `derived`**——它是一份冻结的载荷，
+  不会因为服务端上线而改变。
+
+所以按字面执行，那个 `xfail(strict=True)` 永远不会 XPASS，
+**摘掉它的条件永远不成立**。
+
+**建议二选一：**
+
+- **A：** 给 `dp-trust-01` 补上 `"execution_status": "failed"`
+  （与它的 `steps[]` 自洽），xfail 随之 XPASS，摘掉即为证据。
+  代价是这份 fixture 不再能验「没有该字段时的推导路径」——
+  那条可以另开一份 `dp-trust-01b`（同载荷、去掉该字段、期望 `derived`）。
+- **B：** 把「摘掉 xfail 的时机」改成**服务端自己产出的载荷**：
+  断言的对象不是 fixture，而是本方一次真实查询的 data part。
+  这一侧就是这么做的——
+  `tests/test_business_outcome.py::test_our_own_payload_reports_status_source_contract`
+  断言三个承载者产出的 `status_source` 都是 `contract`；
+  fixture 那条则如实断言 `derived`（`test_failed_step_fixture_status_comes_from_derivation`）。
+
+倾向 B：fixture 是「契约长什么样」的样本，不该同时承担「实现做到哪一步」的
+进度标记。两件事绑在一份文件上，就是这次撞车的原因。
+
+### 2.（状态同步）`emitted-2026-09-04` 现在可以改成九个了
+
+第一轮反馈里那条「等你提交后再改数字」——**已提交**。
+`normalization` 从 2026-09-05 起是真 `stage()`
+（`ai_sql_pipeline/text2sql_pipeline.py` 的 `stage("normalization")`，
+提交 `5a5cee8`），九个契约 stage 全发。
+
+这一侧的断言已经对着 `contract-declared` 跑
+（`tests/test_contract_fixtures.py::EmittedStageSetTest`），
+CI 里必跑且不允许整组 skip。契约侧可以把 `emitted-*` 更新为九个。
+
+### 3.（只是记录）`currency_source` 是调用方的字段，服务端不发
+
+§4.6.5 的三档表里 `currency_source` 描述的是**调用方**怎么标那句话的来源
+（`contract` / `deployment_config` / `unknown`）。服务端不知道调用方的部署
+配了什么，所以**这一侧不下发这个字段**，只保证：能判出币种时就下发
+`currency` / `column_units`，判不出就不发。
+
+判据实现在 `ai_sql_api/trust.py::currency_of()`（三档齐全，含
+`deployment_config`），那是本方对**调用方判据**的实现，用来跑 C 组用例，
+不是响应字段。如果契约希望服务端也标一个来源，说一声，加一个恒为
+`contract` 的字段是十分钟的事——但那样它就只有一个取值，没什么信息量。
+
