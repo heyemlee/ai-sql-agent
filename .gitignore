@@ -15,6 +15,9 @@ runtime_data/
 
 # 本地私有文档（不公开）
 docs/
+# 交回 a2a-contract 的反馈要可复核（契约附录 B 自检表第 2 条），
+# 所以这一类文档不跟着 docs/ 一起忽略。
+!docs/contract-feedback-*.md
 
 # 编辑器 / 工具本地配置
 .claude/
