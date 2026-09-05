@@ -147,6 +147,36 @@ def build_plan(
     )
 
 
+def row_policies_from_policy(
+    policy, inventory: "TableInventory", *, database: str, role: str, schema: str = "public"
+) -> List[str]:
+    """
+    从 `DataPolicy.row_filters` 生成 RLS —— **不再靠运维手写**。
+
+    第一轮这里只有 `row_policy_sql()`（条件由人给），因为那时策略模型没有行范围
+    这一维。现在有了（见 deploy/authz-model.md），所以能推出来。
+
+    只为**声明了非空谓词**的表生成：`predicate: "*"` 是显式放行所有行，
+    没声明（`row_predicate` 返回 None）则什么都不生成——运行时按放行处理，
+    生产模式的启动检查会把「没声明」拦下来。这两件事分工不同，别在这里替它判。
+    """
+    statements: List[str] = []
+    for table in inventory.tables():
+        if not policy.allows_table(database, table):
+            continue
+        predicate = policy.row_predicate(database, table)
+        if not predicate:          # None（没声明）与 ""（显式全放）都不生成
+            continue
+        statements.append(
+            row_policy_sql(
+                role=role, table=table, schema=schema,
+                using_expression=predicate,
+                policy_name=f"{role}_{table}_rls",
+            )
+        )
+    return statements
+
+
 def row_policy_sql(
     *,
     role: str,

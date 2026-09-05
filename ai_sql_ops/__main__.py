@@ -27,9 +27,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
 
 from .readonly_role import ReadonlyRoleSpec, audit_readonly, provision_readonly_role
+
+
+def _now_rfc3339() -> str:
+    return (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
 
 
 def _spec_from_args(args) -> ReadonlyRoleSpec:
@@ -102,9 +110,13 @@ def main(argv=None) -> int:
         item.add_argument("--schema", default="public")
         item.add_argument("--apply", action="store_true",
                           help="直接执行（默认只打印，先给 DBA 审）")
+        item.add_argument("--json", action="store_true",
+                          help="输出机器可读的 JSON，用于存档留证（见 deploy/least-privilege-runbook.md）")
         if name == "verify-privileges":
             item.add_argument("--readonly-dsn", required=True,
                               help="受限角色自己的连接串——要用它去查才算数")
+            item.add_argument("--row-scope", action="store_true",
+                              help="同时生成行级安全（RLS）语句")
 
     args = parser.parse_args(argv)
 
@@ -153,7 +165,29 @@ def _least_privilege(args) -> int:
     )
 
     if args.command == "least-privilege":
-        print(plan.to_sql())
+        statements = [plan.to_sql()]
+        from .least_privilege import row_policies_from_policy
+
+        statements.extend(
+            row_policies_from_policy(
+                policy, inventory,
+                database=args.database, role=args.role, schema=args.schema,
+            )
+        )
+        rendered = "\n".join(statements)
+        if args.json:
+            print(json.dumps({
+                "command": "least-privilege",
+                "role": args.role, "schema": args.schema, "database": args.database,
+                "policy": args.policy,
+                "granted_tables": plan.granted_tables,
+                "denied_tables": plan.denied_tables,
+                "column_grants": plan.column_grants,
+                "denied_columns": plan.denied_columns,
+                "sql": rendered,
+            }, ensure_ascii=False, indent=2))
+            return 0
+        print(rendered)
         if not args.apply:
             print("-- 以上只是打印。确认无误后加 --apply 执行。")
             return 0
@@ -161,13 +195,31 @@ def _least_privilege(args) -> int:
 
         conn = psycopg.connect(args.dsn, autocommit=True)
         try:
-            conn.execute(plan.to_sql())
+            conn.execute(rendered)
         finally:
             conn.close()
         print("-- 已执行。接着跑 verify-privileges 确认真的生效了。")
         return 0
 
     report = verify_least_privilege(args.readonly_dsn, plan)
+    if args.json:
+        # 存档留证用：跑过没跑过、什么时候跑的、结论是什么，
+        # 一份文本输出说不清楚（见 deploy/least-privilege-runbook.md）
+        print(json.dumps({
+            "command": "verify-privileges",
+            "checked_at": _now_rfc3339(),
+            "role": report.role, "schema": args.schema, "database": args.database,
+            "policy": args.policy,
+            "enforced": report.enforced,
+            "findings": [
+                {"kind": f.kind, "target": f.target, "expected": f.expected,
+                 "actual": f.actual, "detail": f.detail, "ok": f.ok}
+                for f in report.findings
+            ],
+            "errors": report.errors,
+            "problems": report.problems(),
+        }, ensure_ascii=False, indent=2))
+        return 0 if report.enforced else 1
     print(f"角色            : {report.role}")
     print(f"验证的表 / 列   : {len(report.findings)}")
     problems = report.problems()

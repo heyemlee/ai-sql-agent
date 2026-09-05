@@ -254,5 +254,130 @@ class PostgresAuthorizationTest(unittest.TestCase):
             ro.close()
 
 
+@requires_postgres
+class RowLevelSecurityThroughTheAgentTest(unittest.TestCase):
+    """
+    行隔离在**经由 agent 发起的查询**上生效（审查 P0-2 的一半）。
+
+    上一轮只证明了「有人手工连库时 RLS 管用」——那不够：真实流量都从执行器走，
+    而执行器以前不告诉数据库「这次是谁在查」。现在它在事务里
+    `set_config('app.user_id', …, true)`，RLS 才真的能按人过滤。
+
+    `SET LOCAL` 是事务级的，随 rollback 还原，所以连接池复用不会串身份——
+    这条也一起验（同一个执行器连着换两个身份查）。
+    """
+
+    SCHEMA = f"authrls_{SUFFIX}"
+    ROLE = f"rls_ro_{SUFFIX}"
+    PASSWORD = f"pw-{uuid.uuid4().hex}"
+
+    @classmethod
+    def setUpClass(cls):
+        conn = _admin()
+        try:
+            conn.execute(f"CREATE SCHEMA {cls.SCHEMA}")
+            conn.execute(
+                f"CREATE TABLE {cls.SCHEMA}.job "
+                "(job_no TEXT PRIMARY KEY, owner_id TEXT, amount NUMERIC)"
+            )
+            conn.execute(
+                f"INSERT INTO {cls.SCHEMA}.job VALUES "
+                "('J-A', 'alice', 10), ('J-B', 'bob', 20), ('J-C', 'alice', 30)"
+            )
+            conn.execute(f"CREATE ROLE {cls.ROLE} LOGIN PASSWORD '{cls.PASSWORD}'")
+            conn.execute(f"GRANT USAGE ON SCHEMA {cls.SCHEMA} TO {cls.ROLE}")
+            conn.execute(f"GRANT SELECT ON {cls.SCHEMA}.job TO {cls.ROLE}")
+        finally:
+            conn.close()
+
+    @classmethod
+    def tearDownClass(cls):
+        conn = _admin()
+        try:
+            conn.execute(f"DROP SCHEMA IF EXISTS {cls.SCHEMA} CASCADE")
+            conn.execute(f"DROP OWNED BY {cls.ROLE} CASCADE")
+            conn.execute(f"DROP ROLE IF EXISTS {cls.ROLE}")
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    def _ro_dsn(self) -> str:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(DSN)
+        host = parts.hostname or "localhost"
+        port = f":{parts.port}" if parts.port else ""
+        return urlunsplit((
+            parts.scheme, f"{self.ROLE}:{self.PASSWORD}@{host}{port}", parts.path, "", ""
+        ))
+
+    def _install_rls(self):
+        """RLS 由策略生成，不是手写——这正是行范围进 DataPolicy 之后多出来的能力。"""
+        from ai_sql_ops.least_privilege import TableInventory, row_policies_from_policy
+
+        policy = DataPolicy.from_dict({
+            "allow_tables": ["pg_db.*"],
+            "row_filters": [
+                {"table": "pg_db.job",
+                 "predicate": "owner_id = current_setting('app.user_id', true)"},
+            ],
+        })
+        inventory = TableInventory.from_database(DSN, schema=self.SCHEMA)
+        statements = row_policies_from_policy(
+            policy, inventory, database="pg_db", role=self.ROLE, schema=self.SCHEMA
+        )
+        self.assertEqual(len(statements), 1, "只有 job 声明了非空谓词")
+        conn = _admin()
+        try:
+            for statement in statements:
+                conn.execute(statement)
+        finally:
+            conn.close()
+
+    def test_each_user_only_sees_their_own_rows_through_the_executor(self):
+        from ai_sql_auth import authorization_scope
+
+        self._install_rls()
+        executor = PostgresMCPExecutor(database="pg_db", dsn=self._ro_dsn())
+        sql = f"SELECT job_no FROM {self.SCHEMA}.job ORDER BY job_no"
+        policy = DataPolicy(allow_tables=("pg_db.*",))
+        try:
+            with authorization_scope(policy, user_id="alice"):
+                alice = executor.execute(MCPExecutionRequest(database="pg_db", sql=sql))
+            # 同一个执行器、同一个连接池，紧接着换一个身份——不能串
+            with authorization_scope(policy, user_id="bob"):
+                bob = executor.execute(MCPExecutionRequest(database="pg_db", sql=sql))
+        finally:
+            executor.close()
+
+        self.assertTrue(alice.success, alice.error)
+        self.assertEqual([r["job_no"] for r in alice.rows], ["J-A", "J-C"])
+        self.assertTrue(bob.success, bob.error)
+        self.assertEqual([r["job_no"] for r in bob.rows], ["J-B"])
+
+    def test_without_an_authorization_scope_no_rows_come_back(self):
+        """
+        没有绑定作用域时 app.user_id 是空串，RLS 谓词不匹配任何行——fail closed，
+        与执行器那道关卡方向一致。
+        """
+        from ai_sql_auth import authorization_scope
+        from schema_retrieval.access import ALLOW_ALL
+
+        self._install_rls()
+        executor = PostgresMCPExecutor(database="pg_db", dsn=self._ro_dsn())
+        try:
+            # 用 ALLOW_ALL 过掉应用层那关，单独验数据库这一层
+            with authorization_scope(ALLOW_ALL):
+                result = executor.execute(MCPExecutionRequest(
+                    database="pg_db",
+                    sql=f"SELECT job_no FROM {self.SCHEMA}.job",
+                ))
+        finally:
+            executor.close()
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.rows, [], "没有身份就一行都不该看到")
+
+
 if __name__ == "__main__":
     unittest.main()
