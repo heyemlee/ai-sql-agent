@@ -16,6 +16,17 @@ class SchemaAccessFilter(Protocol):
 
     def allows_column(self, database: str, table: str, column: str) -> bool: ...
 
+    def restricts_columns(self, database: str, table: str) -> bool:
+        """
+        这张表上有没有列级限制？可选实现。
+
+        执行前的授权关卡判 `SELECT *` 时要问这个：那一层没有 schema，展不开
+        通配符，只能反过来确认「这张表没有禁列」。**没有实现这个方法、也没有
+        暴露 `deny_columns` 的过滤器会被当成有限制**（拒掉 `SELECT *`）——
+        自定义过滤器要放行通配符，就得显式实现它说一声。
+        """
+        ...
+
 
 class AllowAll:
     """默认放行，未接入权限时使用。"""
@@ -25,6 +36,9 @@ class AllowAll:
 
     def allows_column(self, database: str, table: str, column: str) -> bool:
         return True
+
+    def restricts_columns(self, database: str, table: str) -> bool:
+        return False
 
 
 ALLOW_ALL = AllowAll()

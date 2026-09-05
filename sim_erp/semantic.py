@@ -400,7 +400,41 @@ _LOCALTIME_NOTE = (
 )
 
 
-def _column_entry(table: str, col: Col, samples: list[str]) -> dict:
+# 契约 §4.6.5：字段单位。
+#
+# 这里**不是新造事实**——单位本来就写在上面每一列的 description 里
+# （「合同金额（美元，不含税）」「标准交货周期（天）」）。写在散文里模型看得懂、
+# 程序读不出来，于是服务端不下发币种，调用方只能在自己那边配一个全局
+# `SQL_AGENT_CURRENCY` 顶上；那个常量在多币种部署下必然错，而且是静默的。
+# 这张表做的事就是把已经写下来的单位提成机器可读的一列。
+#
+# 键是 `库.表.列`，值是单位标识：ISO 4217 币种大写，其余用短标识。
+# **拿不准的列一律不写**——契约 §4.6.5 说得很清楚，缺失是「单位未知」，
+# 调用方不得擅自补；猜一个填进去比留空危险得多。
+COLUMN_UNITS: dict[str, str] = {
+    # ── 金额：sim_erp 模拟的是美国橱柜厂，描述里逐条写着「美元」 ──
+    "erp_db.customer.credit_limit": "USD",
+    "erp_db.job.contract_amount": "USD",
+    "erp_db.job_item.unit_price": "USD",
+    "erp_db.job_item.extended_price": "USD",
+    "erp_db.change_order.amount_delta": "USD",
+    "erp_db.invoice.amount": "USD",
+    "erp_db.payment_received.amount": "USD",
+    "wms_db.material.unit_cost": "USD",
+    # ── 件数：uom 不统一的 material.* 除外（描述里明说「跨品类求和没有意义」）──
+    "erp_db.job_item.qty": "EA",
+    "prod_db.qc_check.passed_qty": "EA",
+    "prod_db.qc_check.failed_qty": "EA",
+    "wms_db.receipt.qty": "EA",
+    "wms_db.inventory.on_hand_qty": "EA",
+    "wms_db.inventory.allocated_qty": "EA",
+    "svc_db.replacement_part.qty": "EA",
+    # ── 时长 ──
+    "wms_db.supplier.lead_time_days": "day",
+}
+
+
+def _column_entry(table: str, col: Col, samples: list[str], database: str = "") -> dict:
     name, desc, aliases, role, usage = col
     if role == "time":
         usage = f"{usage} {_LOCALTIME_NOTE}"
@@ -417,7 +451,45 @@ def _column_entry(table: str, col: Col, samples: list[str]) -> dict:
     }
     if samples:
         entry["samples"] = samples
+    unit = COLUMN_UNITS.get(f"{database}.{table}.{name}")
+    if unit:
+        entry["unit"] = unit
     return entry
+
+
+def _assert_units_apply(database: str, tables: dict) -> None:
+    """
+    COLUMN_UNITS 里指向这个库的键必须都命中真实字段。
+
+    键写错的后果是**静默不生效**：单位没下发，调用方回退到它自己那个全局币种
+    常量，金额照样报出去、看起来完全正常。这类错误不会有人发现，所以在生成
+    元数据的时候就得炸掉。
+    """
+    known = {
+        f"{database}.{table}.{column}"
+        for table, meta in tables.items()
+        for column in meta["columns"]
+    }
+    stale = sorted(
+        key
+        for key in COLUMN_UNITS
+        if key.startswith(f"{database}.") and key not in known
+    )
+    if stale:
+        raise ValueError(
+            f"COLUMN_UNITS 里这些键在 {database} 里找不到对应字段（写错了会静默不生效）："
+            + "、".join(stale)
+        )
+
+
+def _primary_key(conn, table: str) -> list[str]:
+    """读表的真实主键。没有显式主键的表返回空列表。"""
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        return []
+    keyed = [(row[5], row[1]) for row in rows if row[5]]
+    return [name for _position, name in sorted(keyed)]
 
 
 def build_semantic(sim_dir: Path, out_dir: Path) -> list[str]:
@@ -436,13 +508,21 @@ def build_semantic(sim_dir: Path, out_dir: Path) -> list[str]:
             "tables": {},
         }
         for table, (tdesc, taliases, cols) in tables.items():
-            doc["tables"][table] = {
+            entry = {
                 "description": tdesc,
                 "aliases": taliases,
-                "columns": {c[0]: _column_entry(table, c, _samples(conn, table, c[0]))
-                            for c in cols},
+                "columns": {
+                    c[0]: _column_entry(table, c, _samples(conn, table, c[0]), db_name)
+                    for c in cols
+                },
             }
+            # 契约 §4.6.6 的 key_columns：直接读库里真实的主键定义，不靠猜。
+            primary_key = _primary_key(conn, table)
+            if primary_key:
+                entry["primary_key"] = primary_key
+            doc["tables"][table] = entry
         conn.close()
+        _assert_units_apply(db_name, doc["tables"])
         path = out_dir / f"{db_name}.yaml"
         path.write_text(
             "# 模拟 ERP 的语义元数据 —— 由 sim_erp/semantic.py 生成，不要手改。\n"

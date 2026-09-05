@@ -146,7 +146,22 @@ class ApiKeyStore:
                 )
             requested_user_id = bound_user
 
-        return record.to_principal(requested_user_id, self.policies)
+        return record.to_principal(
+            requested_user_id,
+            self.policies,
+            unknown_role_policy=self.unknown_role_policy(),
+        )
+
+    @staticmethod
+    def unknown_role_policy() -> DataPolicy:
+        """
+        角色一条策略都没匹配上时给什么。默认 deny（见 `_resolve_policy` 的注释）。
+
+        每次解析都读一次 settings：`reload_settings()` 之后不该还按旧值发权限。
+        """
+        if get_settings().unknown_role_policy == "full_access":
+            return DataPolicy.full_access()
+        return DataPolicy.deny_all()
 
     def _match(self, api_key: str) -> Optional[ApiKeyRecord]:
         """

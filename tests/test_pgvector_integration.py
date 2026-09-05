@@ -247,9 +247,17 @@ class PostgresExecutorTest(unittest.TestCase):
         self.conn.close()
 
     def execute(self, sql):
+        from ai_sql_auth import authorization_scope
         from mcp_router import MCPExecutionRequest
+        from schema_retrieval.access import ALLOW_ALL
 
-        return self.executor.execute(MCPExecutionRequest(database="pg_db", sql=sql))
+        # 执行器入口有强制授权关卡，不绑作用域一律拒绝（见 ai_sql_auth.enforcement）。
+        # 这组用例验的是行数上限与语句超时，权限维度用全放开策略排除掉；
+        # 真实 PostgreSQL 上的权限用例在 tests/test_authorization_postgres.py。
+        with authorization_scope(ALLOW_ALL):
+            return self.executor.execute(
+                MCPExecutionRequest(database="pg_db", sql=sql)
+            )
 
     def test_select_with_row_cap(self):
         result = self.execute(f"SELECT user_id FROM {self.TABLE} ORDER BY user_id")

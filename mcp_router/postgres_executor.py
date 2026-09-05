@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
+from .authorization import enforce
+from .data_time import QUERY_TIME, now_rfc3339
 from .dialects import POSTGRES
 from .objects import MCPExecutionRequest, MCPExecutionResult
 from .sql_guard import check_readonly_sql
@@ -33,6 +35,7 @@ class PostgresMCPExecutor:
         readonly: bool = True,
         max_rows: int = 1000,
         max_execution_seconds: float = 10.0,
+        as_of_source: str = QUERY_TIME,
     ):
         self.database = database
         self.dsn = dsn
@@ -40,9 +43,15 @@ class PostgresMCPExecutor:
         self.readonly = readonly
         self.max_rows = max_rows
         self.max_execution_seconds = max_execution_seconds
+        self.as_of_source = as_of_source
+        """默认 query_time（读主库）。DSN 指向只读副本或数仓时改成 snapshot。"""
 
     def execute(self, request: MCPExecutionRequest) -> MCPExecutionResult:
         """执行 SQL。"""
+        denied = enforce(request, self.dialect)
+        if denied is not None:
+            return denied
+
         if request.database != self.database:
             return MCPExecutionResult(
                 database=request.database,
@@ -78,6 +87,8 @@ class PostgresMCPExecutor:
                 conn.execute("SET TRANSACTION READ ONLY")
 
             started = time.perf_counter()
+            # 时点在真正执行 SQL 之前打：读到的就是这一刻的库状态
+            as_of = now_rfc3339()
             with conn.cursor(name=f"ai_sql_{int(started * 1000)}") as cursor:
                 cursor.itersize = min(self.max_rows, 1000)
                 cursor.execute(sql)
@@ -99,6 +110,9 @@ class PostgresMCPExecutor:
                 rows=rows,
                 row_count=len(rows),
                 truncated=truncated,
+                row_limit=self.max_rows,
+                as_of=as_of,
+                as_of_source=self.as_of_source,
             )
 
         except Exception as exc:  # psycopg 未安装或执行失败都走这里

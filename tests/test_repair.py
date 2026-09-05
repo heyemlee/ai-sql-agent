@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 
 from mcp_router import MCPExecutionRequest
+from ai_sql_auth import authorization_scope
 from mcp_router.sqlite_executor import SQLiteMCPExecutor
+from schema_retrieval.access import ALLOW_ALL
 from sql_generation.objects import LocalSchema, TableColumn, TableSchema
 from sql_repair import ExecutionLogParser, SqlClauseLocalizer, SqlRepairService
 
@@ -91,9 +93,13 @@ class RepairServiceTestCase(unittest.TestCase):
         cls.executor = SQLiteMCPExecutor("erp_db", cls.db_path)
 
     def _execute(self, database: str, sql: str):
-        return self.executor.execute(
-            MCPExecutionRequest(database=database, sql=sql)
-        )
+        # 执行器入口有强制授权关卡，不绑作用域一律拒绝。这组用例验的是修复回路
+        # 本身，权限维度用全放开策略排除掉（越权不该进修复回路，那条在
+        # tests/test_authorization_boundary.py 里单独验）。
+        with authorization_scope(ALLOW_ALL):
+            return self.executor.execute(
+                MCPExecutionRequest(database=database, sql=sql)
+            )
 
     def _run_repair(self, sql: str):
         first = self._execute("erp_db", sql)

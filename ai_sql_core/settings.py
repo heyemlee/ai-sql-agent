@@ -170,9 +170,28 @@ class SqlAgentSettings(BaseSettings):
     http_backoff_base_seconds: float = 0.5
     http_backoff_max_seconds: float = 8.0
 
+    # ---- 运行模式 ----
+    app_env: Literal["development", "production"] = "development"
+    """
+    生产模式（`AI_SQL_APP_ENV=production`）会把一批「开发下可以将就」的配置
+    改判为启动失败：Mock 模型、示例语义层、鉴权关闭、未知角色放开、业务库账号
+    不是只读。见 `ai_sql_api.app.check_production_readiness`。
+
+    默认 development：本地跑 demo 与测试不该被这些检查挡住。
+    """
+
     # ---- 鉴权与数据权限 ----
     auth_mode: Literal["disabled", "api_key"] = "disabled"
     """disabled 仅用于本地开发（启动会打警告）；生产部署设为 api_key。"""
+
+    unknown_role_policy: Literal["deny", "full_access"] = "deny"
+    """
+    API Key 的角色在 `policies` 里一条都没匹配上时给什么权限。
+
+    默认 `deny`。`full_access` 是 2026-09-04 之前的行为——审查用一个不存在的
+    角色拿到了全部权限。保留这个开关只为让老部署有个显式的过渡位置：它必须是
+    有人主动写下来的，而不是默认值。生产模式下配成 `full_access` 直接启动失败。
+    """
 
     api_keys: str = ""
     """API Key 配置 JSON 字符串，适合本地或极简部署。"""
