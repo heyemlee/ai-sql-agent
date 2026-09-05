@@ -71,7 +71,26 @@ class QueryResponse(BaseModel):
     answer: str
     queried_database: bool
     selected_databases: List[str] = []
+
+    steps: List[StepLogResponse] = []
+    """
+    逐步骤日志。**契约面的名字是 `steps`**（§4.4.1）。
+
+    A2A 那两条一直叫 `steps`，只有直连 `/query` 叫 `step_logs`——同一个
+    `StepLogResponse`，两个名字。后果不是「字段名不好看」：调用方按 §4.6.7
+    处理缺失字段，`steps` 取不到就按「缺失 = 不可信」处置，
+    **于是每一次直连查询都不再是出处，而链路看起来完全正常**——
+    没有报错、没有降级事件、没有任何症状。而 §6.2 的回滚恰好把流量切到这条路上。
+    """
+
     step_logs: List[StepLogResponse] = []
+    """
+    **已弃用，与 `steps` 内容完全相同。** 过渡期两个字段同时发，不破坏现有消费方；
+    删除它要走契约 §6 的变更流程，届时两侧同时删。
+
+    契约明确拒绝了「在契约里承认第三种形状、写一张 step_logs ↔ steps 翻译表」
+    ——那是把分叉制度化，此后每个新消费方都要重踩一次。
+    """
 
     has_risk: bool = False
     """任一步骤带有软异常提示。前端据此提醒用户「这条结果需要核对」。"""
@@ -660,6 +679,8 @@ def query(
         answer=result.answer,
         queried_database=result.queried_database,
         selected_databases=selected_databases,
+        # 过渡期同一份数据序列化两次（契约 §4.4.1）
+        steps=step_logs,
         step_logs=step_logs,
         has_risk=has_risk,
         execution_status=summary.execution_status,

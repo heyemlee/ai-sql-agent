@@ -15,7 +15,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 USABLE_AS_SOURCE = "usable_as_source"
 PARTIAL = "partial"
@@ -39,27 +39,42 @@ def _strict_bool(payload: Dict[str, Any], key: str, missing: bool) -> bool:
     return missing
 
 
-def execution_status_of(payload: Dict[str, Any]) -> str:
+SOURCE_CONTRACT = "contract"
+"""结论来自服务端下发的字段——可以直接采信。"""
+
+SOURCE_DERIVED = "derived"
+"""服务端没下发，调用方按 §4.6.1 从 `steps[]` 推出来的。"""
+
+SOURCE_MISSING = "missing"
+"""连 `steps[]` 都拿不到，只能按最不可信的那一档处置。"""
+
+
+def execution_status_of(payload: Dict[str, Any]) -> Tuple[str, str]:
     """
-    取业务终态（§4.6.1）。
+    取业务终态（§4.6.1），返回 `(状态, 来源)`。
 
-    字段在就用字段；不在就**按 `steps[]` 推**——§4.6.1 说得很清楚，五个值的判据
-    全部可以由现有 `steps[]` 算出来。
+    来源是 §4.6.7 的 `status_source`（v1.7 收进契约）。**必须标出来**，
+    理由是 §4.6.2 自己的警告：「三个汇总数调用方不应自己 reduce，reduce 的口径
+    会漂」——只要来源还是 `derived`，那句警告就还成立，缺口就没真关。
 
-    > 这里与 §4.6.7「`execution_status` 缺失按 failed 处置」的关系值得说明：
-    > 那条规则的前提是这个字段已经**提级为必填**（schema 的 $comment 写了「实现之后
-    > 应当提级为必填，届时是一次 §6 契约变更」）。在提级之前，契约仓库自己的
-    > A 组正例 fixture 里就没有这个字段——按「缺失即 failed」读，
-    > `dp-valid-01` 会被判成不可信，与它标注的 `usable_as_source` 直接矛盾。
-    > 所以过渡期按「有就用、没有就推」。这条矛盾已记进
-    > `docs/contract-feedback-v1.6.md`，交回 a2a-contract 决定。
+    三档判据（§4.6.7 的过渡表，是规范不是权宜）：
+
+    | 情况 | 处置 | 来源 |
+    | --- | --- | --- |
+    | 服务端下发了 `execution_status` | 直接采信 | `contract` |
+    | 没下发，但 `steps[]` 在 | 按 §4.6.1 从 `steps[]` 推导 | `derived` |
+    | `steps[]` 也拿不到 | `failed` | `missing` |
+
+    这不是发明新规则：§4.6.1 明确写了五个值的判据全部可由现有 `steps[]` 算出。
     """
     declared = payload.get("execution_status")
-    steps = payload.get("steps")
-    derived = _derive_status(payload, steps if isinstance(steps, list) else [])
     if isinstance(declared, str) and declared:
-        return declared
-    return derived
+        return declared, SOURCE_CONTRACT
+
+    steps = payload.get("steps")
+    if not isinstance(steps, list):
+        return "failed", SOURCE_MISSING
+    return _derive_status(payload, steps), SOURCE_DERIVED
 
 
 def _derive_status(payload: Dict[str, Any], steps: List[Any]) -> str:
@@ -76,6 +91,38 @@ def _derive_status(payload: Dict[str, Any], steps: List[Any]) -> str:
         if isinstance(s, dict) and isinstance(s.get("row_count"), int)
     )
     return "success" if total > 0 else "no_data"
+
+
+CURRENCY_CONTRACT = "contract"
+CURRENCY_DEPLOYMENT = "deployment_config"
+CURRENCY_UNKNOWN = "unknown"
+
+
+def currency_of(
+    payload: Dict[str, Any], *, deployment_default: Optional[str] = None
+) -> Tuple[Optional[str], str]:
+    """
+    取币种（§4.6.5），返回 `(币种, 来源)`。来源即契约的 `currency_source`。
+
+    v1.6/v1.7 这里写的是「**不得**回退到自己的全局常量」。那条禁令**过头了**：
+    照它执行等于删掉调用方的 `SQL_AGENT_CURRENCY`，而那个常量当初就是为了堵一次
+    已经发生过的事故——下游只返回数字，中文回答**默认写成「元」**，
+    接美国厂的库时报给 builder 的金额带了错误的币种。
+    **删掉它并不会让语言的默认值消失，只会让它变回隐式的。**
+
+    v1.8 因此改成按来源三分。关键区分是：危险的不是「用了配置值」，
+    是「**把配置值说成系统核实过的事实**」。所以来源必须跟着币种一起往上传，
+    并写进给用户的那句话里。
+
+    第三档（`unknown`）**不是沉默**——沉默正是事故的形态。它是一条主动指令：
+    只写数字、不补任何符号，并主动禁止语言的默认值。
+    """
+    declared = payload.get("currency")
+    if isinstance(declared, str) and len(declared) == 3 and declared.isupper():
+        return declared, CURRENCY_CONTRACT
+    if deployment_default:
+        return deployment_default, CURRENCY_DEPLOYMENT
+    return None, CURRENCY_UNKNOWN
 
 
 def result_truncated_of(payload: Dict[str, Any]) -> bool:
@@ -124,7 +171,7 @@ def trust_verdict(payload: Optional[Dict[str, Any]]) -> str:
     if _strict_bool(payload, "degraded", missing=True):
         return NOT_USABLE
 
-    status = execution_status_of(payload)
+    status, _source = execution_status_of(payload)
     if status == "no_data":
         # 「查到了，答案是没有」≠「没查成」。对客户是两句完全不同的话（§4.6.1）
         return NO_DATA

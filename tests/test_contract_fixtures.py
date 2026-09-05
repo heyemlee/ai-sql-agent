@@ -19,10 +19,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi.testclient import TestClient
 
-from ai_sql_api.trust import assess
+from ai_sql_api.trust import assess, execution_status_of
 from ai_sql_core import get_settings
 
-CONTRACT_TAG = "v1.6"
+CONTRACT_TAG = "v1.8"
 """CI 钉在这个 tag 上。契约仓库改了版本，这里也要跟着改——那是一次有意的动作。"""
 
 
@@ -133,11 +133,15 @@ class TrustVerdictTest(unittest.TestCase):
 
     def test_failed_step_fixture_is_not_usable(self):
         """
-        契约仓库点名的那条用例，单独钉一次。
+        契约仓库点名的那条用例，v1.7 起**拆成两条断言**。这是第一条：业务结论。
 
         它是 §4.4 / §4.6 缺口的实际后果：`queried_database=true`、
         `has_risk=false`、`degraded=false`，今天的三布尔判据会把它判成可信，
         而唯一一步 `success=false`。
+
+        **必过，不是 xfail。** v1.6 曾指示标 xfail，那条指示写错了——这份
+        fixture 带着完整的 `steps[]`，而 `steps[]` 今天就在线上，
+        按 §4.6.7 的过渡判据业务结论今天就能判对，标 xfail 会 XPASS。
         """
         payload = json.loads(
             (CONTRACT / "fixtures/data-part/trust-negative/01-failed-step.json")
@@ -148,6 +152,27 @@ class TrustVerdictTest(unittest.TestCase):
             "这条 fixture 是合法载荷，schema 本来就拦不住它",
         )
         self.assertEqual(assess(payload, schema_valid=True), "not_usable")
+
+    def test_failed_step_fixture_status_comes_from_derivation(self):
+        """
+        第二条断言：判定来源。
+
+        这份 fixture 没有 `execution_status` 字段，所以结论只能靠
+        §4.6.1 从 `steps[]` 推——`status_source == "derived"`。
+        **对 fixture 而言这是正确答案，不是缺陷**：契约仓库的 golden 载荷
+        是照「服务端还没实现」那一刻造的。
+
+        缺口关没关，要看**我方自己产出的载荷**是不是 `contract`——
+        那条断言在 tests/test_business_outcome.py::
+        test_our_own_payload_reports_status_source_contract。
+        """
+        payload = json.loads(
+            (CONTRACT / "fixtures/data-part/trust-negative/01-failed-step.json")
+            .read_text(encoding="utf-8")
+        )
+        status, source = execution_status_of(payload)
+        self.assertEqual(status, "failed")
+        self.assertEqual(source, "derived")
 
     def test_a_group_and_b_group_are_green_at_the_same_time(self):
         """
