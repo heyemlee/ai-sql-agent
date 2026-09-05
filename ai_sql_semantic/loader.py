@@ -134,74 +134,6 @@ def _write(target: Path, payload: dict, fmt: str, overwrite: bool, header: str) 
     target.write_text(header + "\n" + body, encoding="utf-8")
 
 
-# 契约 §4.6.5：演示元数据的字段单位。
-#
-# 为什么要给**演示**元数据配单位：默认部署（没配 AI_SQL_SEMANTIC_DIR）用的就是它，
-# 而它没有 unit 就意味着 `currency` 恒为 null，于是调用方永远退到自己的
-# `SQL_AGENT_CURRENCY` 全局常量——那条路径已经出过一次业务事故
-# （中文回答默认写「元」，接美国厂的库时金额带错币种）。
-# 「契约上关掉了、默认部署下还开着」不算关掉。
-#
-# 币种取 CNY：这套演示数据是中文的橱柜厂场景（客户/订单/工单/车间），
-# 描述里没写币种，所以这是**为虚构数据显式声明**，不是从哪里推出来的。
-# 接真实业务库必须在自己的语义层 YAML 里声明自己的币种，别沿用这里。
-#
-# 只写有把握的：金额 → CNY，件数 → EA，描述里明写 (0-1) 的比率 → ratio。
-# 拿不准的一律不写——契约 §4.6.5 说得很清楚，缺失是「单位未知」，
-# 调用方不得擅自补，猜一个填进去比留空危险得多。
-DEMO_COLUMN_UNITS: dict = {
-    "erp_db.sales_order.order_amt": "CNY",
-    "erp_db.purchase_order.po_amt": "CNY",
-    "erp_db.payment.paid_amt": "CNY",
-    "pm_db.project.contract_amt": "CNY",
-    "pm_db.project.budget_amt": "CNY",
-    "pm_db.project.actual_cost": "CNY",
-    "pm_db.change_order.change_amt": "CNY",
-    "wms_db.batch.unit_cost": "CNY",
-    "mes_db.work_order.plan_qty": "EA",
-    "mes_db.capacity_stat.planned_qty": "EA",
-    "mes_db.capacity_stat.actual_qty": "EA",
-    "mes_db.quality_check.checked_qty": "EA",
-    "mes_db.quality_check.passed_qty": "EA",
-    "wms_db.batch.in_qty": "EA",
-    "wms_db.stock_snapshot.on_hand_qty": "EA",
-    "wms_db.stock_snapshot.locked_qty": "EA",
-    "erp_db.supplier.on_time_rate": "ratio",
-    "mes_db.quality_check.yield_rate": "ratio",
-}
-
-
-def _apply_demo_units(database: str, tables: dict) -> dict:
-    """
-    把 DEMO_COLUMN_UNITS 里属于这个库的单位写进表元数据。
-
-    键写错会**静默不生效**——单位没下发，调用方回退到全局币种常量，
-    金额照样报出去、看起来完全正常。所以这里对不上就直接抛，
-    与 sim_erp/semantic.py 的 _assert_units_apply 是同一条理由。
-    """
-    known = {
-        f"{database}.{table}.{column}"
-        for table, meta in tables.items()
-        for column in (meta.get("columns") or {})
-    }
-    stale = sorted(
-        key for key in DEMO_COLUMN_UNITS
-        if key.startswith(f"{database}.") and key not in known
-    )
-    if stale:
-        raise ValueError(
-            f"DEMO_COLUMN_UNITS 里这些键在 {database} 里找不到对应字段"
-            f"（写错会静默不生效）：{'、'.join(stale)}"
-        )
-
-    for table, meta in tables.items():
-        for column, column_meta in (meta.get("columns") or {}).items():
-            unit = DEMO_COLUMN_UNITS.get(f"{database}.{table}.{column}")
-            if unit and isinstance(column_meta, dict):
-                column_meta["unit"] = unit
-    return tables
-
-
 def demo_semantic_layer() -> SemanticLayer:
     """
     内置的四库演示元数据，包成语义层。
@@ -234,7 +166,7 @@ def demo_semantic_layer() -> SemanticLayer:
             aliases=list(entry.get("aliases", [])),
             dialect="sqlite",
             db_path=paths[name],
-            tables=_apply_demo_units(name, builder()),
+            tables=builder(),
         )
     layer.cross_database_links = list(demo_data.get_cross_database_links())
     layer.metric_disambiguation = list(demo_data.get_metric_disambiguation())
