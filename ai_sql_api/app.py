@@ -263,6 +263,23 @@ def check_production_readiness(app: FastAPI) -> List[str]:
     """
     settings = get_settings()
     problems: List[str] = []
+    scope = settings.deployment_scope
+
+    # 部署范围必须显式声明。这一条排在最前面，因为下面有两条检查**由它决定
+    # 该不该生效**——范围没定就判不了那两条，只能先把范围问出来。
+    #
+    # 为什么要有它：2026-09 定的第一次上线范围是「同权限内部人员 + 只读」的
+    # 试点，这个范围让三条硬阻断降级为可接受（最小授权没落到真实业务库、
+    # 行范围不启用、impersonation 不启用）。**那三条降级只在系统确实跑在这个
+    # 范围里时才成立**，而在这条断言之前，"这是单租户部署"只写在文档里。
+    # 一个不被代码强制的范围决定不是决定，是期望。
+    if not scope:
+        problems.append(
+            "没有声明 AI_SQL_DEPLOYMENT_SCOPE。生产部署必须显式说明自己是哪种范围："
+            "internal_single_tenant（同权限内部人员、所有 Key 看到的数据范围相同）"
+            "或 multi_tenant（不同最终用户只能看各自的数据）。"
+            "**这个配置故意没有默认值**：漏配和想清楚了配成某个值，风险完全不同。"
+        )
 
     if not settings.has_model_credentials:
         problems.append(
@@ -293,16 +310,33 @@ def check_production_readiness(app: FastAPI) -> List[str]:
             "而且没有任何症状。"
         )
 
-    impersonators = _impersonating_keys_without_user_policies(app)
-    if impersonators:
-        problems.append(
-            "这些 Key 允许 impersonation，但配置里没有 users 段（最终用户的角色）："
-            + "、".join(impersonators)
-            + "。那样每个最终用户拿到的都是**服务身份的全部权限**，"
-            "换 user_id 不换权限。见 deploy/authz-model.md。"
-        )
+    if scope == "internal_single_tenant":
+        # 单租户范围里 impersonation 不解决任何问题（所有人权限相同）。
+        # 打开它说明有人**以为**这套部署在按最终用户隔离数据——那个误解本身
+        # 就是风险：它会让人把系统用在范围之外，而系统照常工作。
+        impersonating = _keys_with_impersonation(app)
+        if impersonating:
+            problems.append(
+                "AI_SQL_DEPLOYMENT_SCOPE=internal_single_tenant，但这些 Key 允许"
+                " impersonation：" + "、".join(impersonating)
+                + "。同权限范围里冒充谁都一样，打开它只会让人以为这里在做数据隔离。"
+                "要做真隔离，把范围改成 multi_tenant 并读那一档的要求。"
+            )
+    else:
+        impersonators = _impersonating_keys_without_user_policies(app)
+        if impersonators:
+            problems.append(
+                "这些 Key 允许 impersonation，但配置里没有 users 段（最终用户的角色）："
+                + "、".join(impersonators)
+                + "。那样每个最终用户拿到的都是**服务身份的全部权限**，"
+                "换 user_id 不换权限。见 deploy/authz-model.md。"
+            )
 
-    undeclared_rows = _tables_without_row_scope(app)
+    # 行范围只在 multi_tenant 下是必须的。单租户范围里所有人看到的数据相同，
+    # 要求为每张表写一条 predicate: "*" 只是噪音——而噪音会让人开始
+    # 机械地复制粘贴那一行，那时它就不再是"有人写下来的"了，
+    # 这条检查存在的理由（默认值兜不出安全）反而被磨掉。
+    undeclared_rows = [] if scope == "internal_single_tenant" else _tables_without_row_scope(app)
     if undeclared_rows:
         problems.append(
             "这些策略覆盖到的表没有声明行范围（row_filters）："
@@ -382,6 +416,26 @@ def _policy_databases_not_in_semantic_layer(app: FastAPI) -> List[str]:
             if head not in known:
                 found.append(f"{role}:{head}")
     return sorted(set(found))
+
+
+def _keys_with_impersonation(app: FastAPI) -> List[str]:
+    """
+    允许 impersonation 的 Key，**不管配没配 `users` 段**。
+
+    与下面那个的区别是判据不同，不是宽松版：
+    `_impersonating_keys_without_user_policies` 问的是"打开了却没配全"，
+    这个问的是"打开了没有"——因为在 `internal_single_tenant` 范围里，
+    配全了也不该打开：所有人权限相同，冒充谁都一样，
+    而打开它会让人以为这套部署在按最终用户隔离数据。
+    """
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    if store is None:
+        return []
+    return sorted(
+        record.caller
+        for record in store.records.values()
+        if record.can_impersonate
+    )
 
 
 def _impersonating_keys_without_user_policies(app: FastAPI) -> List[str]:
