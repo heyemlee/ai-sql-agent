@@ -172,12 +172,48 @@ class SchemaGraph:
         if self.relations:
             lines.append("表关联关系：")
 
+            fan_out = False
             for rel in self.relations:
                 description = f"；关联含义：{rel.description}" if rel.description else ""
+                cardinality = self._cardinality_of(rel)
+                if not cardinality.startswith("一对一"):
+                    fan_out = True
                 lines.append(
                     f"- {rel.source_table}.{rel.source_column} "
                     f"↔ {rel.target_table}.{rel.target_column}"
+                    f"（{cardinality}）"
                     f"{description}"
                 )
 
+            if fan_out:
+                lines.append(
+                    "注意：沿「一对多」或「多对多」JOIN 之后，「一」那侧的行会被复制。"
+                    "输出列只来自「一」那侧时必须加 DISTINCT，否则结果里会出现重复行。"
+                )
+
         return "\n".join(lines)
+
+    def _cardinality_of(self, rel: TableRelation) -> str:
+        """
+        用主键判定关联的基数方向。
+
+        判据只有一条：关联列是不是对侧表的**完整**主键。是 → 那一侧每行唯一，
+        另一侧可以挂多行。判不出来（复合主键、主键缺失、关联列不是主键）
+        一律退到「多对多」——**保守方向是提醒去重，不是假设不会重复**。
+
+        为什么要写进 Prompt：渲染用的 `↔` 是对称符号，模型看不出哪一侧会放大。
+        2026-09-08 真实模型基线里，cross_db 与 multi_join 合计 46 条失败，
+        其中 23 条是沿一对多 JOIN 之后没有去重（gold 有 DISTINCT、预测没有）。
+        """
+        source = self.tables.get(rel.source_table)
+        target = self.tables.get(rel.target_table)
+        source_is_pk = bool(source and source.primary_keys == [rel.source_column])
+        target_is_pk = bool(target and target.primary_keys == [rel.target_column])
+
+        if source_is_pk and target_is_pk:
+            return "一对一"
+        if source_is_pk:
+            return f"一对多：{rel.source_table} 一行对应 {rel.target_table} 多行"
+        if target_is_pk:
+            return f"一对多：{rel.target_table} 一行对应 {rel.source_table} 多行"
+        return f"多对多：{rel.source_table} 与 {rel.target_table} 两侧都可能重复"
