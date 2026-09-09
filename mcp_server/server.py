@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+from ai_sql_core import get_settings
 from mcp.server import MCPServer
 
 from ai_sql_pipeline.demo_data import (
@@ -61,16 +63,46 @@ def list_databases() -> str:
     )
 
 
+def _server_policy():
+    """
+    这个 stdio server 自己的数据权限。
+
+    **它没有调用方身份**：stdio 进程不带 API Key，也就没有角色可解析。所以
+    权限只能来自它自己的配置——`AI_SQL_MCP_POLICY_FILE` 指向一个
+    `{"allow_tables": [...], "deny_tables": [...], "deny_columns": [...]}`。
+
+    没配的时候给全放开，并且**生产模式下拒绝启动**：一个不认识调用方、又拿着
+    全库只读权限的进程，不该出现在生产里。
+    """
+    from ai_sql_auth import DataPolicy
+
+    path = os.environ.get("AI_SQL_MCP_POLICY_FILE", "").strip()
+    if path:
+        return DataPolicy.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+    if get_settings().app_env == "production":
+        raise RuntimeError(
+            "生产模式下 mcp_server 必须配置 AI_SQL_MCP_POLICY_FILE："
+            "stdio 进程没有调用方身份，不配策略等于给全库只读权限。"
+        )
+    return DataPolicy.full_access()
+
+
 def execute_sql(database: str, sql: str) -> str:
     """
     在指定数据库上执行只读 SQL 查询。
 
-    受只读账号约束（仅 SELECT / WITH）、单查询行数上限与执行超时保护。
-    返回 JSON：{success, columns, rows, row_count, truncated, error}。
+    受数据权限策略、只读账号约束（仅 SELECT / WITH）、单查询行数上限与执行
+    超时保护。返回 JSON：{success, columns, rows, row_count, truncated, error}。
     """
-    result = _router.execute(
-        MCPExecutionRequest(database=database, sql=sql)
-    )
+    from ai_sql_auth import authorization_scope
+
+    # 授权作用域靠 contextvar 传，**不跨进程**——调用方那一侧的策略到不了这里，
+    # 所以这个进程必须自己绑一份。不绑的话执行器会一律拒绝（这是有意的默认值）。
+    with authorization_scope(_server_policy(), caller="mcp-stdio"):
+        result = _router.execute(
+            MCPExecutionRequest(database=database, sql=sql)
+        )
     return json.dumps(result.to_dict(), ensure_ascii=False, default=str)
 
 

@@ -185,6 +185,29 @@ class RetrievalFilteringTest(unittest.TestCase):
         )
         self.assertNotIn("supplier_name", result.schema_context)
 
+    def test_denied_column_is_also_rejected_at_execution(self):
+        """
+        上一条只证明了「模型看不到这列」，没证明「执行器会拒绝这列」——
+        模型凭对话上下文或先验知识照样写得出列名。2026-09-04 审查点名的就是
+        这个缺口（`SELECT private_value FROM public_data` 当时能拿到数据）。
+
+        完整的执行器侧负面用例在 tests/test_authorization_boundary.py，
+        这里补的是「检索裁剪与执行拦截是两回事」这一条。
+        """
+        from ai_sql_auth import check_sql_access
+
+        policy = DataPolicy(
+            allow_tables=("erp_db.*",),
+            deny_columns=("*.supplier.supplier_name",),
+        )
+        decision = check_sql_access(
+            policy,
+            database="erp_db",
+            sql="SELECT supplier_name FROM supplier",
+        )
+        self.assertFalse(decision.allowed)
+        self.assertIn("supplier.supplier_name", decision.denied_columns)
+
 
 class ExecutionFilteringTest(unittest.TestCase):
     """第二道防线：模型凭记忆写出无权表时，SQL 打到库之前被拦住。"""

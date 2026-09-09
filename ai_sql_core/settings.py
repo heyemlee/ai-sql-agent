@@ -170,9 +170,35 @@ class SqlAgentSettings(BaseSettings):
     http_backoff_base_seconds: float = 0.5
     http_backoff_max_seconds: float = 8.0
 
+    # ---- 运行模式 ----
+    app_env: Literal["development", "production"] = "development"
+
+    # 部署范围。**空串是"未声明"，不是默认值**——生产模式下未声明即拒绝启动，
+    # 见 ai_sql_api/app.py::check_production_readiness。给默认值会把"漏配了"
+    # 和"想清楚了配成这个"合并成同一个状态，而这两件事的风险完全不同。
+    # 同样的理由这个仓库用过一次：row_filters 的 predicate: "*" 是**显式声明**
+    # "这张表不做行隔离"，与"没配"是两回事。
+    deployment_scope: Literal["", "internal_single_tenant", "multi_tenant"] = ""
+    """
+    生产模式（`AI_SQL_APP_ENV=production`）会把一批「开发下可以将就」的配置
+    改判为启动失败：Mock 模型、示例语义层、鉴权关闭、未知角色放开、业务库账号
+    不是只读。见 `ai_sql_api.app.check_production_readiness`。
+
+    默认 development：本地跑 demo 与测试不该被这些检查挡住。
+    """
+
     # ---- 鉴权与数据权限 ----
     auth_mode: Literal["disabled", "api_key"] = "disabled"
     """disabled 仅用于本地开发（启动会打警告）；生产部署设为 api_key。"""
+
+    unknown_role_policy: Literal["deny", "full_access"] = "deny"
+    """
+    API Key 的角色在 `policies` 里一条都没匹配上时给什么权限。
+
+    默认 `deny`。`full_access` 是 2026-09-04 之前的行为——审查用一个不存在的
+    角色拿到了全部权限。保留这个开关只为让老部署有个显式的过渡位置：它必须是
+    有人主动写下来的，而不是默认值。生产模式下配成 `full_access` 直接启动失败。
+    """
 
     api_keys: str = ""
     """API Key 配置 JSON 字符串，适合本地或极简部署。"""
@@ -260,6 +286,39 @@ class SqlAgentSettings(BaseSettings):
     # ---- SQL 执行治理 ----
     max_rows: int = 10000
     max_execution_seconds: float = 30.0
+
+    db_pool_max_connections: int = 8
+    """
+    单个 PostgreSQL 业务库的连接池上限。0 表示不用池，每次现建连接
+    （2026-09-04 之前的行为）。
+    """
+
+    db_pool_idle_seconds: float = 300.0
+    """池里的空闲连接超过这个时长就丢弃重建，避免拿到被服务端掐掉的死连接。"""
+
+    # ---- A2A 流式资源 ----
+    a2a_stream_max_concurrent: int = 8
+    """
+    同时在跑的 message/stream 上限，超出直接拒（-32001），不排队。
+
+    排队只会把压力从「拒绝」变成「全都超时」，而调用方的 90s 硬上限一到
+    照样全丢——不如在流打开之前说清楚。
+    """
+
+    a2a_stream_worker_threads: int = 8
+    """
+    跑同步 pipeline 的**专用**线程池大小。
+
+    以前生产者（`asyncio.to_thread`）和消费者（`run_in_executor(None, …)`）
+    抢同一个默认线程池：把默认池限成 2 线程、开 2 条流，两个消费者就把池占满，
+    pipeline 启动数为 0（审查已复现）。专用池 + 消费者不再占线程，两边就不再争。
+    """
+
+    a2a_stream_queue_size: int = 256
+    """
+    事件队列上限（背压）。以前是无界 `queue.Queue`：客户端读得慢时事件只会
+    在内存里堆着，谁都不知道堆了多少。
+    """
 
     # ---- 日志 ----
     log_level: str = "INFO"

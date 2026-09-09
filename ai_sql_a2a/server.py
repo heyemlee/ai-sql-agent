@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
-import queue
+import threading
 import time
 import uuid
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, Optional, Tuple
@@ -37,8 +40,13 @@ E_INTERNAL = -32603
 #
 # 契约面是右边这一列，不是 pipeline 内部的名字。内部把 sql_generation 改名不影响
 # 契约；改这张表就是一次契约变更。memory_context 刻意不发（内部管道，对用户没有
-# 展示价值）。normalization 今天还不是真 stage（契约 §8.2 待办），所以不会出现。
+# 展示价值）。
+#
+# normalization 从 2026-09-04 起是真 stage（`text2sql_pipeline` 里那条裸
+# log_event 换成了 `stage()`），九个契约 stage 现在全发——契约 §4.5 的缺口框
+# 说的「契约说全发、实际不全发」到此关闭。
 _STAGE_MAP = {
+    "normalization": "normalization",
     "routing": "routing",
     "retrieval": "retrieval",
     "planning": "planning",
@@ -81,7 +89,33 @@ def _error_response(req_id: Any, err: JsonRpcError) -> JSONResponse:
 
 # ── Agent Card ────────────────────────────────────────────────────────────────
 
-def build_agent_card(base_url: str) -> Dict[str, Any]:
+DATABASE_ID_PATTERN = "^[a-z][a-z0-9_]*_db$"
+"""
+契约 §4.5（v1.6 起）：`database` 的契约面是**形状**，不是钉死的枚举。
+
+改这个正则是一次契约变更。清单（下面那个函数）则不是：新增一个标识符不算变更，
+删除 / 改名才算——风险不对称，流程就不对称。
+"""
+
+
+def active_database_manifest(app=None) -> list:
+    """
+    当前生效的业务库清单。
+
+    契约 §4.5 要求这份清单是**可拉取的**，别让调用方靠猜、靠读我方启动日志。
+    它不是代码里的常量，是部署配置的产物：语义层目录（AI_SQL_SEMANTIC_DIR）里
+    放几个 yaml 就有几个库。所以这里从**运行时真正加载的那份语义层**读，
+    不是从一张手写表读——手写表和部署对不上正是 v1.6 修的那个问题。
+    """
+    pipeline = getattr(getattr(app, "state", None), "pipeline", None)
+    if pipeline is None:
+        from ai_sql_semantic import active_semantic_layer
+
+        return sorted(active_semantic_layer().database_names())
+    return sorted(database.name for database in pipeline.databases)
+
+
+def build_agent_card(base_url: str, app=None) -> Dict[str, Any]:
     settings = get_settings()
     return {
         "name": "ai-sql-agent",
@@ -103,12 +137,35 @@ def build_agent_card(base_url: str) -> Dict[str, Any]:
             "description": "订单、生产、库存、账款等业务问题，查真实数据后回答。",
             "tags": ["sql", "erp", "orders"],
         }],
+        # 契约 §4.5（v1.6）：形状 + 一份可拉取的生效清单。
+        # 调用方拿它做中文映射；**清单外的标识符不得崩溃**，退化成显示原始值即可，
+        # 因为新增一个库是运维动作，不走契约变更。
+        "databases": active_database_manifest(app),
+        "databaseIdPattern": DATABASE_ID_PATTERN,
     }
 
 
 @router.get("/.well-known/agent.json", include_in_schema=False)
 def agent_card(request: Request) -> Dict[str, Any]:
-    return build_agent_card(str(request.base_url))
+    return build_agent_card(str(request.base_url), request.app)
+
+
+@router.get("/a2a/databases", include_in_schema=True)
+def database_manifest(request: Request) -> Dict[str, Any]:
+    """
+    生效中的业务库清单（契约 §4.5）。
+
+    Agent Card 里已经带了同一份，这个端点是给「只想拉清单、不想解析整张 Card」
+    的调用方用的。两处同源，不会各说各话。
+    """
+    return {
+        "databases": active_database_manifest(request.app),
+        "pattern": DATABASE_ID_PATTERN,
+        "note": (
+            "新增标识符不算契约变更，调用方必须容忍不认识的标识符"
+            "（退化为显示原始值）；删除或改名算，走契约 §6。"
+        ),
+    }
 
 
 # ── 请求解析与准入（流打开之前）──────────────────────────────────────────────
@@ -195,20 +252,17 @@ def _progress_frame(task_id: str, context_id: str, stage: str, fields: Dict[str,
 
 
 def _artifact(task_id: str, summary, trace_id: str) -> Dict[str, Any]:
-    """结果载荷：文本 part（答案）+ data part。send 与 stream **完全同构**（契约 §4.4）。"""
+    """
+    结果载荷：文本 part（答案）+ data part。send 与 stream **完全同构**（契约 §4.4）。
+
+    data part 的字段集来自 `ResultSummary.data_part()`——`/query` 用的是同一个
+    函数。同构不是靠两边都记得改，是靠只有一份。
+    """
     return {
         "artifactId": uuid.uuid4().hex, "name": "answer",
         "parts": [
             {"kind": "text", "text": summary.answer},
-            {"kind": "data", "data": {
-                "route": summary.route, "confidence": summary.confidence,
-                "queried_database": summary.queried_database,
-                "has_risk": summary.has_risk, "degraded": summary.degraded,
-                "degrade_reason": summary.degrade_reason,
-                "selected_databases": summary.selected_databases,
-                "trace_id": trace_id,
-                "steps": [s.model_dump() for s in summary.step_logs],
-            }},
+            {"kind": "data", "data": {**summary.data_part(), "trace_id": trace_id}},
         ],
     }
 
@@ -279,8 +333,94 @@ async def _handle_send(request: Request, req_id: Any, params: Any) -> JSONRespon
         task_id, parsed.session_id, "completed", _artifact(task_id, summary, trace_id), trace_id)})
 
 
+# ── 流式的执行资源（契约 §5.5 的准入 + 背压）──────────────────────────────────
+#
+# 2026-09-04 审查复现的饥饿：生产者用 `asyncio.to_thread`、消费者用
+# `run_in_executor(None, events.get)`，两者**抢同一个默认线程池**。把默认池限成
+# 2 线程、开 2 条流，两个消费者就把池占满，pipeline 启动数为 0。
+#
+# 这里改两件事，缺一不可：
+#   1. pipeline 走**专用**有界线程池，不再和别人抢默认池；
+#   2. 消费者**根本不占线程**——事件从工作线程用 `call_soon_threadsafe` 推进
+#      `asyncio.Queue`，事件循环自己就能等，不需要一个线程站在那里阻塞式 get。
+# 只做 1 不做 2 的话，消费者仍然会把默认池吃光，症状换个地方出现。
+
+_executor_lock = threading.Lock()
+_executor: Optional[ThreadPoolExecutor] = None
+_executor_size = 0
+
+_admissions: "weakref.WeakKeyDictionary[Any, _Admission]" = weakref.WeakKeyDictionary()
+
+
+class _Admission:
+    """
+    入口并发准入的计数器。
+
+    刻意**不用 `asyncio.Semaphore`**：它没有非阻塞获取，而
+    `if locked(): reject else: await acquire()` 在两步之间有竞争——真挤上了就变成
+    排队，而排队正是这里要避免的（契约 §5.5 要求满了在流打开之前返回 429）。
+    事件循环是单线程的，一个整数计数器既够用又没有那个缝。
+    """
+
+    def __init__(self, limit: int):
+        self.limit = max(1, limit)
+        self.active = 0
+
+    def try_acquire(self) -> bool:
+        if self.active >= self.limit:
+            return False
+        self.active += 1
+        return True
+
+    def release(self) -> None:
+        self.active = max(0, self.active - 1)
+
+
+def _stream_executor() -> ThreadPoolExecutor:
+    """跑同步 pipeline 的专用线程池。池大小变了就重建，方便测试与热调。"""
+    global _executor, _executor_size
+
+    size = max(1, get_settings().a2a_stream_worker_threads)
+    with _executor_lock:
+        if _executor is None or _executor_size != size:
+            old = _executor
+            _executor = ThreadPoolExecutor(
+                max_workers=size, thread_name_prefix="a2a-stream"
+            )
+            _executor_size = size
+            if old is not None:
+                # 不等在跑的活干完：它们跑完自然退出，这里只是不再收新活
+                old.shutdown(wait=False)
+        return _executor
+
+
+def _admission() -> "_Admission":
+    """
+    入口并发准入，**按事件循环各持一个**（测试里每个 TestClient 一个循环，
+    计数不该串台）。上限变了就换一个新的。
+    """
+    loop = asyncio.get_running_loop()
+    limit = max(1, get_settings().a2a_stream_max_concurrent)
+    admission = _admissions.get(loop)
+    if admission is None or admission.limit != limit:
+        admission = _Admission(limit)
+        _admissions[loop] = admission
+    return admission
+
+
+def shutdown_stream_executor() -> None:
+    """进程退出时收摊；由 ai_sql_api.app 的 shutdown 调用。"""
+    global _executor, _executor_size
+
+    with _executor_lock:
+        if _executor is not None:
+            _executor.shutdown(wait=False)
+            _executor = None
+            _executor_size = 0
+
+
 async def _stream_events(request: Request, req_id: Any, principal, parsed: ParsedMessage,
-                         task_id: str) -> AsyncIterator[str]:
+                         task_id: str, permit: "_Admission") -> AsyncIterator[str]:
     """
     事件顺序（契约 §4.2，**保证**）：
         1× task → N× status-update(working) → 1× artifact-update → 1× status-update(final)
@@ -288,28 +428,71 @@ async def _stream_events(request: Request, req_id: Any, principal, parsed: Parse
     不发心跳、不发空事件（§3.4）：静默本身就是信息。
     """
     trace_id, context_id, started = get_trace_id(), parsed.session_id, time.perf_counter()
-    yield _envelope(req_id, _task_frame(task_id, context_id, "submitted"))
+    loop = asyncio.get_running_loop()
 
-    events: "queue.Queue[Tuple[str, Any, Any]]" = queue.Queue()
+    # 有界队列 = 背压。以前是无界 `queue.Queue`：客户端读得慢时事件只在内存里堆着，
+    # 堆了多少谁都不知道。满了就丢**进度**事件——契约 §4.2 明说「不要对事件条数
+    # 做任何假设」，进度是附加物；终态和载荷绝不丢，见 `_push`。
+    events: "asyncio.Queue[Tuple[str, Any, Any]]" = asyncio.Queue(
+        maxsize=max(8, get_settings().a2a_stream_queue_size)
+    )
+    dropped = {"count": 0}
+    closed = threading.Event()
+
+    def _push(item: Tuple[str, Any, Any], *, droppable: bool) -> None:
+        def _put() -> None:
+            try:
+                events.put_nowait(item)
+            except asyncio.QueueFull:
+                if droppable:
+                    dropped["count"] += 1
+                    return
+                # 终态挤不进去就腾位置：丢一条进度换一个终态，永远划算
+                try:
+                    events.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    events.put_nowait(item)
+                except asyncio.QueueFull:  # pragma: no cover - 理论上到不了
+                    pass
+
+        if closed.is_set():
+            return
+        try:
+            loop.call_soon_threadsafe(_put)
+        except RuntimeError:
+            # 循环已经关了：客户端早断开了，没人接收，静默丢掉即可
+            pass
 
     def sink(name: str, fields: Dict[str, Any]) -> None:
         stage = _STAGE_MAP.get(name)
         if stage is not None:              # memory_context 等内部 stage 刻意不发
-            events.put(("stage", stage, fields))
+            _push(("stage", stage, fields), droppable=True)
+
+    def work():
+        # contextvars 不会自动跟着 run_in_executor 走（asyncio.to_thread 会，
+        # 这里不是）。trace_id、用量上下文、授权作用域都在 context 里，必须显式带过去。
+        with use_stage_sink(sink):
+            return _run_and_audit(request, principal, parsed, started)
+
+    context = contextvars.copy_context()
 
     async def run() -> None:
         try:
-            with use_stage_sink(sink):
-                summary = await asyncio.to_thread(_run_and_audit, request, principal, parsed, started)
-            events.put(("done", summary, None))
+            summary = await loop.run_in_executor(
+                _stream_executor(), context.run, work
+            )
+            _push(("done", summary, None), droppable=False)
         except Exception as exc:
-            events.put(("error", None, exc))
+            _push(("error", None, exc), droppable=False)
 
     worker = asyncio.create_task(run())
-    loop = asyncio.get_running_loop()
+    yield _envelope(req_id, _task_frame(task_id, context_id, "submitted"))
+
     try:
         while True:
-            kind, a, b = await loop.run_in_executor(None, events.get)
+            kind, a, b = await events.get()
             if kind == "stage":
                 yield _envelope(req_id, _progress_frame(task_id, context_id, a, b, trace_id))
             elif kind == "done":
@@ -322,8 +505,21 @@ async def _stream_events(request: Request, req_id: Any, principal, parsed: Parse
                 yield _envelope(req_id, _terminal_frame(task_id, context_id, "failed", trace_id, error=err))
                 return
     finally:
+        # 客户端断开会让生成器被关掉，这里是唯一保证跑到的收尾点。
+        closed.set()
+        worker.cancel()
+        permit.release()
+        if dropped["count"]:
+            log_event(_logger, logging.WARNING, "a2a.progress_dropped",
+                      trace_id=trace_id, dropped=dropped["count"])
         if not worker.done():
-            worker.cancel()
+            # **诚实说明**：cancel() 停得掉那个 await，停不掉已经在跑的同步线程。
+            # pipeline 没有取消点（契约 §5.4 已经写明这一点），SQL 会跑完、
+            # 审计照写、配额照扣，只是没人接收结果。这里把它记下来，
+            # 免得「客户端断开后服务端还在烧钱」变成一件没人知道的事。
+            log_event(_logger, logging.INFO, "a2a.stream_abandoned",
+                      trace_id=trace_id, user_id=principal.user_id,
+                      note="客户端已断开，同步 pipeline 无取消点，后台继续跑完")
 
 
 async def _handle_stream(request: Request, req_id: Any, params: Any):
@@ -332,9 +528,22 @@ async def _handle_stream(request: Request, req_id: Any, params: Any):
         raise JsonRpcError(E_UNSUPPORTED, "message/stream 未启用（AI_SQL_A2A_STREAMING=false）")
     parsed = _parse_message(params)
     principal = _admit(request, parsed.user_id)          # 流打开之前
+
+    # 入口并发准入（§5.5）：满了就在**流打开之前**返回 429，不排队。
+    # 排队只会把「拒绝」变成「全都超时」，而调用方 90s 硬上限一到照样全丢——
+    # 不如现在就说清楚，它还能改发 send。
+    permit = _admission()
+    if not permit.try_acquire():
+        raise JsonRpcError(
+            -32001,
+            f"并发流已达上限（{permit.limit}），请稍后重试。",
+            http_status=429,
+            headers={"Retry-After": "1"},
+        )
+
     task_id = uuid.uuid4().hex
     return StreamingResponse(
-        _stream_events(request, req_id, principal, parsed, task_id),
+        _stream_events(request, req_id, principal, parsed, task_id, permit),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

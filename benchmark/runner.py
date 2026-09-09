@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -235,23 +236,53 @@ class BenchmarkReport:
         }
 
 
+class DatasetSchemaMismatch(RuntimeError):
+    """评测夹具引用的库在当前语义层里不存在。见 GoldExecutor 的说明。"""
+
+
 class GoldExecutor:
     """
     Gold SQL 执行器。
 
     在同一个连接上 ATTACH 四个业务库，
     统一执行 erp.xxx / pm.xxx / mes.xxx / wms.xxx 形式的 gold SQL。
+
+    **夹具与语义层对不上时直接报错，不出分。** 这份数据集是照内置演示元数据
+    （erp_db / pm_db / mes_db / wms_db）写的；换成 `sim_erp/semantic`
+    （erp_db / prod_db / svc_db / wms_db）之后 `pm` 和 `mes` 两个别名 ATTACH 不上，
+    一半的 gold SQL 会直接抛异常——而以前的实现照样把它算成「答错」，
+    最后给出一个看起来正常、实际毫无意义的准确率。
+
+    契约 v1.6 已经把 `mes_db` / `pm_db` 标为退役（`mes_db` 是 `prod_db` 的旧名，
+    `pm_db` 的职责本就在 `erp_db`）。**不为了让夹具成立去造这两个模拟库**——
+    那会造出两个和现有库业务重复的库，语义检索选库时直接打架，而跨库准确率
+    本来就只有 16%。夹具要跟着语义层重写，那是一件独立的数据工作；在它做完
+    之前，这里的正确行为是**拒绝出分**。
     """
 
     ALIASES = {"erp_db": "erp", "pm_db": "pm", "mes_db": "mes", "wms_db": "wms"}
 
-    def __init__(self, db_paths: Dict[str, str]):
+    def __init__(self, db_paths: Dict[str, str], required_aliases=None):
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
+        self.attached = set()
         for database, alias in self.ALIASES.items():
             path = db_paths.get(database)
             if path:
                 self.conn.execute(f"ATTACH DATABASE '{path}' AS {alias}")
+                self.attached.add(alias)
+
+        missing = sorted(set(required_aliases or ()) - self.attached)
+        if missing:
+            available = sorted(db_paths)
+            raise DatasetSchemaMismatch(
+                f"评测夹具引用了这些库前缀：{'、'.join(missing)}，"
+                f"但当前语义层只提供 {'、'.join(available) or '（空）'}。\n"
+                "这不是配置问题，是夹具与语义层对不上——继续跑只会给出一个"
+                "看起来正常、实际毫无意义的准确率。\n"
+                "要么把 AI_SQL_SEMANTIC_DIR 切回内置演示元数据（留空），"
+                "要么按新语义层重写 benchmark/dataset.json。"
+            )
 
     def execute(self, sql: str) -> List[Dict[str, Any]]:
         rows = self.conn.execute(sql).fetchall()
@@ -374,7 +405,18 @@ class BenchmarkRunner:
             database.name: str(database.db_path)
             for database in self.pipeline.databases
         }
-        self.gold_executor = GoldExecutor(databases)
+        self.gold_executor = GoldExecutor(
+            databases, required_aliases=self._dataset_aliases()
+        )
+
+    def _dataset_aliases(self) -> set:
+        """gold SQL 里真正用到的库前缀（`erp.` / `pm.` / …）。"""
+        used = set()
+        for item in self.dataset:
+            used.update(
+                re.findall(r"\b([a-z][a-z0-9_]*)\s*\.", item.get("gold_sql", ""))
+            )
+        return used & set(GoldExecutor.ALIASES.values())
 
     def run(
         self,

@@ -127,6 +127,22 @@ class StepExecutionLog:
     「SQL 跑通了但结果可能是错的」。
     """
 
+    column_units: Dict[str, str] = field(default_factory=dict)
+    """
+    结果列 → 单位标识（契约 §4.6.5），如 `{"contract_amount": "USD"}`。
+
+    判不出来的列不出现。**空 dict 表示「单位未知」，不表示「没有单位」**——
+    调用方据此禁止补币种符号，尤其禁止回退到它自己的全局常量。
+    """
+
+    source_records: List[Dict[str, Any]] = field(default_factory=list)
+    """
+    来源记录标识（契约 §4.6.6）：这批数字是从哪几条业务记录读出来的。
+
+    只有结果集真的带着主键列时才给得出来；给不出来时溯源手段仍是
+    trace_id + final_sql。
+    """
+
 
 @dataclass
 class PipelineResult:

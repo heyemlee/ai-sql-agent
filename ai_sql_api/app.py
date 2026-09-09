@@ -71,10 +71,50 @@ class QueryResponse(BaseModel):
     answer: str
     queried_database: bool
     selected_databases: List[str] = []
+
+    steps: List[StepLogResponse] = []
+    """
+    逐步骤日志。**契约面的名字是 `steps`**（§4.4.1）。
+
+    A2A 那两条一直叫 `steps`，只有直连 `/query` 叫 `step_logs`——同一个
+    `StepLogResponse`，两个名字。后果不是「字段名不好看」：调用方按 §4.6.7
+    处理缺失字段，`steps` 取不到就按「缺失 = 不可信」处置，
+    **于是每一次直连查询都不再是出处，而链路看起来完全正常**——
+    没有报错、没有降级事件、没有任何症状。而 §6.2 的回滚恰好把流量切到这条路上。
+    """
+
     step_logs: List[StepLogResponse] = []
+    """
+    **已弃用，与 `steps` 内容完全相同。** 过渡期两个字段同时发，不破坏现有消费方；
+    删除它要走契约 §6 的变更流程，届时两侧同时删。
+
+    契约明确拒绝了「在契约里承认第三种形状、写一张 step_logs ↔ steps 翻译表」
+    ——那是把分叉制度化，此后每个新消费方都要重踩一次。
+    """
 
     has_risk: bool = False
     """任一步骤带有软异常提示。前端据此提醒用户「这条结果需要核对」。"""
+
+    # ---- 契约 §4.6 业务终态语义 ----
+    #
+    # 与 A2A artifact 的 data part 是同一套字段（都由 ResultSummary.data_part()
+    # 产出）。契约 §4.4 要求两条 transport 能做的信任判断一模一样，「走哪条路
+    # 信息更多」本身就是缺陷。
+    execution_status: str = "failed"
+    """§4.6.1：这次查库到底跑成什么样。缺失/算不出来按 failed 处置。"""
+
+    succeeded_steps: int = 0
+    failed_steps: int = 0
+    repaired_steps: int = 0
+    result_truncated: bool = False
+    """§4.6.3：任一步被截断。为真时「共有 N 条 / 全部 / 一共」这类说法都不成立。"""
+
+    as_of: Optional[str] = None
+    """§4.6.4：数据时点。为空时调用方不得表述「截至今天 / 目前 / 最新」。"""
+
+    as_of_source: Optional[str] = None
+    currency: Optional[str] = None
+    """§4.6.5：本轮金额列的币种。多币种时为空，逐列读 step_logs[].column_units。"""
 
 
 class HistoryItem(BaseModel):
@@ -195,10 +235,261 @@ async def lifespan(app: FastAPI):
 
     app.state.readonly_audits = _audit_business_databases(pipeline)
 
+    # 生产模式的启动闸：不合格就**不启动**，不是打个警告继续跑。
+    check_production_readiness(app)
+
     try:
         yield
     finally:
         _shutdown(app)
+
+
+class ProductionReadinessError(RuntimeError):
+    """生产模式下配置不合格。进程应当起不来。"""
+
+
+def check_production_readiness(app: FastAPI) -> List[str]:
+    """
+    生产模式（`AI_SQL_APP_ENV=production`）的启动闸。
+
+    以前这些都是「警告」：readiness 明确把「缺模型凭证走 Mock」当成可就绪，
+    启动只读审计发现违规也只是 log 一条 WARNING。**警告在生产里等于没有**——
+    没有人会在凌晨看日志，而这几项里任何一项不合格，服务都会以一种看起来
+    完全正常的方式给出错误答案：Mock 模型编 SQL、示例库返回演示数据、
+    权限没配就是全放开、账号能写就等着某天模型生成一条 DELETE。
+
+    开发模式下全部降级为警告——本地跑 demo 与测试不该被这些挡住。
+    返回问题清单，方便测试直接断言。
+    """
+    settings = get_settings()
+    problems: List[str] = []
+    scope = settings.deployment_scope
+
+    # 部署范围必须显式声明。这一条排在最前面，因为下面有两条检查**由它决定
+    # 该不该生效**——范围没定就判不了那两条，只能先把范围问出来。
+    #
+    # 为什么要有它：2026-09 定的第一次上线范围是「同权限内部人员 + 只读」的
+    # 试点，这个范围让三条硬阻断降级为可接受（最小授权没落到真实业务库、
+    # 行范围不启用、impersonation 不启用）。**那三条降级只在系统确实跑在这个
+    # 范围里时才成立**，而在这条断言之前，"这是单租户部署"只写在文档里。
+    # 一个不被代码强制的范围决定不是决定，是期望。
+    if not scope:
+        problems.append(
+            "没有声明 AI_SQL_DEPLOYMENT_SCOPE。生产部署必须显式说明自己是哪种范围："
+            "internal_single_tenant（同权限内部人员、所有 Key 看到的数据范围相同）"
+            "或 multi_tenant（不同最终用户只能看各自的数据）。"
+            "**这个配置故意没有默认值**：漏配和想清楚了配成某个值，风险完全不同。"
+        )
+
+    if not settings.has_model_credentials:
+        problems.append(
+            "没有模型凭证，链路会走 Mock。Mock 会编出语法正确但内容错误的 SQL，"
+            "而且不会有任何症状。"
+        )
+    if settings.auth_mode != "api_key":
+        problems.append(
+            f"AI_SQL_AUTH_MODE={settings.auth_mode}：鉴权关闭时所有请求都是"
+            "匿名身份、全部权限。"
+        )
+    if settings.unknown_role_policy != "deny":
+        problems.append(
+            "AI_SQL_UNKNOWN_ROLE_POLICY=full_access：角色没匹配到策略就给全部权限，"
+            "配错一个角色名的后果是全库可读。"
+        )
+    if not settings.semantic_dir:
+        problems.append(
+            "没有配置 AI_SQL_SEMANTIC_DIR，用的是内置演示元数据与演示库。"
+        )
+
+    unknown_databases = _policy_databases_not_in_semantic_layer(app)
+    if unknown_databases:
+        problems.append(
+            "这些策略引用了语义层里没有的库标识符："
+            + "、".join(unknown_databases)
+            + "。deny by default 之下，这类配错的后果是那把 Key 什么都查不到，"
+            "而且没有任何症状。"
+        )
+
+    if scope == "internal_single_tenant":
+        # 单租户范围里 impersonation 不解决任何问题（所有人权限相同）。
+        # 打开它说明有人**以为**这套部署在按最终用户隔离数据——那个误解本身
+        # 就是风险：它会让人把系统用在范围之外，而系统照常工作。
+        impersonating = _keys_with_impersonation(app)
+        if impersonating:
+            problems.append(
+                "AI_SQL_DEPLOYMENT_SCOPE=internal_single_tenant，但这些 Key 允许"
+                " impersonation：" + "、".join(impersonating)
+                + "。同权限范围里冒充谁都一样，打开它只会让人以为这里在做数据隔离。"
+                "要做真隔离，把范围改成 multi_tenant 并读那一档的要求。"
+            )
+    else:
+        impersonators = _impersonating_keys_without_user_policies(app)
+        if impersonators:
+            problems.append(
+                "这些 Key 允许 impersonation，但配置里没有 users 段（最终用户的角色）："
+                + "、".join(impersonators)
+                + "。那样每个最终用户拿到的都是**服务身份的全部权限**，"
+                "换 user_id 不换权限。见 deploy/authz-model.md。"
+            )
+
+    # 行范围只在 multi_tenant 下是必须的。单租户范围里所有人看到的数据相同，
+    # 要求为每张表写一条 predicate: "*" 只是噪音——而噪音会让人开始
+    # 机械地复制粘贴那一行，那时它就不再是"有人写下来的"了，
+    # 这条检查存在的理由（默认值兜不出安全）反而被磨掉。
+    undeclared_rows = [] if scope == "internal_single_tenant" else _tables_without_row_scope(app)
+    if undeclared_rows:
+        problems.append(
+            "这些策略覆盖到的表没有声明行范围（row_filters）："
+            + "、".join(undeclared_rows)
+            + "。不声明时运行时按放行处理，所以「这张表不做行隔离」必须是有人"
+            "写下来的，而不是默认值兜出来的——写 {\"table\": \"…\", "
+            "\"predicate\": \"*\"} 即可。"
+        )
+
+    keys_without_roles = _keys_without_roles(app)
+    if keys_without_roles:
+        problems.append(
+            "这些 API Key 没有声明 roles，等于不做数据权限限制："
+            + "、".join(keys_without_roles)
+        )
+
+    writable = [
+        user
+        for user, verdict in getattr(app.state, "readonly_audits", {}).items()
+        if verdict != "readonly"
+    ]
+    if writable:
+        problems.append(
+            "这些业务库账号不是只读：" + "、".join(writable)
+            + "。应用层校验是第二道防线，不能是唯一一道。"
+        )
+
+    if settings.app_env != "production":
+        for problem in problems:
+            log_event(_logger, logging.WARNING, "production_readiness.warning",
+                      problem=problem, app_env=settings.app_env)
+        return problems
+
+    if problems:
+        for problem in problems:
+            log_event(_logger, logging.ERROR, "production_readiness.failed",
+                      problem=problem)
+        raise ProductionReadinessError(
+            "生产模式启动检查未通过：\n  - " + "\n  - ".join(problems)
+        )
+
+    log_event(_logger, logging.INFO, "production_readiness.ok")
+    return []
+
+
+def _policy_databases_not_in_semantic_layer(app: FastAPI) -> List[str]:
+    """
+    策略里写的库标识符，语义层里有没有。
+
+    这类错误现在是**完全静默**的：`deploy/api_keys.example.json` 一度还写着
+    `pm_db` / `mes_db`（契约 v1.6 已标退役），配上 deny by default 之后
+    那把 Key 什么都查不到——既没有报错，也没有「你没权限」的提示，
+    因为策略语法完全合法，只是指向了一个不存在的库。
+
+    返回 `角色:库名` 的列表。含通配符的库段跳过（`*` 本来就是「所有库」）。
+    """
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    pipeline = getattr(app.state, "pipeline", None)
+    if store is None or pipeline is None:
+        return []
+
+    known = {database.name for database in pipeline.databases}
+    if not known:
+        return []
+
+    found: List[str] = []
+    for role, policy in getattr(store, "policies", {}).items():
+        rules = (
+            list(policy.allow_tables)
+            + list(policy.deny_tables)
+            + list(policy.deny_columns)
+        )
+        for rule in rules:
+            head = rule.split(".", 1)[0]
+            if not head or any(ch in head for ch in "*?["):
+                continue
+            if head not in known:
+                found.append(f"{role}:{head}")
+    return sorted(set(found))
+
+
+def _keys_with_impersonation(app: FastAPI) -> List[str]:
+    """
+    允许 impersonation 的 Key，**不管配没配 `users` 段**。
+
+    与下面那个的区别是判据不同，不是宽松版：
+    `_impersonating_keys_without_user_policies` 问的是"打开了却没配全"，
+    这个问的是"打开了没有"——因为在 `internal_single_tenant` 范围里，
+    配全了也不该打开：所有人权限相同，冒充谁都一样，
+    而打开它会让人以为这套部署在按最终用户隔离数据。
+    """
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    if store is None:
+        return []
+    return sorted(
+        record.caller
+        for record in store.records.values()
+        if record.can_impersonate
+    )
+
+
+def _impersonating_keys_without_user_policies(app: FastAPI) -> List[str]:
+    """
+    允许 impersonation、却没有 `users` 段的 Key（审查 P0-2）。
+
+    没有 `users` 段时 impersonation 只换 `user_id` 不换权限——alice 和 bob 权限
+    完全相同。运行时保持这个旧行为是为了不破坏现有部署；上生产之前必须写下来。
+    """
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    if store is None or getattr(store, "users", None):
+        return []
+    return sorted(
+        record.caller
+        for record in store.records.values()
+        if record.can_impersonate
+    )
+
+
+def _tables_without_row_scope(app: FastAPI) -> List[str]:
+    """
+    策略允许、但一条 `row_filters` 都没匹配上的表（设计见 deploy/authz-model.md）。
+
+    返回 `角色:库.表`，最多列 10 条——一个新部署可能几十张表都没声明，
+    错误信息刷屏帮不上忙。
+    """
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    pipeline = getattr(app.state, "pipeline", None)
+    if store is None or pipeline is None:
+        return []
+
+    metas = getattr(pipeline, "business_metas", {}) or {}
+    found: List[str] = []
+    for role, policy in getattr(store, "policies", {}).items():
+        if not hasattr(policy, "row_predicate"):
+            continue
+        for database, tables in metas.items():
+            for table in tables:
+                if not policy.allows_table(database, table):
+                    continue
+                if policy.row_predicate(database, table) is None:
+                    found.append(f"{role}:{database}.{table}")
+    return sorted(found)[:10]
+
+
+def _keys_without_roles(app: FastAPI) -> List[str]:
+    store = getattr(getattr(app.state, "auth", None), "store", None)
+    if store is None:
+        return []
+    return sorted(
+        record.caller
+        for record in store.records.values()
+        if not record.roles
+    )
 
 
 def _audit_business_databases(pipeline) -> Dict[str, Any]:
@@ -243,9 +534,11 @@ def _audit_business_databases(pipeline) -> Dict[str, Any]:
 
 def _shutdown(app: FastAPI) -> None:
     """优雅关闭：等待记忆摘要线程收尾，释放 HTTP 连接池。"""
+    from ai_sql_a2a.server import shutdown_stream_executor
     from ai_sql_core.transport import close_http_client
 
     log_event(_logger, logging.INFO, "api.shutdown", stage="begin")
+    shutdown_stream_executor()
 
     watcher = getattr(app.state, "schema_watcher", None)
     if watcher is not None:
@@ -373,9 +666,14 @@ def readyz() -> Dict[str, Any]:
     else:
         checks["pgvector"] = "not_configured (内存向量索引)"
 
-    checks["model_credentials"] = (
-        "ok" if settings.has_model_credentials else "missing (模型走 Mock)"
-    )
+    if settings.has_model_credentials:
+        checks["model_credentials"] = "ok"
+    else:
+        # 生产模式下这不是「降级」，是不就绪。Mock 会编出语法正确、内容错误的
+        # SQL，而且从响应上看不出区别——把它算成 ready 等于把编造当成服务。
+        checks["model_credentials"] = "missing (模型走 Mock)"
+        if settings.app_env == "production":
+            ready = False
     checks["model_provider"] = f"{settings.model_provider} ({settings.chat_model})"
     checks["auth_mode"] = settings.auth_mode
 
@@ -529,6 +827,7 @@ def query(
         degraded=degraded,
         degrade_reason=degrade_reason,
         has_risk=has_risk,
+        execution_status=summary.execution_status,
     )
 
     return QueryResponse(
@@ -541,8 +840,18 @@ def query(
         answer=result.answer,
         queried_database=result.queried_database,
         selected_databases=selected_databases,
+        # 过渡期同一份数据序列化两次（契约 §4.4.1）
+        steps=step_logs,
         step_logs=step_logs,
         has_risk=has_risk,
+        execution_status=summary.execution_status,
+        succeeded_steps=summary.succeeded_steps,
+        failed_steps=failed_steps,
+        repaired_steps=repaired_steps,
+        result_truncated=summary.result_truncated,
+        as_of=summary.as_of,
+        as_of_source=summary.as_of_source,
+        currency=summary.currency,
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import sqlite3
 from pathlib import Path
 
@@ -41,6 +42,96 @@ def create_wms_demo_database(db_path: str | Path) -> Path:
     return _create_database_from_sql(db_path, "create_wms_demo.sql")
 
 
+# 契约 §4.6.5：演示元数据的字段单位。
+#
+# 为什么要给**演示**元数据配单位：默认部署（没配 AI_SQL_SEMANTIC_DIR）用的就是它，
+# 而它没有 unit 就意味着 `currency` 恒为 null，于是调用方永远退到自己的
+# `SQL_AGENT_CURRENCY` 全局常量——那条路径已经出过一次业务事故
+# （中文回答默认写「元」，接美国厂的库时金额带错币种）。
+# 「契约上关掉了、默认部署下还开着」不算关掉。
+#
+# 币种取 CNY：这套演示数据是中文的橱柜厂场景（客户/订单/工单/车间），
+# 描述里没写币种，所以这是**为虚构数据显式声明**，不是从哪里推出来的。
+# 接真实业务库必须在自己的语义层 YAML 里声明自己的币种，别沿用这里。
+#
+# 只写有把握的：金额 → CNY，件数 → EA，描述里明写 (0-1) 的比率 → ratio。
+# 拿不准的一律不写——契约 §4.6.5 说得很清楚，缺失是「单位未知」，
+# 调用方不得擅自补，猜一个填进去比留空危险得多。
+COLUMN_UNITS: dict = {
+    "erp_db.sales_order.order_amt": "CNY",
+    "erp_db.purchase_order.po_amt": "CNY",
+    "erp_db.payment.paid_amt": "CNY",
+    "pm_db.project.contract_amt": "CNY",
+    "pm_db.project.budget_amt": "CNY",
+    "pm_db.project.actual_cost": "CNY",
+    "pm_db.change_order.change_amt": "CNY",
+    "wms_db.batch.unit_cost": "CNY",
+    "mes_db.work_order.plan_qty": "EA",
+    "mes_db.capacity_stat.planned_qty": "EA",
+    "mes_db.capacity_stat.actual_qty": "EA",
+    "mes_db.quality_check.checked_qty": "EA",
+    "mes_db.quality_check.passed_qty": "EA",
+    "wms_db.batch.in_qty": "EA",
+    "wms_db.stock_snapshot.on_hand_qty": "EA",
+    "wms_db.stock_snapshot.locked_qty": "EA",
+    "erp_db.supplier.on_time_rate": "ratio",
+    "mes_db.quality_check.yield_rate": "ratio",
+}
+
+
+def _apply_units(database: str, tables: dict) -> dict:
+    """
+    把 COLUMN_UNITS 里属于这个库的单位写进表元数据。
+
+    键写错会**静默不生效**——单位没下发，调用方回退到全局币种常量，
+    金额照样报出去、看起来完全正常。所以这里对不上就直接抛，
+    与 sim_erp/semantic.py 的 _assert_units_apply 是同一条理由。
+    """
+    known = {
+        f"{database}.{table}.{column}"
+        for table, meta in tables.items()
+        for column in (meta.get("columns") or {})
+    }
+    stale = sorted(
+        key for key in COLUMN_UNITS
+        if key.startswith(f"{database}.") and key not in known
+    )
+    if stale:
+        raise ValueError(
+            f"COLUMN_UNITS 里这些键在 {database} 里找不到对应字段"
+            f"（写错会静默不生效）：{'、'.join(stale)}"
+        )
+
+    for table, meta in tables.items():
+        for column, column_meta in (meta.get("columns") or {}).items():
+            unit = COLUMN_UNITS.get(f"{database}.{table}.{column}")
+            if unit and isinstance(column_meta, dict):
+                column_meta["unit"] = unit
+    return tables
+
+
+
+def _with_units(database: str):
+    """
+    给 get_*_business_meta 挂单位。
+
+    单位写在这里而不是语义层加载器里：`demo_data` 是演示元数据的**单一事实来源**，
+    加载器只是换一个入口。在加载器里加工会让
+    `layer.business_metas()["erp_db"] == get_erp_business_meta()` 这条不变量失效
+    ——那条不变量有专门的用例守着（tests/test_semantic_layer.py），它是对的。
+    """
+
+    def decorate(builder):
+        @functools.wraps(builder)
+        def wrapped() -> dict:
+            return _apply_units(database, builder())
+
+        return wrapped
+
+    return decorate
+
+
+@_with_units("erp_db")
 def get_erp_business_meta() -> dict:
     """
     ERP 域业务元数据。
@@ -238,6 +329,7 @@ def get_erp_business_meta() -> dict:
     }
 
 
+@_with_units("pm_db")
 def get_pm_business_meta() -> dict:
     """项目管理域业务元数据。"""
     return {
@@ -440,6 +532,7 @@ def get_pm_business_meta() -> dict:
     }
 
 
+@_with_units("mes_db")
 def get_mes_business_meta() -> dict:
     """生产与工时域业务元数据。"""
     return {
@@ -641,6 +734,7 @@ def get_mes_business_meta() -> dict:
     }
 
 
+@_with_units("wms_db")
 def get_wms_business_meta() -> dict:
     """库存与物料域业务元数据。"""
     return {
