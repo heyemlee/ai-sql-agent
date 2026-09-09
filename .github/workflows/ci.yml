@@ -31,7 +31,7 @@ jobs:
       AI_SQL_PGVECTOR_DSN: postgresql://ai_sql:ai_sql@localhost:5432/ai_sql
       # 契约仓库钉死的 tag。升级契约是一次有意的动作：改这一行，
       # 同时改 tests/test_contract_fixtures.py 的 CONTRACT_TAG，两边对不上会红。
-      A2A_CONTRACT_TAG: v1.8
+      A2A_CONTRACT_TAG: v1.11
       A2A_CONTRACT_DIR: .contract
 
     steps:
