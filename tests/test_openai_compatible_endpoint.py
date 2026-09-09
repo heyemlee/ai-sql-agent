@@ -15,7 +15,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from ai_sql_core import reload_settings
+from ai_sql_agent.core import reload_settings
 
 
 RECEIVED = []
@@ -163,7 +163,7 @@ class OpenAICompatibleEndpointTest(unittest.TestCase):
         """协议层：按 OpenAI 格式发请求、解析响应，鉴权头正确。"""
         try:
             self._point_settings_at_mock()
-            from cot_planning.thinking_client import ThinkingModelClient, ThinkingModelConfig
+            from ai_sql_agent.planning.thinking_client import ThinkingModelClient, ThinkingModelConfig
 
             client = ThinkingModelClient(ThinkingModelConfig())
             output = client.generate("处理对象 输出目标 supplier.on_time_rate")
@@ -184,7 +184,7 @@ class OpenAICompatibleEndpointTest(unittest.TestCase):
         """协议层：Embedding 走同一套 OpenAI 兼容格式。"""
         try:
             self._point_settings_at_mock()
-            from schema_indexing.embedding_client import (
+            from ai_sql_agent.indexing.embedding_client import (
                 AliyunEmbeddingClient, AliyunEmbeddingConfig,
             )
 
@@ -203,7 +203,7 @@ class OpenAICompatibleEndpointTest(unittest.TestCase):
         """链路层：整条 Text2SQL 链路跑在自建端点上，产出可执行 SQL 与真实结果。"""
         try:
             self._point_settings_at_mock()
-            from ai_sql_pipeline import Text2SQLPipeline
+            from ai_sql_agent.pipeline import Text2SQLPipeline
 
             pipeline = Text2SQLPipeline()
             result = pipeline.run("查询准时率低于0.9的供应商名称")

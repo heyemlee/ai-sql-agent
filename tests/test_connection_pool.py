@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from mcp_router.pool import BoundedConnectionPool
+from ai_sql_agent.execution.pool import BoundedConnectionPool
 
 
 class _FakeConn:
@@ -92,7 +92,7 @@ class BoundedConnectionPoolTest(unittest.TestCase):
 
 class ExecutorWiringTest(unittest.TestCase):
     def test_postgres_executor_builds_a_pool_from_settings(self):
-        from mcp_router import PostgresMCPExecutor
+        from ai_sql_agent.execution import PostgresMCPExecutor
 
         executor = PostgresMCPExecutor("db", "postgresql://x/y", pool_max_connections=3)
         self.assertTrue(executor._pool.enabled)

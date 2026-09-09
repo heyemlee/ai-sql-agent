@@ -11,11 +11,11 @@
 
 import unittest
 
-from ai_sql_pipeline import Text2SQLPipeline
-from ai_sql_pipeline.text2sql_pipeline import _as_sql_literals
-from cot_planning import CotPlanningRequest, CotPromptBuilder, few_shots_for
-from cot_planning.objects import CotPlanningResult, CotPlanningStep
-from result_validation.self_check import SemanticSelfChecker
+from ai_sql_agent.pipeline import Text2SQLPipeline
+from ai_sql_agent.pipeline.text2sql_pipeline import _as_sql_literals
+from ai_sql_agent.planning import CotPlanningRequest, CotPromptBuilder, few_shots_for
+from ai_sql_agent.planning.objects import CotPlanningResult, CotPlanningStep
+from ai_sql_agent.validation.self_check import SemanticSelfChecker
 
 
 def _plan(*steps):

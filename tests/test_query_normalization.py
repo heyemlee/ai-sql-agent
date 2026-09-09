@@ -3,7 +3,7 @@
 import unittest
 from datetime import date
 
-from query_normalization import (
+from ai_sql_agent.normalization import (
     CoreferenceResolver,
     FiscalConfig,
     QueryNormalizer,

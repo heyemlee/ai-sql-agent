@@ -95,19 +95,19 @@ flowchart TB
 ### 1. Run locally, no model key required
 
 ```bash
-pip install -r requirements.txt
+pip install -e ".[dev]"          # or: make install
 
 # End-to-end examples: single-database and cross-database
-python -m ai_sql_pipeline.end_to_end_demo
+python examples/end_to_end.py    # or: make demo
 
 # Full offline test suite
-python -m unittest discover -s tests -v
+python -m pytest tests -q        # or: make test
 ```
 
 ### 2. Start the API and web console
 
 ```bash
-./run_api.sh
+./scripts/run_api.sh             # or: make run
 ```
 
 Open [http://localhost:8000](http://localhost:8000) and ask a question, or call the endpoint directly:
@@ -132,9 +132,9 @@ them, and how the databases relate. Retrieval, planning and metric explanations
 all read from it.
 
 ```bash
-python -m ai_sql_semantic export semantic/     # export the demo metadata as a template
+python -m ai_sql_agent.semantic export semantic/     # export the demo metadata as a template
 # edit semantic/*.yaml: real table and column names, business wording, connections
-python -m ai_sql_semantic validate semantic/   # checks it against the real databases
+python -m ai_sql_agent.semantic validate semantic/   # checks it against the real databases
 ```
 
 `validate` compares the metadata with the live schema and reports both directions:
@@ -163,7 +163,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 # ANTHROPIC_API_KEY=sk-ant-xxx
 ```
 
-Self-hosted vLLM, Ollama and other OpenAI-compatible endpoints work too; see the [deployment guide](deploy/README.md) for the full configuration.
+Self-hosted vLLM, Ollama and other OpenAI-compatible endpoints work too; see the [deployment guide](docs/deployment.md) for the full configuration.
 
 ## Key design decisions
 
@@ -199,29 +199,41 @@ The `POST /query` response carries `answer`, the SQL and result of each step, `h
 ## Module map
 
 ```text
-ai_sql_api/          API and built-in web console
-ai_sql_pipeline/     Dynamic routing and end-to-end orchestration
-schema_retrieval/    Three-stage schema retrieval and SchemaGraph
-cot_planning/        Multi-step and cross-database query planning
-sql_generation/      SQL generation
-sql_repair/          Repair loop for failed SQL
-result_validation/   Result risk checks
-mcp_router/          SQL guard and multi-dialect execution
-ai_sql_memory/       Short-term sessions and long-term memory
-ai_sql_auth/         API keys, identity, table and column permissions
-ai_sql_audit/        Audit records
-ai_sql_semantic/     Business semantics per database: meanings, aliases, join keys, metrics
-ai_sql_feedback/     User verdicts: wrong answers to the eval set, right ones to certified queries
-ai_sql_core/         Settings, model transport, logging, metrics, circuit breaker
-benchmark/           Evaluation set and release gate
-deploy/              Production deployment and operations docs
+src/ai_sql_agent/         Application package (installed with `pip install -e .`)
+  api/                    FastAPI service and built-in web console
+  a2a/                    Agent-to-agent streaming endpoint (a2a-contract)
+  mcp_server/             MCP server exposing the read-only query tool
+  pipeline/               Dynamic routing and end-to-end orchestration
+  normalization/          Question normalization: dates and coreference
+  retrieval/              Three-stage schema retrieval and SchemaGraph
+  indexing/               Schema index building: embeddings and pgvector
+  planning/               Multi-step and cross-database query planning
+  generation/             SQL generation
+  execution/              SQL guard, dialects and read-only executors (MCP routed)
+  repair/                 Repair loop for failed SQL
+  validation/             Result risk checks
+  memory/                 Short-term sessions and long-term memory
+  auth/                   API keys, identity, table and column permissions
+  audit/                  Audit records
+  semantic/               Business semantics per database: meanings, aliases, join keys, metrics
+  feedback/               User verdicts: wrong answers to the eval set, right ones to certified queries
+  ops/                    Read-only database roles and least-privilege grants
+  core/                   Settings, model transport, logging, metrics, circuit breaker
+  resources/demo_sql/     DDL and seed data for the four demo databases
+tests/                    Offline test suite, pgvector integration and cross-repo contract cases
+benchmark/                Evaluation set, thresholds, baselines and the release gate
+examples/                 Runnable demos, one per pipeline stage
+scripts/                  Dev helpers: run_api.sh, check_env.py
+tools/sim_erp/            Simulated multi-database ERP for realistic-scale testing
+deploy/                   Dockerfile, Docker Compose stacks, API key template
+docs/                     Walkthrough, deployment and operations guides, module docs
 ```
 
 ## Further reading
 
-- [Project walkthrough (Chinese)](WALKTHROUGH.zh-CN.md): a module-by-module deep dive, the five design threads, and a talk track for explaining the system
-- [Deployment and operations](deploy/README.md): Docker Compose, permissions, model integration, monitoring and troubleshooting
-- [End-to-end orchestration](ai_sql_pipeline/README.md): dynamic routing and memory examples
-- [Schema retrieval](schema_retrieval/README.md): hybrid recall and SchemaGraph
-- [MCP execution](mcp_router/README.md): read-only SQL, dialects and executors
+- [Project walkthrough (Chinese)](docs/walkthrough.zh-CN.md): a module-by-module deep dive, the five design threads, and a talk track for explaining the system
+- [Deployment and operations](docs/deployment.md): Docker Compose, permissions, model integration, monitoring and troubleshooting
+- [End-to-end orchestration](docs/modules/pipeline.md): dynamic routing and memory examples
+- [Schema retrieval](docs/modules/retrieval.md): hybrid recall and SchemaGraph
+- [MCP execution](docs/modules/execution.md): read-only SQL, dialects and executors
 - [Benchmark](benchmark/README.md): dataset, accuracy and the release gate

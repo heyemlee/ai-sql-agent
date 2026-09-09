@@ -28,7 +28,7 @@ aggregation 92.0%、multi_join 65.3%、cross_db 73.3%——multi_join 和 cross_
 | dataset | `benchmark/dataset.json`，150 条，六类各 25，sha256 `52b8041f...` |
 | holdout | `benchmark/holdout.json`，40 条，sha256 `4623583f...` |
 | thresholds | `benchmark/thresholds.json` full 档，sha256 `05198cb9...` |
-| 语义层 | **内置演示元数据**（`AI_SQL_SEMANTIC_DIR` 留空），**不是**当前部署的 `sim_erp/semantic` |
+| 语义层 | **内置演示元数据**（`AI_SQL_SEMANTIC_DIR` 留空），**不是**当前部署的 `tools/sim_erp/semantic` |
 
 完整字段见同目录 `baseline.json`；单条题目级明细（含预测 SQL、是否命中、
 是否降级/风险提示）见 `round1.json` / `round2.json` / `round3.json`。
@@ -43,11 +43,11 @@ DatasetSchemaMismatch: 评测夹具引用了这些库前缀：mes、pm，
 ```
 
 `benchmark/dataset.json` 的 150 条 gold SQL 是照内置演示元数据
-（`erp_db`/`pm_db`/`mes_db`/`wms_db`）写的；当前部署用 `sim_erp/semantic`
+（`erp_db`/`pm_db`/`mes_db`/`wms_db`）写的；当前部署用 `tools/sim_erp/semantic`
 （`erp_db`/`prod_db`/`svc_db`/`wms_db`，见契约 v1.6 的改名说明）。
 两者字段/表结构未必一致，**这份基线的准确率数字不能直接当成当前部署的准确率**——
 它只回答"同一套 pipeline 代码，在标准评测夹具上跑得怎么样"。
-要拿到当前部署口径的基线，需要按 `sim_erp/semantic` 重写 `benchmark/dataset.json`
+要拿到当前部署口径的基线，需要按 `tools/sim_erp/semantic` 重写 `benchmark/dataset.json`
 的 gold SQL，这是一件独立的数据工作（`runner.py:246` 的 `GoldExecutor` docstring
 已说明为什么不能为了让夹具"跑通"去伪造 `mes_db`/`pm_db`）。
 

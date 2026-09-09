@@ -5,7 +5,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from ai_sql_memory import (
+from ai_sql_agent.memory import (
     ConversationMemoryService,
     ExtractiveMemorySummarizer,
     LocalMemoryEmbeddingClient,
@@ -16,8 +16,8 @@ from ai_sql_memory import (
     ShortTermMemoryService,
     SQLiteMemoryStore,
 )
-from ai_sql_memory.long_term import LongTermMemoryService
-from ai_sql_pipeline import (
+from ai_sql_agent.memory.long_term import LongTermMemoryService
+from ai_sql_agent.pipeline import (
     Text2SQLPipeline,
     MemoryAwareSqlAgentService,
     PipelineConfig,

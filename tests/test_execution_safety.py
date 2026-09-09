@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_sql_auth import authorization_scope
-from mcp_router import MCPExecutionRequest, SQLiteMCPExecutor, check_readonly_sql
-from schema_retrieval.access import ALLOW_ALL
-from mcp_router.dialects import POSTGRES, SQLITE, get_dialect
+from ai_sql_agent.auth import authorization_scope
+from ai_sql_agent.execution import MCPExecutionRequest, SQLiteMCPExecutor, check_readonly_sql
+from ai_sql_agent.retrieval.access import ALLOW_ALL
+from ai_sql_agent.execution.dialects import POSTGRES, SQLITE, get_dialect
 
 
 class SqlGuardTest(unittest.TestCase):
@@ -69,7 +69,7 @@ class SQLiteExecutorSafetyTest(unittest.TestCase):
 
     def execute(self, sql):
         # 执行器入口现在有强制授权关卡：不绑作用域一律拒绝（这是有意的默认值，
-        # 见 ai_sql_auth.enforcement）。这组用例验的是只读约束与行数上限，
+        # 见 ai_sql_agent.auth.enforcement）。这组用例验的是只读约束与行数上限，
         # 所以显式绑一个全放开的策略，把权限这一维度排除掉。
         with authorization_scope(ALLOW_ALL):
             return self.executor.execute(
@@ -137,8 +137,8 @@ class DialectTest(unittest.TestCase):
 
 class DialectInPromptTest(unittest.TestCase):
     def test_generation_prompt_carries_target_dialect(self):
-        from sql_generation.objects import CotStep, LocalSchema, SqlGenerationRequest
-        from sql_generation.prompt_builder import SqlPromptBuilder
+        from ai_sql_agent.generation.objects import CotStep, LocalSchema, SqlGenerationRequest
+        from ai_sql_agent.generation.prompt_builder import SqlPromptBuilder
 
         request = SqlGenerationRequest(
             cot_step=CotStep(
@@ -176,7 +176,7 @@ class SchemaFingerprintTest(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def _fingerprint(self):
-        from schema_retrieval.schema_fingerprint import sqlite_schema_fingerprint
+        from ai_sql_agent.retrieval.schema_fingerprint import sqlite_schema_fingerprint
 
         return sqlite_schema_fingerprint(str(self.db_path))
 
@@ -202,7 +202,7 @@ class SchemaFingerprintTest(unittest.TestCase):
         self.assertNotEqual(before, self._fingerprint())
 
     def test_unreachable_database_yields_empty_fingerprint(self):
-        from schema_retrieval.schema_fingerprint import database_fingerprint
+        from ai_sql_agent.retrieval.schema_fingerprint import database_fingerprint
 
         # 取不到指纹时返回空串，调用方据此跳过重建而不是误判为“变了”
         self.assertEqual(
@@ -212,7 +212,7 @@ class SchemaFingerprintTest(unittest.TestCase):
 
 class SchemaHotReloadTest(unittest.TestCase):
     def test_pipeline_detects_and_reloads_schema_changes(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline()
         self.assertEqual(pipeline.detect_schema_changes(), [])
@@ -229,7 +229,7 @@ class SchemaHotReloadTest(unittest.TestCase):
         self.assertEqual(pipeline.detect_schema_changes(), [])
 
     def test_watcher_is_disabled_by_default(self):
-        from ai_sql_api.schema_watcher import SchemaWatcher
+        from ai_sql_agent.api.schema_watcher import SchemaWatcher
 
         watcher = SchemaWatcher(pipeline=None, interval_seconds=0)
         self.assertFalse(watcher.enabled)
@@ -246,7 +246,7 @@ class CrossDatabaseReferenceGuardTest(unittest.TestCase):
     """
 
     def setUp(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         self.pipeline = Text2SQLPipeline()
 
@@ -261,7 +261,7 @@ class CrossDatabaseReferenceGuardTest(unittest.TestCase):
 
     def test_foreign_table_reference_triggers_regeneration(self):
         """引用外库表时应带提示重生成；改好了就用新 SQL。"""
-        from sql_generation.objects import CotStep
+        from ai_sql_agent.generation.objects import CotStep
 
         good_sql = "SELECT SUM(po_amt) FROM purchase_order WHERE job_no IN ('J24001')"
 
@@ -304,7 +304,7 @@ class CrossDatabaseReferenceGuardTest(unittest.TestCase):
         self.assertIn("不要写跨库子查询", generator.prompts[0])
 
     def test_clean_sql_is_left_untouched(self):
-        from sql_generation.objects import CotStep
+        from ai_sql_agent.generation.objects import CotStep
 
         class _Generator:
             def generate(self, *a, **k):

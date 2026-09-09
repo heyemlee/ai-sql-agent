@@ -241,8 +241,8 @@ total":
 # connections and measurably exhausts the handle limit
 python -c "
 from benchmark.runner import BenchmarkRunner
-from ai_sql_pipeline import Text2SQLPipeline
-from ai_sql_pipeline.objects import PipelineConfig
+from ai_sql_agent.pipeline import Text2SQLPipeline
+from ai_sql_agent.pipeline.objects import PipelineConfig
 r = BenchmarkRunner(pipeline=Text2SQLPipeline(
     PipelineConfig(enable_cross_db_fewshot=False))).run(categories=['cross_db'])
 print(f'{r.correct}/{r.total}')"
