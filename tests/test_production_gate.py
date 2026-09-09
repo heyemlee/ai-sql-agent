@@ -135,6 +135,40 @@ class ProductionModeTest(unittest.TestCase):
         )
         self.assertEqual(_policy_databases_not_in_semantic_layer(app), [])
 
+    def test_production_without_a_declared_scope_blocks_startup(self):
+        """
+        部署范围必须显式声明。
+
+        试点范围（同权限内部人员 / 只读）让三条硬阻断降级为可接受——最小授权
+        没落到真实业务库、行范围不启用、impersonation 不启用。**那三条降级只在
+        系统确实跑在这个范围里时才成立**，而在这条断言之前，"这是单租户部署"
+        只写在文档里。文档不会在配错的时候报错。
+        """
+        with _EnvPatch(AI_SQL_APP_ENV="production"):
+            with self.assertRaises(ProductionReadinessError) as caught:
+                check_production_readiness(_FakeApp())
+        self.assertIn("AI_SQL_DEPLOYMENT_SCOPE", str(caught.exception))
+
+    def test_single_tenant_scope_rejects_impersonating_keys(self):
+        """
+        单租户范围里 impersonation 不解决任何问题（所有人权限相同）。
+        打开它说明有人**以为**这里在按最终用户隔离数据——那个误解会让人把
+        系统用在范围之外，而系统照常工作。
+        """
+        from ai_sql_auth import ApiKeyRecord
+
+        with _EnvPatch(
+            AI_SQL_APP_ENV="production",
+            AI_SQL_DEPLOYMENT_SCOPE="internal_single_tenant",
+        ):
+            app = _FakeApp(records={
+                "k": ApiKeyRecord(key="k", caller="helpdesk", roles=("analyst",),
+                                  can_impersonate=True)
+            })
+            with self.assertRaises(ProductionReadinessError) as caught:
+                check_production_readiness(app)
+        self.assertIn("helpdesk", str(caught.exception))
+
     def test_a_fully_configured_production_setup_passes(self):
         """反向断言：一个「永远拒绝」的闸门是没用的闸门。"""
         from ai_sql_auth import ApiKeyRecord
@@ -146,6 +180,9 @@ class ProductionModeTest(unittest.TestCase):
             AI_SQL_SEMANTIC_DIR="sim_erp/semantic",
             AI_SQL_ANTHROPIC_API_KEY="test-key",
             AI_SQL_MODEL_PROVIDER="anthropic",
+            # 范围是"完整生产配置"的一部分。加这一行的时候本条会先红一次，
+            # 那正是断言接上了的证据。
+            AI_SQL_DEPLOYMENT_SCOPE="internal_single_tenant",
         ):
             from ai_sql_auth import DataPolicy
 
