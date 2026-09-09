@@ -11,8 +11,8 @@
 
 import unittest
 
-from ai_sql_pipeline import Text2SQLPipeline
-from ai_sql_pipeline.demo_data import (
+from ai_sql_agent.pipeline import Text2SQLPipeline
+from ai_sql_agent.pipeline.demo_data import (
     get_cross_database_links,
     get_metric_disambiguation,
 )

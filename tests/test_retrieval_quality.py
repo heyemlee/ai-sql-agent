@@ -5,7 +5,7 @@
 
 import unittest
 
-from ai_sql_pipeline import Text2SQLPipeline
+from ai_sql_agent.pipeline import Text2SQLPipeline
 
 
 class IndexTextMergeTest(unittest.TestCase):
@@ -77,7 +77,7 @@ class CompactSchemaRenderingTest(unittest.TestCase):
     """
 
     def _graph(self):
-        from schema_retrieval.objects import ColumnSchema, SchemaGraph, TableSchema
+        from ai_sql_agent.retrieval.objects import ColumnSchema, SchemaGraph, TableSchema
 
         return SchemaGraph(
             database="pm_db",
@@ -110,7 +110,7 @@ class CompactSchemaRenderingTest(unittest.TestCase):
         self.assertNotIn("业务用途", text)
 
     def test_compact_is_substantially_cheaper(self):
-        from ai_sql_pipeline.token_budget import estimate_tokens
+        from ai_sql_agent.pipeline.token_budget import estimate_tokens
 
         graph = self._graph()
         full = estimate_tokens(graph.to_prompt_context())

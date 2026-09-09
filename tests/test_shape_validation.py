@@ -11,12 +11,12 @@
 
 import unittest
 
-from result_validation import (
+from ai_sql_agent.validation import (
     check_shape_against_plan,
     check_unrequested_aggregation,
     wants_aggregation,
 )
-from result_validation.objects import AnomalyType
+from ai_sql_agent.validation.objects import AnomalyType
 
 
 class UnrequestedAggregationTest(unittest.TestCase):
@@ -96,7 +96,7 @@ class IntermediateSelfCheckTest(unittest.TestCase):
                 else "结论：一致\n理由：符合"
 
     def test_intermediate_step_is_compared_against_its_own_objective(self):
-        from result_validation import ResultValidator, SemanticSelfChecker
+        from ai_sql_agent.validation import ResultValidator, SemanticSelfChecker
 
         client = self.Recorder()
         ResultValidator(SemanticSelfChecker(client)).validate(
@@ -112,7 +112,7 @@ class IntermediateSelfCheckTest(unittest.TestCase):
 
     def test_intermediate_check_is_skipped_when_objective_missing(self):
         """开关关掉时传空目标，自检应当整个跳过，而不是退回用原问题比。"""
-        from result_validation import ResultValidator, SemanticSelfChecker
+        from ai_sql_agent.validation import ResultValidator, SemanticSelfChecker
 
         client = self.Recorder()
         ResultValidator(SemanticSelfChecker(client)).validate(

@@ -6,7 +6,7 @@
 
 import unittest
 
-from result_validation import (
+from ai_sql_agent.validation import (
     AnomalyType,
     ResultValidator,
     SemanticSelfChecker,
@@ -172,7 +172,7 @@ class RiskFindingsReachTheUserTest(unittest.TestCase):
     """
 
     def test_response_model_carries_risk_findings(self):
-        from ai_sql_api.app import QueryResponse, StepLogResponse
+        from ai_sql_agent.api.app import QueryResponse, StepLogResponse
 
         step = StepLogResponse(
             database="erp_db",
@@ -199,7 +199,7 @@ class RiskFindingsReachTheUserTest(unittest.TestCase):
         """界面不渲染等于没提示，这里直接检查页面里引用了这个字段。"""
         from pathlib import Path
 
-        page = Path(__file__).resolve().parents[1] / "ai_sql_api" / "static" / "index.html"
+        page = Path(__file__).resolve().parents[1] / "src" / "ai_sql_agent" / "api" / "static" / "index.html"
         html = page.read_text(encoding="utf-8")
         self.assertIn("risk_findings", html)
         self.assertIn("has_risk", html)

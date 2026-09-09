@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_sql_semantic import (
+from ai_sql_agent.semantic import (
     DatabaseSemantics,
     SemanticLayer,
     demo_semantic_layer,
@@ -34,7 +34,7 @@ class DemoLayerTest(unittest.TestCase):
 
     def test_business_metas_match_legacy_demo_functions(self):
         """搬家不能改内容：语义层给出的元数据必须与原来的函数逐字相同。"""
-        from ai_sql_pipeline import demo_data
+        from ai_sql_agent.pipeline import demo_data
 
         self.assertEqual(
             self.layer.business_metas()["erp_db"], demo_data.get_erp_business_meta()
@@ -286,7 +286,7 @@ class PipelineIntegrationTest(unittest.TestCase):
     """语义层接进主链路之后，检索与规划拿到的仍然是同一份元数据。"""
 
     def test_pipeline_uses_semantic_layer_for_metadata(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline()
         self.assertEqual(
@@ -298,8 +298,8 @@ class PipelineIntegrationTest(unittest.TestCase):
         )
 
     def test_pipeline_accepts_an_injected_layer(self):
-        from ai_sql_pipeline import Text2SQLPipeline
-        from ai_sql_pipeline.objects import PipelineConfig
+        from ai_sql_agent.pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline.objects import PipelineConfig
 
         layer = demo_semantic_layer()
         layer.databases.pop("mes_db")
@@ -312,7 +312,7 @@ class PipelineIntegrationTest(unittest.TestCase):
 
     def test_metric_definitions_reach_the_qa_path(self):
         """指标口径以前写死在问答类里，现在必须来自语义层。"""
-        from ai_sql_pipeline.data_qa import RuleBasedDataQAClient
+        from ai_sql_agent.pipeline.data_qa import RuleBasedDataQAClient
 
         client = RuleBasedDataQAClient()
         self.assertEqual(client.definitions, demo_semantic_layer().metric_definitions)
@@ -329,10 +329,10 @@ class InjectedLayerConsistencyTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from ai_sql_memory import ConversationMemoryService
-        from ai_sql_memory.conversation import MemoryServiceConfig
-        from ai_sql_pipeline import DynamicSqlAgentService, Text2SQLPipeline
-        from ai_sql_pipeline.objects import PipelineConfig
+        from ai_sql_agent.memory import ConversationMemoryService
+        from ai_sql_agent.memory.conversation import MemoryServiceConfig
+        from ai_sql_agent.pipeline import DynamicSqlAgentService, Text2SQLPipeline
+        from ai_sql_agent.pipeline.objects import PipelineConfig
 
         layer = demo_semantic_layer()
         layer.metric_definitions = {"自定义指标": "注入的定义"}

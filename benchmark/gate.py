@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from statistics import mean
 
-from ai_sql_core import get_settings
+from ai_sql_agent.core import get_settings
 from benchmark.run_benchmark import SMOKE_IDS
 from benchmark.runner import BenchmarkRunner, run_holdout_recall
 

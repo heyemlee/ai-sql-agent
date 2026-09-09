@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import unittest
 
-from mcp_router import MCPExecutionRequest
-from ai_sql_auth import authorization_scope
-from mcp_router.sqlite_executor import SQLiteMCPExecutor
-from schema_retrieval.access import ALLOW_ALL
-from sql_generation.objects import LocalSchema, TableColumn, TableSchema
-from sql_repair import ExecutionLogParser, SqlClauseLocalizer, SqlRepairService
+from ai_sql_agent.execution import MCPExecutionRequest
+from ai_sql_agent.auth import authorization_scope
+from ai_sql_agent.execution.sqlite_executor import SQLiteMCPExecutor
+from ai_sql_agent.retrieval.access import ALLOW_ALL
+from ai_sql_agent.generation.objects import LocalSchema, TableColumn, TableSchema
+from ai_sql_agent.repair import ExecutionLogParser, SqlClauseLocalizer, SqlRepairService
 
-from ai_sql_pipeline.demo_data import create_erp_demo_database
+from ai_sql_agent.pipeline.demo_data import create_erp_demo_database
 
 
 def _build_erp_local_schema() -> LocalSchema:
@@ -152,7 +152,7 @@ class CotParserRobustnessTest(unittest.TestCase):
     """
 
     def setUp(self):
-        from sql_generation.cot_parser import CotStepParser
+        from ai_sql_agent.generation.cot_parser import CotStepParser
 
         self.parser = CotStepParser()
 
@@ -207,8 +207,8 @@ class SqlPromptConstraintTest(unittest.TestCase):
     """
 
     def test_prompt_forbids_database_prefix(self):
-        from sql_generation.objects import CotStep, LocalSchema, SqlGenerationRequest
-        from sql_generation.prompt_builder import SqlPromptBuilder
+        from ai_sql_agent.generation.objects import CotStep, LocalSchema, SqlGenerationRequest
+        from ai_sql_agent.generation.prompt_builder import SqlPromptBuilder
 
         prompt = SqlPromptBuilder().build(
             SqlGenerationRequest(
@@ -233,7 +233,7 @@ class PlannerParserUnificationTest(unittest.TestCase):
     """
 
     def setUp(self):
-        from cot_planning.cot_planner import CotPlanner
+        from ai_sql_agent.planning.cot_planner import CotPlanner
 
         self.planner = CotPlanner()
 
@@ -268,7 +268,7 @@ class PlannerParserUnificationTest(unittest.TestCase):
         from pathlib import Path
 
         source = (
-            Path(__file__).resolve().parents[1] / "cot_planning" / "cot_planner.py"
+            Path(__file__).resolve().parents[1] / "src" / "ai_sql_agent" / "planning" / "cot_planner.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn(
             "处理对象:\\s*", source,

@@ -27,8 +27,8 @@ _CREDENTIAL_VARS = (
 
 @pytest.fixture(scope="session", autouse=True)
 def isolate_from_local_config():
-    from ai_sql_core import reload_settings
-    from ai_sql_core.settings import SqlAgentSettings
+    from ai_sql_agent.core import reload_settings
+    from ai_sql_agent.core.settings import SqlAgentSettings
 
     saved_env_file = SqlAgentSettings.model_config.get("env_file")
     SqlAgentSettings.model_config["env_file"] = None

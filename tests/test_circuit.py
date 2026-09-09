@@ -2,9 +2,9 @@ import unittest
 
 import httpx
 
-from ai_sql_core import ModelTransport, RetryPolicy
-from ai_sql_core.circuit import CircuitBreaker, CircuitConfig, CircuitState
-from ai_sql_core.errors import (
+from ai_sql_agent.core import ModelTransport, RetryPolicy
+from ai_sql_agent.core.circuit import CircuitBreaker, CircuitConfig, CircuitState
+from ai_sql_agent.core.errors import (
     ModelAuthError,
     ModelCircuitOpenError,
     ModelConnectionError,
@@ -118,7 +118,7 @@ class TransportCircuitTest(unittest.TestCase):
 
     def test_circuit_open_error_is_a_model_call_error(self):
         # 上层的降级链路捕获的是 ModelCallError，熔断必须落进同一个分支
-        from ai_sql_core.errors import ModelCallError
+        from ai_sql_agent.core.errors import ModelCallError
 
         self.assertTrue(issubclass(ModelCircuitOpenError, ModelCallError))
         self.assertFalse(ModelCircuitOpenError("x").retryable)
@@ -126,7 +126,7 @@ class TransportCircuitTest(unittest.TestCase):
 
 class CircuitDegradationTest(unittest.TestCase):
     def test_pipeline_degrades_when_circuit_is_open(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline()
 

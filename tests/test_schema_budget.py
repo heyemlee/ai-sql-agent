@@ -9,9 +9,9 @@
 
 import unittest
 
-from ai_sql_pipeline.schema_budget import MIN_COLUMNS_PER_TABLE, fit_graphs_to_budget
-from ai_sql_pipeline.token_budget import estimate_tokens
-from schema_retrieval.objects import (
+from ai_sql_agent.pipeline.schema_budget import MIN_COLUMNS_PER_TABLE, fit_graphs_to_budget
+from ai_sql_agent.pipeline.token_budget import estimate_tokens
+from ai_sql_agent.retrieval.objects import (
     ColumnSchema, SchemaGraph, TableRelation, TableSchema,
 )
 

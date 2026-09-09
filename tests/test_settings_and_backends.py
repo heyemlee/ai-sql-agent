@@ -2,7 +2,7 @@ import os
 import unittest
 from contextlib import contextmanager
 
-from ai_sql_core import get_settings, reload_settings
+from ai_sql_agent.core import get_settings, reload_settings
 
 
 @contextmanager
@@ -104,9 +104,9 @@ class SettingsTest(unittest.TestCase):
 
 class VectorBackendFallbackTest(unittest.TestCase):
     def test_falls_back_to_memory_index_without_dsn(self):
-        from ai_sql_pipeline.local_clients import LocalHashEmbeddingClient
-        from schema_retrieval.vector_backend import create_vector_index
-        from schema_retrieval.vector_index import VectorIndex
+        from ai_sql_agent.pipeline.local_clients import LocalHashEmbeddingClient
+        from ai_sql_agent.retrieval.vector_backend import create_vector_index
+        from ai_sql_agent.retrieval.vector_index import VectorIndex
 
         with env(AI_SQL_PGVECTOR_DSN=None):
             index = create_vector_index(LocalHashEmbeddingClient(), namespace="unit_test")
@@ -114,9 +114,9 @@ class VectorBackendFallbackTest(unittest.TestCase):
         self.assertIsInstance(index, VectorIndex)
 
     def test_falls_back_to_memory_index_when_pgvector_unreachable(self):
-        from ai_sql_pipeline.local_clients import LocalHashEmbeddingClient
-        from schema_retrieval.vector_backend import create_vector_index
-        from schema_retrieval.vector_index import VectorIndex
+        from ai_sql_agent.pipeline.local_clients import LocalHashEmbeddingClient
+        from ai_sql_agent.retrieval.vector_backend import create_vector_index
+        from ai_sql_agent.retrieval.vector_index import VectorIndex
 
         # 指向一个不存在的实例：不应该抛异常，而是退回内存索引
         with env(
@@ -131,8 +131,8 @@ class MemoryVectorIndexFallbackTest(unittest.TestCase):
     DB_PATH = "runtime_data/test_memory_fallback.db"
 
     def _service(self, **config_kwargs):
-        from ai_sql_memory import ConversationMemoryService
-        from ai_sql_memory.conversation import MemoryServiceConfig
+        from ai_sql_agent.memory import ConversationMemoryService
+        from ai_sql_agent.memory.conversation import MemoryServiceConfig
 
         return ConversationMemoryService(
             MemoryServiceConfig(db_path=self.DB_PATH, **config_kwargs)
