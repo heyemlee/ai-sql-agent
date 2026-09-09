@@ -6,14 +6,33 @@
 以及他有没有资格代别人查（防止随手改 user_id 读到别人的个人知识库）。
 """
 
+from .enforcement import (
+    AuthorizationDecision,
+    AuthorizationScope,
+    authorization_scope,
+    authorize_sql,
+    check_sql_access,
+    current_scope,
+)
 from .key_store import ApiKeyStore
 from .objects import ApiKeyRecord, DataPolicy, Principal
+from .sql_analysis import ColumnRef, SqlAnalysis, TableRef, analyze_sql
 from .sql_tables import extract_referenced_tables
 
 __all__ = [
     "ApiKeyRecord",
     "ApiKeyStore",
+    "AuthorizationDecision",
+    "AuthorizationScope",
+    "ColumnRef",
     "DataPolicy",
     "Principal",
+    "SqlAnalysis",
+    "TableRef",
+    "analyze_sql",
+    "authorization_scope",
+    "authorize_sql",
+    "check_sql_access",
+    "current_scope",
     "extract_referenced_tables",
 ]

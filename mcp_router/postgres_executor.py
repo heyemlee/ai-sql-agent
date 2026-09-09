@@ -3,9 +3,22 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
+from ai_sql_core import get_settings
+
+from .authorization import enforce
+from .data_time import QUERY_TIME, now_rfc3339
 from .dialects import POSTGRES
+from .pool import BoundedConnectionPool
 from .objects import MCPExecutionRequest, MCPExecutionResult
 from .sql_guard import check_readonly_sql
+
+
+def _current_user_id() -> str:
+    """当前授权作用域里的最终用户。没有作用域时返回空串（fail closed）。"""
+    from ai_sql_auth.enforcement import current_scope
+
+    scope = current_scope()
+    return scope.user_id if scope is not None else ""
 
 
 class PostgresMCPExecutor:
@@ -33,6 +46,9 @@ class PostgresMCPExecutor:
         readonly: bool = True,
         max_rows: int = 1000,
         max_execution_seconds: float = 10.0,
+        as_of_source: str = QUERY_TIME,
+        pool_max_connections: Optional[int] = None,
+        pool_idle_seconds: Optional[float] = None,
     ):
         self.database = database
         self.dsn = dsn
@@ -40,9 +56,41 @@ class PostgresMCPExecutor:
         self.readonly = readonly
         self.max_rows = max_rows
         self.max_execution_seconds = max_execution_seconds
+        self.as_of_source = as_of_source
+        """默认 query_time（读主库）。DSN 指向只读副本或数仓时改成 snapshot。"""
+
+        settings = get_settings()
+        self._pool = BoundedConnectionPool(
+            factory=self._connect,
+            max_size=(
+                settings.db_pool_max_connections
+                if pool_max_connections is None
+                else pool_max_connections
+            ),
+            idle_seconds=(
+                settings.db_pool_idle_seconds
+                if pool_idle_seconds is None
+                else pool_idle_seconds
+            ),
+        )
+
+    def _connect(self):
+        import psycopg
+
+        return psycopg.connect(
+            self.dsn, connect_timeout=self.connect_timeout, autocommit=False
+        )
+
+    def close(self) -> None:
+        """释放池里的空闲连接。进程退出或重建执行器时调用。"""
+        self._pool.close_all()
 
     def execute(self, request: MCPExecutionRequest) -> MCPExecutionResult:
         """执行 SQL。"""
+        denied = enforce(request, self.dialect)
+        if denied is not None:
+            return denied
+
         if request.database != self.database:
             return MCPExecutionResult(
                 database=request.database,
@@ -64,20 +112,29 @@ class PostgresMCPExecutor:
                 )
 
         conn = None
+        pooled = False
+        reusable = True
         try:
-            import psycopg
-
-            conn = psycopg.connect(
-                self.dsn,
-                connect_timeout=self.connect_timeout,
-                autocommit=False,
-            )
+            conn, pooled = self._pool.acquire()
             timeout_ms = int(self.max_execution_seconds * 1000)
             conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
             if self.readonly:
                 conn.execute("SET TRANSACTION READ ONLY")
 
+            # 把最终用户身份放进事务，让行级安全（RLS）在**经由 agent 发起的
+            # 查询**上真的生效——不然 RLS 只在有人手工连库时管用。
+            #
+            # SET LOCAL 是事务级的，随 rollback 一起还原，所以连接池复用不会串身份。
+            # 没有授权作用域时设成空串：RLS 的
+            # `USING (owner_id = current_setting('app.user_id', true))` 对空串
+            # 不匹配任何行——fail closed，与执行器那道关卡方向一致。
+            conn.execute(
+                "SELECT set_config('app.user_id', %s, true)", (_current_user_id(),)
+            )
+
             started = time.perf_counter()
+            # 时点在真正执行 SQL 之前打：读到的就是这一刻的库状态
+            as_of = now_rfc3339()
             with conn.cursor(name=f"ai_sql_{int(started * 1000)}") as cursor:
                 cursor.itersize = min(self.max_rows, 1000)
                 cursor.execute(sql)
@@ -99,9 +156,15 @@ class PostgresMCPExecutor:
                 rows=rows,
                 row_count=len(rows),
                 truncated=truncated,
+                row_limit=self.max_rows,
+                as_of=as_of,
+                as_of_source=self.as_of_source,
             )
 
         except Exception as exc:  # psycopg 未安装或执行失败都走这里
+            # 出过错的连接不还回池：它可能停在一个半死的事务里，
+            # 下一个人拿到它会收到一条与自己无关的错误，最难排查的那种。
+            reusable = False
             return MCPExecutionResult(
                 database=request.database,
                 sql=sql,
@@ -111,8 +174,13 @@ class PostgresMCPExecutor:
 
         finally:
             if conn is not None:
-                conn.rollback()
-                conn.close()
+                # 事务级设置（statement_timeout / READ ONLY）随 rollback 一起还原，
+                # 所以归还的连接是干净的，下一次执行会重新设一遍。
+                try:
+                    conn.rollback()
+                except Exception:
+                    reusable = False
+                self._pool.release(conn, pooled, reusable=reusable)
 
     def _describe_error(self, exc: Exception) -> str:
         message = str(exc).strip()

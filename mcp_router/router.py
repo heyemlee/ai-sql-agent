@@ -7,10 +7,11 @@ from .objects import MCPExecutionRequest, MCPExecutionResult
 
 class MCPRouter:
     """
-    MCP 路由器。
+    MCP 路由器：按 execution_request.database 找到对应执行器并转发。
 
-    SQL 生成完成后，根据 execution_request.database
-    找到对应数据库执行器，然后执行 SQL。
+    **授权不在这里判，在执行器入口判**（`mcp_router.authorization.enforce`）。
+    路由器只是四条执行路径中最常走的那一条，绕开它直接调执行器一样能打到库——
+    审查的复现脚本就是这么干的。关卡要放在绕不开的地方。
     """
 
     def __init__(self):
@@ -24,7 +25,7 @@ class MCPRouter:
 
     def execute(self, request: MCPExecutionRequest | dict) -> MCPExecutionResult:
         """
-        路由并执行请求。
+        路由并执行请求。授权由执行器自己把关。
         """
         if isinstance(request, dict):
             request = MCPExecutionRequest(

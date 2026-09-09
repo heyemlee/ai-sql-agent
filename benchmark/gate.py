@@ -47,6 +47,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="AI SQL Agent 发布评测门禁")
     parser.add_argument("--smoke", action="store_true", help="离线冒烟模式")
     parser.add_argument(
+        "--allow-degrade",
+        action="store_true",
+        help=(
+            "允许静默降级：没有模型凭证时自动转冒烟、缺指标时跳过比较。"
+            "**只给本地自查用**——发布门禁必须直接失败，否则一次凭证配错就会"
+            "把「跑了 4 条冒烟」当成「通过了发布门禁」。"
+        ),
+    )
+    parser.add_argument(
         "--repeat",
         type=int,
         default=1,
@@ -64,9 +73,21 @@ def main() -> int:
 
     # 必须用 Settings，否则配在 .env 里的凭证会被漏掉，
     # 门禁只跑 4 条冒烟就放行，给出虚假信心。
-    smoke = args.smoke or not get_settings().has_model_credentials
-    if smoke and not args.smoke:
-        print("[gate] 未配置模型凭证，自动降级为冒烟门禁", file=sys.stderr)
+    has_credentials = get_settings().has_model_credentials
+    if not args.smoke and not has_credentials:
+        if not args.allow_degrade:
+            # 这里以前是「自动降级为冒烟门禁」并继续。降级本身不是问题，
+            # **静默**才是：CI 日志里那行 stderr 没人看，而退出码是 0，
+            # 于是「没配上凭证」和「通过了发布门禁」长得一模一样。
+            print(
+                "[gate] 未配置模型凭证，无法跑完整门禁。\n"
+                "[gate] 发布门禁不做静默降级：要跑冒烟请显式加 --smoke，"
+                "本地自查可以加 --allow-degrade。",
+                file=sys.stderr,
+            )
+            return 2
+        print("[gate] 未配置模型凭证，按 --allow-degrade 降级为冒烟门禁", file=sys.stderr)
+    smoke = args.smoke or not has_credentials
 
     thresholds_config = json.loads(
         Path(args.thresholds).read_text(encoding="utf-8")
@@ -106,7 +127,11 @@ def main() -> int:
     for group, rule in thresholds.items():
         value = measured.get(group)
         if value is None:
-            print(f"[gate] {group}: 未测得，跳过", file=sys.stderr)
+            # 「未测得」以前是跳过。一个测不出来的指标和一个不达标的指标，
+            # 对「能不能发布」这个问题是同一个答案：不知道就是不能发。
+            print(f"[gate] {rule.get('label', group)}: 未测得", file=sys.stderr)
+            if not args.allow_degrade:
+                passed = False
             continue
         ok = _passes(value, rule)
         passed = passed and ok

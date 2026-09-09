@@ -144,6 +144,55 @@ class SemanticLayer:
             "metric_definitions": dict(self.metric_definitions),
         }
 
+    # ------------------------------------------------------------------
+    # 契约 §4.6.5 / §4.6.6：单位与来源记录
+    #
+    # 币种是**数据的属性**，不是调用方的属性。服务端不下发的时候，调用方只能在
+    # 自己那边配一个全局环境变量顶上（`SQL_AGENT_CURRENCY`），而一个 agent 接多个
+    # 库、或一个库里同时有 USD 与 CNY 列时，那个全局常量必然给出错误答案——
+    # 而且是静默的，报出去的金额看起来完全正常。这已经出过一次业务事故。
+    #
+    # 单位的自然存放位置就是这里：语义层本来就是「这个字段是什么意思」的唯一出处。
+    # ------------------------------------------------------------------
+
+    def column_unit(self, database: str, table: str, column: str) -> str:
+        """
+        字段单位标识（`USD` / `EA` / `day` …）。没有声明就返回空串。
+
+        **返回空串时调用方不得擅自补单位**（契约 §4.6.5）——「不知道」和「没有单位」
+        是两回事，前者必须原样呈现数字并说明单位未知。
+        """
+        meta = self._column_meta(database, table, column)
+        return str(meta.get("unit") or "").strip()
+
+    def primary_key_columns(self, database: str, table: str) -> List[str]:
+        """
+        主键列（契约 §4.6.6 的 `key_columns`）。没有声明就返回空列表。
+
+        用来把「客服说的这句话」追回到**哪几条业务记录**。今天能追到的最细粒度
+        是一次查询（trace_id），追不到一条记录——出了纠纷只能拿 final_sql 回去
+        重跑，而重跑得到的是今天的数据，不是当时的数据。
+        """
+        table_meta = self._table_meta(database, table)
+        keys = table_meta.get("primary_key") or []
+        if isinstance(keys, str):
+            keys = [keys]
+        return [str(item) for item in keys if str(item).strip()]
+
+    def _table_meta(self, database: str, table: str) -> dict:
+        semantics = self.databases.get(database)
+        if semantics is None:
+            return {}
+        meta = semantics.tables.get(table)
+        return meta if isinstance(meta, dict) else {}
+
+    def _column_meta(self, database: str, table: str, column: str) -> dict:
+        columns = self._table_meta(database, table).get("columns") or {}
+        if not isinstance(columns, dict):
+            return {}
+        meta = columns.get(column)
+        return meta if isinstance(meta, dict) else {}
+
     def merge_shared(self, payload: dict) -> None:
         """把一个共享文件的内容合并进来；多个共享文件按文件名顺序叠加。"""
         links = payload.get("cross_database_links") or []

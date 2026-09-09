@@ -74,6 +74,9 @@ def check_dependencies() -> dict:
         "pydantic-settings": check_package(
             "pydantic-settings", "pydantic_settings", required=True
         ),
+        # SQL 解析：授权检查靠它。**装不上等于所有查询都会被拒**
+        # （不解析即拒绝，见 ai_sql_auth.sql_analysis），所以是必需项。
+        "sqlglot": check_package("sqlglot", required=True),
         # 服务层与 MCP：只跑离线 Demo 时可以不装
         "fastapi": check_package("fastapi", required=False),
         "mcp": check_package("mcp", required=False),

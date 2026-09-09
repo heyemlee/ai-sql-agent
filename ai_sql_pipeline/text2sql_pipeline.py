@@ -7,9 +7,9 @@ import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from ai_sql_auth import extract_referenced_tables
+from ai_sql_auth import authorization_scope, check_sql_access, extract_referenced_tables
 from ai_sql_core.errors import ModelCallError
-from ai_sql_core import get_logger, log_event, stage, usage_scope, usage_summary
+from ai_sql_core import get_logger, get_trace_id, log_event, stage, usage_scope, usage_summary
 from ai_sql_core.metrics import (
     ACCESS_DENIED,
     DEGRADED_RESPONSES,
@@ -26,6 +26,8 @@ from cot_planning import CotPlanner, few_shots_for, ThinkingModelClient, Thinkin
 from mcp_router import MCPRouter, PostgresMCPExecutor, SQLiteMCPExecutor
 from mcp_router.objects import MCPExecutionResult
 from mcp_router.dialects import get_dialect
+
+from . import provenance
 from schema_retrieval.access import ALLOW_ALL, SchemaAccessFilter
 from schema_retrieval.hierarchical_service import (
     DatabaseSource,
@@ -219,7 +221,13 @@ class Text2SQLPipeline:
         """
         # HTTP 入口已经用 use_trace_id() 建好了用量上下文，这里不会重复建；
         # 当库直接调用（benchmark、脚本）时补上，否则 usage 汇总恒为 0。
-        with usage_scope():
+        #
+        # authorization_scope 是执行器那道强制关卡的入口：作用域内的每一次
+        # mcp_router.execute（首次生成 / 失败修复 / 历史重放）都按这份权限判，
+        # 作用域外的执行一律被拒。以前每个调用点各写一次检查，修复那条漏了。
+        with usage_scope(), authorization_scope(
+            access or ALLOW_ALL, user_id=user_id, trace_id=get_trace_id()
+        ):
             return self._run(
                 query,
                 keywords=keywords,
@@ -242,14 +250,19 @@ class Text2SQLPipeline:
         access = access or ALLOW_ALL
 
         # ① 问题归一化：代词消解 + 相对时间表达式 → 绝对区间
-        normalization = self.query_normalizer.normalize(
-            query, history_queries=history_queries or ()
-        )
-        if normalization.changed:
-            log_event(
-                _logger,
-                logging.INFO,
-                "stage.normalization",
+        #
+        # 这里以前是一条裸 log_event，而且**只在 changed 为真时才记**。两个后果：
+        # 事件汇（trace.stage()）收不到它，所以契约 §4.5 声明的九个 stage 实发八个；
+        # 问题没被改写时连日志都没有，排查时看不出这一步跑没跑过。
+        # 改成真 stage 顺带修好后者——观测盲区和契约缺口是同一个根因。
+        with stage("normalization", _logger) as normalization_stage:
+            normalization = self.query_normalizer.normalize(
+                query, history_queries=history_queries or ()
+            )
+            # changed 要到阶段结束才知道，所以它进的是**结束日志**，不是进度事件
+            # （契约 §4.5「附带字段只可能是进入该 stage 时已经知道的那些」）。
+            normalization_stage.set(
+                changed=normalization.changed,
                 original=normalization.original_query,
                 normalized=normalization.normalized_query,
                 references=normalization.resolved_references,
@@ -426,6 +439,17 @@ class Text2SQLPipeline:
             schema_store = self._resolve_schema_store(
                 schema_stores, sql_cot_step
             )
+            step_index = len(step_logs) + 1
+
+            # 权限收紧到一张表都不剩时，检索结果是空的。以前这里会一路走到
+            # `next(iter({}))` 抛 StopIteration，HTTP 层翻成 500——权限不足
+            # 是个正常业务结论，不是服务故障。deny by default 之后这条路更容易
+            # 走到（角色没配策略就是这个形态），所以必须先判掉。
+            if schema_store is None:
+                step_logs.append(
+                    self._schema_insufficient_step(sql_cot_step, step_index)
+                )
+                continue
 
             sql_generator = SqlGenerator(
                 schema_store=schema_store,
@@ -435,8 +459,6 @@ class Text2SQLPipeline:
                     )
                 ),
             )
-
-            step_index = len(step_logs) + 1
 
             # 规划阶段判定 Schema 不足（无相关表，或相关表不在当前用户权限内）：
             # 直接给出人能看懂的结论，不要退化成“找不到执行器”这种内部错误
@@ -629,6 +651,11 @@ class Text2SQLPipeline:
                         findings=[f.anomaly.value for f in outcome.findings],
                     )
 
+            units, records = self._provenance(
+                database=sql_cot_step.database,
+                sql=final_sql,
+                execution_result=execution_result,
+            )
             step_logs.append(
                 StepExecutionLog(
                     database=sql_cot_step.database,
@@ -640,6 +667,8 @@ class Text2SQLPipeline:
                     repair_attempts=repair_attempts,
                     final_sql=final_sql,
                     validation=validation_payload,
+                    column_units=units,
+                    source_records=records,
                 )
             )
 
@@ -1057,6 +1086,9 @@ class Text2SQLPipeline:
             if not execution_result.success:
                 return []
 
+            units, records = self._provenance(
+                database=database, sql=sql, execution_result=execution_result
+            )
             step_logs.append(
                 StepExecutionLog(
                     database=database,
@@ -1066,6 +1098,8 @@ class Text2SQLPipeline:
                     execution_request={"database": database, "sql": sql},
                     execution_result=execution_result.to_dict(),
                     final_sql=sql,
+                    column_units=units,
+                    source_records=records,
                 )
             )
             log_event(
@@ -1158,28 +1192,76 @@ class Text2SQLPipeline:
         access: SchemaAccessFilter,
     ) -> List[str]:
         """
-        执行前的数据权限二次校验，返回被拒绝的表名。
+        执行前的数据权限预判，返回被拒的表 / 列标识。
 
-        第一道防线是检索阶段裁剪（模型看不到无权表），但模型可能凭
-        对话上下文或先验知识写出表名，所以在 SQL 打到数据库之前，
-        按实际引用的表再判一次。
+        **这不是那道强制关卡**——关卡在 `MCPRouter.execute`（见
+        `ai_sql_auth.enforcement`），它拦不住就没人拦得住。这里提前判一次是为了
+        两件关卡做不了的事：把越权当成一种**不该重试**的失败（改 SQL 也拿不到
+        权限，进修复回路只会白烧模型调用），以及把被拒的名字落进审计的
+        `denied_tables`。
+
+        判据与关卡同源（`check_sql_access`），所以两处不会给出不同答案。
         """
-        denied = [
-            table
-            for table in sorted(extract_referenced_tables(sql))
-            if not access.allows_table(database, table)
-        ]
+        decision = check_sql_access(
+            access,
+            database=database,
+            sql=sql,
+            dialect=self._dialect_name(database),
+        )
+        if decision.allowed:
+            return []
 
-        if denied:
-            log_event(
-                _logger,
-                logging.WARNING,
-                "access.denied",
-                database=database,
-                tables=denied,
-                sql=sql,
-            )
+        denied = list(decision.denied_tables) or list(decision.denied_columns)
+        if not denied:
+            # 解析失败这类没有具体名字的拒绝：给出理由，别返回空列表——
+            # 空列表在调用点等于「放行」。
+            denied = [decision.reason]
+
+        log_event(
+            _logger,
+            logging.WARNING,
+            "access.denied",
+            database=database,
+            tables=list(decision.denied_tables),
+            columns=list(decision.denied_columns),
+            reason=decision.reason,
+            sql=sql,
+        )
         return denied
+
+    def _provenance(self, *, database: str, sql: str, execution_result):
+        """
+        算这一步的单位与来源记录（契约 §4.6.5 / §4.6.6）。
+
+        失败的步骤没有结果列，自然也没有单位可谈。算不出来一律返回空——
+        契约把「缺失」定义成「未知」，而不是「没有」。
+        """
+        if not execution_result.success:
+            return {}, []
+
+        dialect = self._dialect_name(database)
+        columns = list(execution_result.columns or [])
+        units = provenance.column_units(
+            self.semantic,
+            database=database,
+            sql=sql,
+            dialect=dialect,
+            columns=columns,
+        )
+        records = provenance.source_records(
+            self.semantic,
+            database=database,
+            sql=sql,
+            dialect=dialect,
+            columns=columns,
+            rows=list(execution_result.rows or []),
+        )
+        return units, records
+
+    def _dialect_name(self, database: str) -> str:
+        """这个库的执行器方言，解析 SQL 时要用。"""
+        executor = self.mcp_router.executors.get(database)
+        return str(getattr(executor, "dialect", "") or "")
 
     def _resolve_databases(self) -> List[DatabaseConfig]:
         """
@@ -1287,12 +1369,14 @@ class Text2SQLPipeline:
         self,
         schema_stores: Dict[str, LocalSchemaStore],
         cot_step: CotStep,
-    ) -> LocalSchemaStore:
+    ) -> Optional[LocalSchemaStore]:
         """
         根据 CoT 步骤的目标数据库选择 SchemaStore。
 
         数据库名不在检索结果中时，回退到包含步骤所引用表的库；
         仍找不到时使用第一个库，保证流程不中断。
+
+        一个库都没有时返回 None——调用方按「Schema 不足」处理。
         """
         store = schema_stores.get(cot_step.database)
         if store is not None:
@@ -1310,7 +1394,7 @@ class Text2SQLPipeline:
             if any(table_name in mentioned for table_name in candidate.tables):
                 return candidate
 
-        return next(iter(schema_stores.values()))
+        return next(iter(schema_stores.values()), None)
 
     @staticmethod
     def _serialize_step_result(execution_result) -> str:
