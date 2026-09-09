@@ -161,3 +161,43 @@ CI 里必跑且不允许整组 skip。契约侧可以把 `emitted-*` 更新为�
 不是响应字段。如果契约希望服务端也标一个来源，说一声，加一个恒为
 `contract` 的字段是十分钟的事——但那样它就只有一个取值，没什么信息量。
 
+
+---
+
+## 第三轮（2026-09-09）
+
+> 这一条不是契约本身的问题，是**本仓库的目录重组让契约里的路径引用失效了**。
+> 契约文档用文件路径 + 行号做取证（`a2a-streaming-contract.md` 的缺口框与附录），
+> 重组之后那些路径在 `main` 上都不存在了。
+
+### 1.（状态同步）本仓库改成 src/ 单包布局，契约里的路径引用需要换算
+
+2026-09-09 把 17 个平铺的顶层包收进 `src/ai_sql_agent`，子包按请求链路重命名。
+**契约里已写下的引用不必改**——它们带着提交 hash，在各自那个提交上依然准确，
+改了反而破坏取证。下面这张表是给之后**新写**引用时用的：
+
+| 契约里出现过的旧路径 | 现在的位置 |
+| --- | --- |
+| `ai_sql_core/trace.py` | `src/ai_sql_agent/core/trace.py` |
+| `ai_sql_a2a/server.py` | `src/ai_sql_agent/a2a/server.py` |
+| `ai_sql_api/app.py` | `src/ai_sql_agent/api/app.py` |
+| `ai_sql_api/result_summary.py` | `src/ai_sql_agent/api/result_summary.py` |
+| `ai_sql_api/trust.py` | `src/ai_sql_agent/api/trust.py` |
+| `ai_sql_pipeline/text2sql_pipeline.py` | `src/ai_sql_agent/pipeline/text2sql_pipeline.py` |
+| `ai_sql_pipeline/dynamic_service.py` | `src/ai_sql_agent/pipeline/dynamic_service.py` |
+
+完整改名表见本仓库那次提交的说明（`refactor: 整理成 src/ 单包布局`）。
+
+**契约面没有任何变化，这是重组时的硬约束**：`_STAGE_MAP` 右边那一列
+（九个 stage 名，含 `sql_generation` → `generation`）、Prometheus 指标名、
+数据库表名一律没动。内部模块叫什么与契约面发什么本来就是解耦的，
+这次重组正是靠这一点才敢做——`tests/test_contract_fixtures.py` 与
+`tests/test_a2a_server.py` 里「契约面是 generation，不是内部名」那条断言，
+在重组前后都是绿的。
+
+### 2.（只是记录）`§8.4` 那个不存在的文件，重组后仍然不存在
+
+第一轮记过 `ai_sql_core/shared_state.py` 在本仓库无命中、真身在
+`ai-helpdesk/backend/core/shared_state.py`。重组不改变这件事：
+本仓库现在也没有 `src/ai_sql_agent/core/shared_state.py`。
+契约 §8.4 若要引用，仍应指向 ai-helpdesk 那一侧。
