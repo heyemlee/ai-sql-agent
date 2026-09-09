@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 
-from ai_sql_api.app import TRACE_HEADER, app
+from ai_sql_agent.api.app import TRACE_HEADER, app
 
 QUERIES = [
     ("查询准时率低于0.9的供应商名称", ["erp_db"]),
@@ -63,7 +63,7 @@ class ConcurrentPipelineTest(unittest.TestCase):
     """直接并发调用 Pipeline，绕过 HTTP 层。"""
 
     def test_shared_pipeline_instance_is_reentrant(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline()
 

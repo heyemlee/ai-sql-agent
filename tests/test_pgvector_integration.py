@@ -3,7 +3,7 @@ pgvector / PostgreSQL 集成测试。
 
 未配置 AI_SQL_PGVECTOR_DSN 时整体跳过，本地与 CI 都能无依赖跑通：
 
-    docker compose -f docker-compose.pgvector.yml up -d
+    docker compose --project-directory . -f deploy/docker-compose.pgvector.yml up -d
     export AI_SQL_PGVECTOR_DSN="postgresql://ai_sql:ai_sql@localhost:5432/ai_sql"
     python -m unittest tests.test_pgvector_integration
 """
@@ -23,9 +23,9 @@ requires_pgvector = unittest.skipUnless(
 @requires_pgvector
 class PgVectorSchemaIndexTest(unittest.TestCase):
     def setUp(self):
-        from ai_sql_core import reload_settings
-        from ai_sql_pipeline.local_clients import LocalHashEmbeddingClient
-        from schema_retrieval.pgvector_index import PgVectorIndex
+        from ai_sql_agent.core import reload_settings
+        from ai_sql_agent.pipeline.local_clients import LocalHashEmbeddingClient
+        from ai_sql_agent.retrieval.pgvector_index import PgVectorIndex
 
         reload_settings()
         self.index = PgVectorIndex(
@@ -53,7 +53,7 @@ class PgVectorSchemaIndexTest(unittest.TestCase):
 
     def test_unchanged_documents_reuse_the_existing_index(self):
         """Schema 没变就不该重跑 Embedding：启动慢且按量计费。"""
-        from ai_sql_pipeline.local_clients import LocalHashEmbeddingClient
+        from ai_sql_agent.pipeline.local_clients import LocalHashEmbeddingClient
 
         class CountingEmbedding(LocalHashEmbeddingClient):
             def __init__(self):
@@ -64,7 +64,7 @@ class PgVectorSchemaIndexTest(unittest.TestCase):
                 self.calls += 1
                 return super().embed_texts(texts)
 
-        from schema_retrieval.pgvector_index import PgVectorIndex
+        from ai_sql_agent.retrieval.pgvector_index import PgVectorIndex
 
         client = CountingEmbedding()
         documents = ["字段 a 的说明", "字段 b 的说明"]
@@ -97,8 +97,8 @@ class PgVectorSchemaIndexTest(unittest.TestCase):
 
     def test_index_rebuilds_when_vectors_were_wiped(self):
         """指纹在但数据被清空（比如手工 TRUNCATE）时要能自愈。"""
-        from ai_sql_pipeline.local_clients import LocalHashEmbeddingClient
-        from schema_retrieval.pgvector_index import PgVectorIndex
+        from ai_sql_agent.pipeline.local_clients import LocalHashEmbeddingClient
+        from ai_sql_agent.retrieval.pgvector_index import PgVectorIndex
 
         index = PgVectorIndex(
             LocalHashEmbeddingClient(), dsn=DSN, namespace="unittest_wiped"
@@ -118,9 +118,9 @@ class PgVectorSchemaIndexTest(unittest.TestCase):
             index.conn.close()
 
     def test_vector_backend_factory_selects_pgvector(self):
-        from ai_sql_pipeline.local_clients import LocalHashEmbeddingClient
-        from schema_retrieval.pgvector_index import PgVectorIndex
-        from schema_retrieval.vector_backend import create_vector_index
+        from ai_sql_agent.pipeline.local_clients import LocalHashEmbeddingClient
+        from ai_sql_agent.retrieval.pgvector_index import PgVectorIndex
+        from ai_sql_agent.retrieval.vector_backend import create_vector_index
 
         index = create_vector_index(
             LocalHashEmbeddingClient(), namespace="unittest_factory"
@@ -135,7 +135,7 @@ class PgVectorSchemaIndexTest(unittest.TestCase):
 @requires_pgvector
 class PgVectorLongTermMemoryTest(unittest.TestCase):
     def setUp(self):
-        from ai_sql_memory.vector_store import (
+        from ai_sql_agent.memory.vector_store import (
             PgVectorLongTermMemoryConfig,
             PgVectorLongTermVectorIndex,
         )
@@ -153,7 +153,7 @@ class PgVectorLongTermMemoryTest(unittest.TestCase):
         self.index.close()
 
     def _memory(self, memory_id, user_id, kind, vector):
-        from ai_sql_memory.objects import LongTermMemory
+        from ai_sql_agent.memory.objects import LongTermMemory
 
         return LongTermMemory(
             id=memory_id,
@@ -165,7 +165,7 @@ class PgVectorLongTermMemoryTest(unittest.TestCase):
         )
 
     def test_upsert_search_delete_and_user_isolation(self):
-        from ai_sql_memory.objects import MemoryKind
+        from ai_sql_agent.memory.objects import MemoryKind
 
         self.index.upsert(
             self._memory("m1", "u1", MemoryKind.STRUCTURED, [1, 0, 0, 0])
@@ -196,7 +196,7 @@ class PgVectorLongTermMemoryTest(unittest.TestCase):
         self.assertEqual([hit[0] for hit in remaining], ["m2"])
 
     def test_existing_table_with_other_dimensions_is_rejected(self):
-        from ai_sql_memory.vector_store import (
+        from ai_sql_agent.memory.vector_store import (
             PgVectorLongTermMemoryConfig,
             PgVectorLongTermVectorIndex,
         )
@@ -213,7 +213,7 @@ class PgVectorLongTermMemoryTest(unittest.TestCase):
         self.assertIn("维度", str(ctx.exception))
 
     def test_dimension_mismatch_is_rejected(self):
-        from ai_sql_memory.objects import MemoryKind
+        from ai_sql_agent.memory.objects import MemoryKind
 
         with self.assertRaises(ValueError):
             self.index.upsert(
@@ -228,7 +228,7 @@ class PostgresExecutorTest(unittest.TestCase):
     def setUp(self):
         import psycopg
 
-        from mcp_router import PostgresMCPExecutor
+        from ai_sql_agent.execution import PostgresMCPExecutor
 
         self.conn = psycopg.connect(DSN, autocommit=True)
         self.conn.execute(f"DROP TABLE IF EXISTS {self.TABLE}")
@@ -247,11 +247,11 @@ class PostgresExecutorTest(unittest.TestCase):
         self.conn.close()
 
     def execute(self, sql):
-        from ai_sql_auth import authorization_scope
-        from mcp_router import MCPExecutionRequest
-        from schema_retrieval.access import ALLOW_ALL
+        from ai_sql_agent.auth import authorization_scope
+        from ai_sql_agent.execution import MCPExecutionRequest
+        from ai_sql_agent.retrieval.access import ALLOW_ALL
 
-        # 执行器入口有强制授权关卡，不绑作用域一律拒绝（见 ai_sql_auth.enforcement）。
+        # 执行器入口有强制授权关卡，不绑作用域一律拒绝（见 ai_sql_agent.auth.enforcement）。
         # 这组用例验的是行数上限与语句超时，权限维度用全放开策略排除掉；
         # 真实 PostgreSQL 上的权限用例在 tests/test_authorization_postgres.py。
         with authorization_scope(ALLOW_ALL):
@@ -317,7 +317,7 @@ class PostgresSchemaLoaderTest(unittest.TestCase):
         self.conn.close()
 
     def test_loads_tables_columns_and_relations(self):
-        from schema_retrieval.postgres_loader import PostgresSchemaLoader
+        from ai_sql_agent.retrieval.postgres_loader import PostgresSchemaLoader
 
         tables, columns, relations = PostgresSchemaLoader(
             dsn=DSN, database_name="pg_db"
@@ -350,7 +350,7 @@ class PostgresSchemaLoaderTest(unittest.TestCase):
         self.assertEqual(samples, [["2000000"]])
 
     def test_ai_sql_infra_tables_are_excluded(self):
-        from schema_retrieval.postgres_loader import PostgresSchemaLoader
+        from ai_sql_agent.retrieval.postgres_loader import PostgresSchemaLoader
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS ai_sql_vectors_unittest (id INT PRIMARY KEY)"

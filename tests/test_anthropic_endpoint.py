@@ -14,8 +14,8 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from ai_sql_core import build_chat_payload, extract_chat_content, reload_settings
-from ai_sql_core.transport import _iter_sse_content
+from ai_sql_agent.core import build_chat_payload, extract_chat_content, reload_settings
+from ai_sql_agent.core.transport import _iter_sse_content
 
 
 RECEIVED = []
@@ -207,7 +207,7 @@ class AnthropicEndpointTest(unittest.TestCase):
         """协议层：路径、鉴权头、system 位置、max_tokens 都符合 Messages 规范。"""
         try:
             self._point_settings_at_mock()
-            from cot_planning.thinking_client import (
+            from ai_sql_agent.planning.thinking_client import (
                 ThinkingModelClient, ThinkingModelConfig,
             )
 
@@ -230,7 +230,7 @@ class AnthropicEndpointTest(unittest.TestCase):
         """链路层：整条 Text2SQL 链路跑在 Anthropic 协议上。"""
         try:
             self._point_settings_at_mock()
-            from ai_sql_pipeline import Text2SQLPipeline
+            from ai_sql_agent.pipeline import Text2SQLPipeline
 
             pipeline = Text2SQLPipeline()
             result = pipeline.run("查询准时率低于0.9的供应商名称")

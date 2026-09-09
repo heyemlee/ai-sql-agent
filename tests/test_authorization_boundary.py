@@ -17,9 +17,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_sql_auth import ApiKeyStore, DataPolicy, authorization_scope, check_sql_access
-from ai_sql_core import reload_settings
-from mcp_router import MCPExecutionRequest, MCPRouter, SQLiteMCPExecutor
+from ai_sql_agent.auth import ApiKeyStore, DataPolicy, authorization_scope, check_sql_access
+from ai_sql_agent.core import reload_settings
+from ai_sql_agent.execution import MCPExecutionRequest, MCPRouter, SQLiteMCPExecutor
 
 
 def _pick_tables(pipeline):
@@ -310,12 +310,12 @@ class RepairPathTest(unittest.TestCase):
     """
 
     def test_repair_cannot_reach_a_denied_table(self):
-        from ai_sql_pipeline import Text2SQLPipeline
-        from sql_generation.objects import SqlGenerationResult
-        from sql_generation.sql_generator import SqlGenerator
+        from ai_sql_agent.pipeline import Text2SQLPipeline
+        from ai_sql_agent.generation.objects import SqlGenerationResult
+        from ai_sql_agent.generation.sql_generator import SqlGenerator
 
         pipeline = Text2SQLPipeline()
-        # 库名不写死：内置演示元数据与 sim_erp/semantic 里 supplier 落在不同的库，
+        # 库名不写死：内置演示元数据与 tools/sim_erp/semantic 里 supplier 落在不同的库，
         # 写死哪一个都会在另一套配置下空过（databases=[] 时修复回路根本不触发）
         target_db, allowed_table, denied_table = _pick_tables(pipeline)
         policy = DataPolicy(allow_tables=(f"{target_db}.{allowed_table}",))
@@ -356,7 +356,7 @@ class RepairPathTest(unittest.TestCase):
 
     def test_replay_path_is_authorized(self):
         """历史重放同样过关卡：上次有权限不代表这次还有。"""
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline()
         target_db, allowed_table, denied_table = _pick_tables(pipeline)
@@ -378,7 +378,7 @@ if __name__ == "__main__":
 
 class RowScopeTest(unittest.TestCase):
     """
-    行范围（审查 P0-2 的一半）。设计见 deploy/authz-model.md。
+    行范围（审查 P0-2 的一半）。设计见 docs/authz-model.md。
 
     三态是这条设计的全部要点：**「没声明」和「声明了全放」必须分得开**，
     否则默认值会兜出一个静默的全放行——那就是 `full_access` 的老毛病

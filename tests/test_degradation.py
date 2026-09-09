@@ -1,10 +1,10 @@
 import tempfile
 import unittest
 
-from ai_sql_audit import AuditRecord, SQLiteAuditStore
-from ai_sql_auth import DataPolicy
-from ai_sql_core.errors import ModelServerError, ModelTimeoutError
-from ai_sql_pipeline import Text2SQLPipeline
+from ai_sql_agent.audit import AuditRecord, SQLiteAuditStore
+from ai_sql_agent.auth import DataPolicy
+from ai_sql_agent.core.errors import ModelServerError, ModelTimeoutError
+from ai_sql_agent.pipeline import Text2SQLPipeline
 
 QUERY = "查询准时率低于0.9的供应商名称"
 CACHED_SQL = (
@@ -204,8 +204,8 @@ class DataQaDegradationTest(unittest.TestCase):
         import tempfile as tf
         from pathlib import Path
 
-        from ai_sql_memory import ConversationMemoryService, MemoryServiceConfig
-        from ai_sql_pipeline import DynamicSqlAgentService
+        from ai_sql_agent.memory import ConversationMemoryService, MemoryServiceConfig
+        from ai_sql_agent.pipeline import DynamicSqlAgentService
 
         class BrokenQaClient:
             def answer(self, query, context):
