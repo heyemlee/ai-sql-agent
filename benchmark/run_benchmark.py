@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from ai_sql_core import get_settings
+from ai_sql_agent.core import get_settings
 from benchmark.runner import BenchmarkRunner
 
 # 离线冒烟子集：Mock 模型可以正确处理的样例（单库 + 跨库各一条）。

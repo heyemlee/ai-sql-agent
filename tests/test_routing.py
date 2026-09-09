@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_sql_memory import (
+from ai_sql_agent.memory import (
     ConversationMemoryContext,
     ConversationMemoryService,
     MemoryMessage,
@@ -12,7 +12,7 @@ from ai_sql_memory import (
     MessageRole,
     ShortTermContext,
 )
-from ai_sql_pipeline import (
+from ai_sql_agent.pipeline import (
     DynamicSqlAgentService,
     DynamicIntentRouter,
     ModelIntentClassifier,

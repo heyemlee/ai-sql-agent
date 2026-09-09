@@ -14,8 +14,8 @@ import os
 import unittest
 import uuid
 
-from ai_sql_auth import DataPolicy, authorization_scope, check_sql_access
-from mcp_router import MCPExecutionRequest, PostgresMCPExecutor
+from ai_sql_agent.auth import DataPolicy, authorization_scope, check_sql_access
+from ai_sql_agent.execution import MCPExecutionRequest, PostgresMCPExecutor
 
 DSN = os.getenv("AI_SQL_PGVECTOR_DSN", "")
 
@@ -154,7 +154,7 @@ class PostgresAuthorizationTest(unittest.TestCase):
         这一条是 P0-1 第四点的核心：**绕过应用层**直接用受限角色连库，
         禁列照样查不出来。只读账号只挡写，挡不住读密列。
         """
-        from ai_sql_ops.least_privilege import (
+        from ai_sql_agent.ops.least_privilege import (
             TableInventory, build_plan, verify_least_privilege,
         )
 
@@ -216,7 +216,7 @@ class PostgresAuthorizationTest(unittest.TestCase):
         """
         import psycopg
 
-        from ai_sql_ops.least_privilege import row_policy_sql
+        from ai_sql_agent.ops.least_privilege import row_policy_sql
 
         conn = _admin()
         try:
@@ -314,7 +314,7 @@ class RowLevelSecurityThroughTheAgentTest(unittest.TestCase):
 
     def _install_rls(self):
         """RLS 由策略生成，不是手写——这正是行范围进 DataPolicy 之后多出来的能力。"""
-        from ai_sql_ops.least_privilege import TableInventory, row_policies_from_policy
+        from ai_sql_agent.ops.least_privilege import TableInventory, row_policies_from_policy
 
         policy = DataPolicy.from_dict({
             "allow_tables": ["pg_db.*"],
@@ -336,7 +336,7 @@ class RowLevelSecurityThroughTheAgentTest(unittest.TestCase):
             conn.close()
 
     def test_each_user_only_sees_their_own_rows_through_the_executor(self):
-        from ai_sql_auth import authorization_scope
+        from ai_sql_agent.auth import authorization_scope
 
         self._install_rls()
         executor = PostgresMCPExecutor(database="pg_db", dsn=self._ro_dsn())
@@ -361,8 +361,8 @@ class RowLevelSecurityThroughTheAgentTest(unittest.TestCase):
         没有绑定作用域时 app.user_id 是空串，RLS 谓词不匹配任何行——fail closed，
         与执行器那道关卡方向一致。
         """
-        from ai_sql_auth import authorization_scope
-        from schema_retrieval.access import ALLOW_ALL
+        from ai_sql_agent.auth import authorization_scope
+        from ai_sql_agent.retrieval.access import ALLOW_ALL
 
         self._install_rls()
         executor = PostgresMCPExecutor(database="pg_db", dsn=self._ro_dsn())

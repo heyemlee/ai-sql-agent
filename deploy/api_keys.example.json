@@ -86,7 +86,7 @@
       ]
     }
   },
-  "$comment": "示例配置，对齐默认部署的语义层 sim_erp/semantic（erp_db / prod_db / svc_db / wms_db）。契约 v1.6 已把 mes_db 标为 prod_db 的旧名、pm_db 的职责并入 erp_db，两者都已退役——策略里写它们等于写了一个不存在的库，而 deny by default 之下那把 Key 会什么都查不到、且没有任何症状。换语义层时这份文件要跟着改；启动检查会比对（见 ai_sql_api.app.check_production_readiness）。 users 段是 impersonation 时解析最终用户权限用的（最终权限 = 服务身份 ∩ 用户）；row_filters 是行范围，predicate 为 \"*\" 表示显式声明这张表不做行隔离——「显式的宽松可以接受，默认的宽松不行」。两者的设计见 deploy/authz-model.md。",
+  "$comment": "示例配置，对齐默认部署的语义层 tools/sim_erp/semantic（erp_db / prod_db / svc_db / wms_db）。契约 v1.6 已把 mes_db 标为 prod_db 的旧名、pm_db 的职责并入 erp_db，两者都已退役——策略里写它们等于写了一个不存在的库，而 deny by default 之下那把 Key 会什么都查不到、且没有任何症状。换语义层时这份文件要跟着改；启动检查会比对（见 ai_sql_agent.api.app.check_production_readiness）。 users 段是 impersonation 时解析最终用户权限用的（最终权限 = 服务身份 ∩ 用户）；row_filters 是行范围，predicate 为 \"*\" 表示显式声明这张表不做行隔离——「显式的宽松可以接受，默认的宽松不行」。两者的设计见 docs/authz-model.md。",
   "users": {
     "$comment": "最终用户 → 角色。有这一段时 impersonation 会按人重新解析权限并与服务身份取交集；未列出的用户拒绝（不知道他能看什么 ≠ 他什么都能看）。",
     "estimator-zhang": {

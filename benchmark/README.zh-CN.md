@@ -183,8 +183,8 @@ Prompt 也被无关字段稀释（实测无关字段是干扰项，字段越多�
 # 单臂消融：一个进程只跑一臂（跨臂复用会累积 SQLite 连接，实测会耗尽句柄）
 python -c "
 from benchmark.runner import BenchmarkRunner
-from ai_sql_pipeline import Text2SQLPipeline
-from ai_sql_pipeline.objects import PipelineConfig
+from ai_sql_agent.pipeline import Text2SQLPipeline
+from ai_sql_agent.pipeline.objects import PipelineConfig
 r = BenchmarkRunner(pipeline=Text2SQLPipeline(
     PipelineConfig(enable_cross_db_fewshot=False))).run(categories=['cross_db'])
 print(f'{r.correct}/{r.total}')"

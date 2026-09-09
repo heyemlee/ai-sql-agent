@@ -9,8 +9,8 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-from ai_sql_api.app import app
-from ai_sql_core import get_settings
+from ai_sql_agent.api.app import app
+from ai_sql_agent.core import get_settings
 
 
 # 会话 id 每次运行都要新的：runtime_data/memory.db 跨运行持久化，复用同一个

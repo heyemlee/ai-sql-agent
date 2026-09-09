@@ -6,8 +6,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from ai_sql_auth import ApiKeyStore, DataPolicy, extract_referenced_tables
-from ai_sql_core import reload_settings
+from ai_sql_agent.auth import ApiKeyStore, DataPolicy, extract_referenced_tables
+from ai_sql_agent.core import reload_settings
 
 KEY_CONFIG = {
     "keys": [
@@ -156,7 +156,7 @@ class RetrievalFilteringTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         cls.pipeline = Text2SQLPipeline()
 
@@ -194,7 +194,7 @@ class RetrievalFilteringTest(unittest.TestCase):
         完整的执行器侧负面用例在 tests/test_authorization_boundary.py，
         这里补的是「检索裁剪与执行拦截是两回事」这一条。
         """
-        from ai_sql_auth import check_sql_access
+        from ai_sql_agent.auth import check_sql_access
 
         policy = DataPolicy(
             allow_tables=("erp_db.*",),
@@ -213,7 +213,7 @@ class ExecutionFilteringTest(unittest.TestCase):
     """第二道防线：模型凭记忆写出无权表时，SQL 打到库之前被拦住。"""
 
     def test_denied_table_blocks_execution_without_repair(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         class AllowRetrievalDenyExecution:
             """检索阶段全放行，执行阶段拒绝 supplier。"""
@@ -251,7 +251,7 @@ class ExecutionFilteringTest(unittest.TestCase):
         self.assertEqual(step.repair_attempts, [])
 
     def test_permitted_sql_passes_the_check(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline()
         denied = pipeline._check_table_access(
@@ -277,7 +277,7 @@ class ApiAuthTest(unittest.TestCase):
         os.environ["AI_SQL_API_KEYS_FILE"] = str(key_file)
         reload_settings()
 
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.client_ctx = TestClient(app)
         cls.client = cls.client_ctx.__enter__()
@@ -378,7 +378,7 @@ class HistoryApiTest(unittest.TestCase):
         os.environ["AI_SQL_AUDIT_DB_PATH"] = str(Path(cls.tmpdir.name) / "audit.db")
         reload_settings()
 
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.client_ctx = TestClient(app)
         cls.client = cls.client_ctx.__enter__()
@@ -466,7 +466,7 @@ class AdminEndpointTest(unittest.TestCase):
         os.environ["AI_SQL_API_KEYS_FILE"] = str(key_file)
         reload_settings()
 
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.client_ctx = TestClient(app)
         cls.client = cls.client_ctx.__enter__()

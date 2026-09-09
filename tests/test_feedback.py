@@ -12,8 +12,8 @@
 import tempfile
 import unittest
 
-from ai_sql_audit import AuditRecord, SQLiteAuditStore
-from ai_sql_feedback import (
+from ai_sql_agent.audit import AuditRecord, SQLiteAuditStore
+from ai_sql_agent.feedback import (
     CertifiedQuery,
     CertifiedSqlLibrary,
     FeedbackRecord,
@@ -213,8 +213,8 @@ class CertifiedPromptTest(unittest.TestCase):
     """认证范例必须真的出现在 SQL 生成 Prompt 里，否则前面都是白做。"""
 
     def test_examples_reach_the_generation_prompt(self):
-        from sql_generation.objects import CotStep, LocalSchema, SqlGenerationRequest
-        from sql_generation.prompt_builder import SqlPromptBuilder
+        from ai_sql_agent.generation.objects import CotStep, LocalSchema, SqlGenerationRequest
+        from ai_sql_agent.generation.prompt_builder import SqlPromptBuilder
 
         request = SqlGenerationRequest(
             cot_step=CotStep(
@@ -239,8 +239,8 @@ class CertifiedPromptTest(unittest.TestCase):
         self.assertIn("on_time_rate < 0.8", prompt)
 
     def test_prompt_is_unchanged_when_there_are_no_examples(self):
-        from sql_generation.objects import CotStep, LocalSchema, SqlGenerationRequest
-        from sql_generation.prompt_builder import SqlPromptBuilder
+        from ai_sql_agent.generation.objects import CotStep, LocalSchema, SqlGenerationRequest
+        from ai_sql_agent.generation.prompt_builder import SqlPromptBuilder
 
         request = SqlGenerationRequest(
             cot_step=CotStep(
@@ -257,7 +257,7 @@ class CertifiedPromptTest(unittest.TestCase):
 
 class PipelineCertifiedTest(unittest.TestCase):
     def test_pipeline_renders_examples_from_the_lookup(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline(
             certified_lookup=lambda **kwargs: [
@@ -277,7 +277,7 @@ class PipelineCertifiedTest(unittest.TestCase):
         self.assertIn("on_time_rate < 0.8", rendered)
 
     def test_no_lookup_configured_means_no_examples(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline()
         self.assertEqual(
@@ -288,7 +288,7 @@ class PipelineCertifiedTest(unittest.TestCase):
         )
 
     def test_lookup_failure_does_not_break_the_pipeline(self):
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         def explode(**kwargs):
             raise RuntimeError("反馈库挂了")
@@ -344,7 +344,7 @@ class FeedbackApiTest(unittest.TestCase):
 
         from fastapi.testclient import TestClient
 
-        from ai_sql_core import reload_settings
+        from ai_sql_agent.core import reload_settings
 
         cls.tmpdir = tempfile.TemporaryDirectory()
         key_file = Path(cls.tmpdir.name) / "keys.json"
@@ -373,7 +373,7 @@ class FeedbackApiTest(unittest.TestCase):
         os.environ["AI_SQL_AUDIT_DB_PATH"] = str(Path(cls.tmpdir.name) / "audit.db")
         reload_settings()
 
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.client_ctx = TestClient(app)
         cls.client = cls.client_ctx.__enter__()
@@ -382,7 +382,7 @@ class FeedbackApiTest(unittest.TestCase):
     def tearDownClass(cls):
         import os
 
-        from ai_sql_core import reload_settings
+        from ai_sql_agent.core import reload_settings
 
         cls.client_ctx.__exit__(None, None, None)
         for key, value in cls.saved.items():
@@ -461,7 +461,7 @@ class FeedbackApiTest(unittest.TestCase):
 class CertifiedGeneratorLookupTest(unittest.TestCase):
     def test_generator_returning_lookup_is_materialized_once(self):
         """lookup 返回生成器时也要正常工作，且日志计数与实际注入一致。"""
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         def generator_lookup(**kwargs):
             yield CertifiedQuery(

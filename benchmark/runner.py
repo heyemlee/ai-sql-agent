@@ -248,7 +248,7 @@ class GoldExecutor:
     统一执行 erp.xxx / pm.xxx / mes.xxx / wms.xxx 形式的 gold SQL。
 
     **夹具与语义层对不上时直接报错，不出分。** 这份数据集是照内置演示元数据
-    （erp_db / pm_db / mes_db / wms_db）写的；换成 `sim_erp/semantic`
+    （erp_db / pm_db / mes_db / wms_db）写的；换成 `tools/sim_erp/semantic`
     （erp_db / prod_db / svc_db / wms_db）之后 `pm` 和 `mes` 两个别名 ATTACH 不上，
     一半的 gold SQL 会直接抛异常——而以前的实现照样把它算成「答错」，
     最后给出一个看起来正常、实际毫无意义的准确率。
@@ -384,8 +384,8 @@ class BenchmarkRunner:
         同一评测集分别开/关跑一次，两次准确率之差即增益。
         """
         if pipeline is None:
-            from ai_sql_pipeline import Text2SQLPipeline
-            from ai_sql_pipeline.objects import PipelineConfig
+            from ai_sql_agent.pipeline import Text2SQLPipeline
+            from ai_sql_agent.pipeline.objects import PipelineConfig
 
             config = PipelineConfig()
             if enable_repair is not None:
@@ -596,7 +596,7 @@ def run_holdout_recall(pipeline=None, holdout_path: Optional[str | Path] = None)
     发布门禁卡的是这一项，评测集那一项只作为不许退化的下限。
     """
     if pipeline is None:
-        from ai_sql_pipeline import Text2SQLPipeline
+        from ai_sql_agent.pipeline import Text2SQLPipeline
 
         pipeline = Text2SQLPipeline()
 

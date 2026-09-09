@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import unittest
 
-from ai_sql_auth import DataPolicy
-from ai_sql_ops.least_privilege import (
+from ai_sql_agent.auth import DataPolicy
+from ai_sql_agent.ops.least_privilege import (
     LeastPrivilegePlan,
     TableInventory,
     build_plan,

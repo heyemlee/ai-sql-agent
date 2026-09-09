@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional
 
 from fastapi.testclient import TestClient
 
-from ai_sql_api.trust import assess, execution_status_of
-from ai_sql_core import get_settings
+from ai_sql_agent.api.trust import assess, execution_status_of
+from ai_sql_agent.core import get_settings
 
 CONTRACT_TAG = "v1.11"
 """CI 钉在这个 tag 上。契约仓库改了版本，这里也要跟着改——那是一次有意的动作。"""
@@ -112,7 +112,7 @@ class TrustVerdictTest(unittest.TestCase):
     其中 `dp-trust-01` 是核心：唯一一步 success=false，但三个信任布尔全「干净」。
     在 `execution_status` 上线之前它必须是红的（契约仓库让标 xfail）。
     **这个文件里没有 xfail——因为 execution_status 已经上线了。**
-    判据见 ai_sql_api/trust.py，上线证据见 tests/test_business_outcome.py。
+    判据见 src/ai_sql_agent/api/trust.py，上线证据见 tests/test_business_outcome.py。
     """
 
     def test_every_fixture_gets_the_expected_trust_verdict(self):
@@ -215,7 +215,7 @@ class UnlistedDatabaseTest(unittest.TestCase):
         """
         import re
 
-        from ai_sql_a2a.server import active_database_manifest
+        from ai_sql_agent.a2a.server import active_database_manifest
 
         schema = json.loads(
             (CONTRACT / "schema/database-id.schema.json").read_text(encoding="utf-8")
@@ -238,7 +238,7 @@ class EmittedStageSetTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from ai_sql_api.app import app
+        from ai_sql_agent.api.app import app
 
         cls.ctx = TestClient(app)
         cls.client = cls.ctx.__enter__()
