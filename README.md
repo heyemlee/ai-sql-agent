@@ -16,6 +16,33 @@ AI SQL Agent is a Text2SQL service that runs locally or on an internal network. 
 | Safety and control | API keys, table/column permissions, read-only SQL, row and timeout caps, rate limits and quotas |
 | Reliability and traceability | Failed SQL is repaired automatically; every request carries a `trace_id`, an audit record and metrics |
 
+## Where it stands
+
+Measured on 2026-09-09 against the release gate in `benchmark/`, with
+`claude-sonnet-5` as the model, three full runs of the 150-case set, and the
+built-in demo metadata. The gate is **not yet passed**; the numbers are here so
+the README says the same thing the benchmark does.
+
+| Metric | Threshold | 2026-09-08 | 2026-09-09 |
+| --- | --- | --- | --- |
+| Single-database execution accuracy | ≥ 85% | 89.6% | **93.3%** ✅ |
+| Cross-database execution accuracy | ≥ 90% | 73.3% | **85.3%** ❌ |
+| Silent-error rate | ≤ 3% | 10.0% | **5.3%** ❌ |
+| Risk-warning false-alarm rate (guardrail) | ≤ 20% | 5.9% | 5.6% ✅ |
+| Overall execution accuracy | — | 86.9% | **92.0%** |
+
+The jump between the two dates comes from one change: the schema graph now
+labels each JOIN as one-to-one, one-to-many or many-to-many, and the SQL prompt
+asks for `DISTINCT` after a one-to-many JOIN and for the table's own primary key
+in listings and group-bys. Missed de-duplication fell from about eight failures
+per run to one, with no correct answers lost. Read the caveats in
+[the measurement record](benchmark/baseline/2026-09-09/README.md) before quoting
+these numbers: the demo metadata is not the deployment semantic layer, and the
+current wording of the primary-key rule has only one full run behind it.
+
+Run it yourself with `make gate` (needs model credentials) or `make gate-smoke`
+(offline subset).
+
 ## How a request flows
 
 ```mermaid
@@ -171,7 +198,8 @@ Self-hosted vLLM, Ollama and other OpenAI-compatible endpoints work too; see the
 | --- | --- |
 | Business semantics | Table and column meanings, aliases, cross-database join keys and metric definitions live in editable per-database YAML, not in code. This is what the model knows about the business; with real databases it is the main accuracy lever |
 | Getting better with use | Users mark answers right or wrong. Wrong ones become eval cases, confirmed ones become reference queries injected into later prompts for similar questions |
-| Schema retrieval | Locate the database first, then tables and columns; hybrid retrieval feeds a SchemaGraph, which is trimmed to a token budget |
+| Schema retrieval | Locate the database first, then tables and columns; hybrid retrieval feeds a SchemaGraph, which is trimmed to a token budget. Each relation in the graph carries its JOIN cardinality, inferred from primary keys and defaulting to many-to-many when unsure |
+| SQL generation | The prompt gets the dialect, the schema slice and the previous step's result, plus two rules that closed half of the cross-database failures: output the table's own primary key when listing or grouping, and add `DISTINCT` after a one-to-many JOIN when only the "one" side is projected |
 | Cross-database queries | The plan names a target database per step; each result is converted into filter literals for the next step |
 | SQL safety | Only `SELECT` / `WITH` are allowed; multiple statements and writes are rejected; the connection layer adds a read-only transaction or connection as a backstop |
 | Execution reliability | Every statement has a row cap and a timeout; failures are traced to the offending clause and repaired locally |
@@ -237,3 +265,7 @@ docs/                     Walkthrough, deployment and operations guides, module 
 - [Schema retrieval](docs/modules/retrieval.md): hybrid recall and SchemaGraph
 - [MCP execution](docs/modules/execution.md): read-only SQL, dialects and executors
 - [Benchmark](benchmark/README.md): dataset, accuracy and the release gate
+- [Latest measurement](benchmark/baseline/2026-09-09/README.md): before/after of the JOIN-cardinality change, with its limitations (Chinese)
+- [Authorization model](docs/authz-model.md): row scopes and impersonation in the policy model (Chinese)
+- [Least-privilege runbook](docs/least-privilege-runbook.md): creating read-only database roles for real business databases (Chinese)
+- [Contract feedback](docs/contract-feedback.md): issues handed back to the `a2a-contract` repository (Chinese)

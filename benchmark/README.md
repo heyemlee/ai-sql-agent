@@ -15,32 +15,31 @@ failure mode that would get the tool abandoned, and each is paired with a
 
 | # | Metric | Threshold | Measured | Guardrail | What failing it costs |
 |---|---|---|---|---|---|
-| 1 | Column recall (**holdout set**, 40 cases) | **≥ 85%** | **97.5%** ✅ | Average share of columns in the graph ≤ 40% (37.2% ✅) | If a column never reaches the schema graph, no amount of generation accuracy can answer the question |
+| 1 | Column recall (**holdout set**, 40 cases) | **≥ 85%** | **100%** ✅ | Average share of columns in the graph ≤ 40% (43.6% ❌, just over the line) | If a column never reaches the schema graph, no amount of generation accuracy can answer the question |
 | 1' | Column recall (evaluation set, in-prompt) | ≥ 95% | **100%** ✅ | same | A regression floor, not evidence of passing |
-| 2 | Single-database execution accuracy | **≥ 85%** | **90.4%** ✅ | — | Every result needs manual review, and the review eats the time the question saved |
-| 3 | Cross-database execution accuracy | **≥ 90%** | **76–80% (25 cross_db cases × 3 arms, single run)** ❌ | — | Users fall back to querying each database themselves and stitching the results, which makes the capability pointless |
-| 4 | Silent-error rate | **≤ 3%** | **5.3%** ❌ | Risk-warning false-alarm rate ≤ 20% (2.3% ✅) | A wrong number gets copied into a weekly report as fact; once is enough to get the tool switched off |
+| 2 | Single-database execution accuracy | **≥ 85%** | **93.3%** ✅ | — | Every result needs manual review, and the review eats the time the question saved |
+| 3 | Cross-database execution accuracy | **≥ 90%** | **85.3% [84.0, 88.0]** ❌ | — | Users fall back to querying each database themselves and stitching the results, which makes the capability pointless |
+| 4 | Silent-error rate | **≤ 3%** | **5.3%** ❌ | Risk-warning false-alarm rate ≤ 20% (5.6% ✅) | A wrong number gets copied into a weekly report as fact; once is enough to get the tool switched off |
 | — | Retrieval vs in-prompt recall gap | **≤ 3pp** | **0pp** ✅ | — | Retrieval found it, the model never saw it — widening recall here only makes things worse |
 
 > **The numbers and their sample sizes have to be read together:**
 >
 > | Number | Source | Sample |
 > |---|---|---|
-> | 90.4% single-database, 85.3% overall | All 150 cases, configuration ②, criterion C plus the tightened static checks and the gold de-duplication convention, **recomputed offline** | 125 single-database cases, one run |
-> | 76 / 80 / 76% cross-database | **Three ablation arms, cross_db only** | 25 cases per arm, one run each |
-> | 100% evaluation-set recall, 0pp gap | Consistent across all three arms | 25 cases × 3 |
-> | 5.3% silent, 2.3% false alarm | Same runs, recomputed offline after all three measurement fixes | 150 cases |
-> | 97.5% holdout recall | 40 colloquially phrased cases, run separately | 40 cases, one run |
+> | 93.3% single-database, 85.3% cross-database, 5.3% silent, 5.6% false alarm, 92.0% overall | [2026-09-09 measurement](baseline/2026-09-09/README.md) of the JOIN-cardinality change, `claude-sonnet-5`, built-in demo metadata | All 150 cases, **three runs**, mean with min–max interval |
+> | 100% holdout recall, 100% evaluation-set recall, 0pp gap, 43.6% column share | [2026-09-08 baseline](baseline/2026-09-08/README.md), same model and data, the commit just before that change | 150 + 40 cases, three runs |
+> | Before the change: 89.6% single, 73.3% cross, 10.0% silent | Same 2026-09-08 baseline | 150 cases, three runs |
 >
-> **The cross-database figure is deliberately not reported as a 77.3% mean.** At
-> n=25 a single case is 4pp, and the spread across the three arms is smaller than
-> one case. A precise-looking mean would claim more certainty than the data
-> supports. The range shows the reader the sample size.
+> The retrieval-side numbers (recall, column share) are quoted from 2026-09-08
+> because the 2026-09-09 change only touched how the graph is rendered into the
+> prompt and the generation rules, not which columns are retrieved.
 >
-> ⚠️ **The full 150 cases have not been run on the current configuration.** The
-> three cross-database numbers come from a measured subset; the single-database
-> and overall numbers come from an older configuration. Cite them with the
-> qualifiers above — do not splice the two into one "current" figure.
+> ⚠️ **Two caveats before quoting any of this.** The runs use the built-in demo
+> metadata, not the deployment semantic layer under `tools/sim_erp/semantic`, so
+> they measure the pipeline on the standard fixture rather than the current
+> deployment. And the current wording of the primary-key rule has only one full
+> run behind it; the three-run figures were taken with its first wording. Both
+> are spelled out in the measurement record.
 
 ### The citable form: mean and range over `--repeat 3`
 
@@ -130,7 +129,7 @@ to 76–80%. The gap was **mostly engineering defects, not chain length**. Given
 that, the line should demand parity with single-database rather than reserving a
 discount.
 
-Currently measured at 76–80%, so 10–14pp short of 90%.
+Currently measured at 85.3% (three runs, 2026-09-09), so 4.7pp short of 90%. It was 73.3% the day before; the JOIN-cardinality annotation closed most of the gap by removing missed de-duplication after one-to-many JOINs.
 
 **Silent-error rate ≤ 3%**
 The only metric of the four where lower is better, and the most expensive class
@@ -251,7 +250,7 @@ print(f'{r.correct}/{r.total}')"
 ### False alarms: the full-set number hides the distribution
 
 The `false_alarm_rate ≤ 20%` guardrail is computed over the **full set**, where
-it measures 2.3% and passes comfortably. Broken down by category, though, the
+it measures 5.6% (2026-09-09, three runs) and passes comfortably. Broken down by category, though, the
 cross_db subset crosses 20% repeatedly — 21.1 / 30.0 / 15.8 / 27.8 / 21.1% across
 five ablation arms.
 
