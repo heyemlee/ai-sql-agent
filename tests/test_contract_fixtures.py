@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from ai_sql_agent.api.trust import assess, execution_status_of
 from ai_sql_agent.core import get_settings
 
-CONTRACT_TAG = "v1.11"
+CONTRACT_TAG = "v1.12"
 """CI 钉在这个 tag 上。契约仓库改了版本，这里也要跟着改——那是一次有意的动作。"""
 
 
@@ -109,10 +109,14 @@ class TrustVerdictTest(unittest.TestCase):
     C 组：信任反例。**这一组最容易被跳过，也最值钱**——它们全都是合法载荷，
     schema 拦不住，只能靠业务判据。
 
-    其中 `dp-trust-01` 是核心：唯一一步 success=false，但三个信任布尔全「干净」。
-    在 `execution_status` 上线之前它必须是红的（契约仓库让标 xfail）。
-    **这个文件里没有 xfail——因为 execution_status 已经上线了。**
-    判据见 src/ai_sql_agent/api/trust.py，上线证据见 tests/test_business_outcome.py。
+    **`dp-trust-01` 在契约 v1.12 离开了 C 组，改判到 B 组**：`execution_status`
+    提级为 `required` 之后，它那份不带该字段的载荷不再合法，schema 现在拦得住了。
+    C 组 failed 这一档由 `dp-trust-07` 接手（同一份载荷，带着字段）。
+    本类里针对 01 的两条用例仍然保留，断的东西变了——见各自的 docstring。
+
+    **这个文件里没有 xfail。** 契约 v1.9 说清楚了：进度标记只能挂在自己真实产出的
+    载荷上，不能挂在冻结的 fixture 上。判据见 src/ai_sql_agent/api/trust.py，
+    上线证据见 tests/test_business_outcome.py。
     """
 
     def test_every_fixture_gets_the_expected_trust_verdict(self):
@@ -131,27 +135,38 @@ class TrustVerdictTest(unittest.TestCase):
                 f"{case['id']}（{case['why']}）",
             )
 
-    def test_failed_step_fixture_is_not_usable(self):
+    def test_failed_step_fixture_is_rejected_for_the_missing_status_field(self):
         """
-        契约仓库点名的那条用例，v1.7 起**拆成两条断言**。这是第一条：业务结论。
+        契约仓库点名的那条用例。**v1.12 起它的性质变了，断言跟着改。**
 
-        它是 §4.4 / §4.6 缺口的实际后果：`queried_database=true`、
-        `has_risk=false`、`degraded=false`，今天的三布尔判据会把它判成可信，
+        v1.11 之前：它是合法载荷（C 组），schema 拦不住，只能靠业务判据——
+        `queried_database=true`、`has_risk=false`、`degraded=false` 三布尔全"干净"，
         而唯一一步 `success=false`。
 
-        **必过，不是 xfail。** v1.6 曾指示标 xfail，那条指示写错了——这份
-        fixture 带着完整的 `steps[]`，而 `steps[]` 今天就在线上，
-        按 §4.6.7 的过渡判据业务结论今天就能判对，标 xfail 会 XPASS。
+        v1.12 起：`execution_status` 提级为 `required`，这份不带该字段的载荷
+        **不再合法**，改判到 B 组。所以这里断两件事：schema 必须拒它，
+        **且拒绝理由就是缺这个字段**——理由不对就说明它是因为别的原因被拒的，
+        这条用例就没在保护它声称保护的东西。
+
+        业务结论仍然是不可作出处，只是现在走的是"校验失败 → 回落"那条路。
         """
         payload = json.loads(
             (CONTRACT / "fixtures/data-part/trust-negative/01-failed-step.json")
             .read_text(encoding="utf-8")
         )
-        self.assertTrue(
+        self.assertFalse(
             _is_valid("schema/artifact-data-part.schema.json", payload),
-            "这条 fixture 是合法载荷，schema 本来就拦不住它",
+            "v1.12 起缺 execution_status 的载荷不再合法（契约 §4.6.1 / §4.6.7）",
         )
-        self.assertEqual(assess(payload, schema_valid=True), "not_usable")
+        reasons = [
+            e.message
+            for e in _validator("schema/artifact-data-part.schema.json").iter_errors(payload)
+        ]
+        self.assertTrue(
+            any("execution_status" in m for m in reasons),
+            f"拒绝理由里没有 execution_status，实际是：{reasons}",
+        )
+        self.assertEqual(assess(payload, schema_valid=False), "not_usable")
 
     def test_failed_step_fixture_status_comes_from_derivation(self):
         """
@@ -159,8 +174,13 @@ class TrustVerdictTest(unittest.TestCase):
 
         这份 fixture 没有 `execution_status` 字段，所以结论只能靠
         §4.6.1 从 `steps[]` 推——`status_source == "derived"`。
-        **对 fixture 而言这是正确答案，不是缺陷**：契约仓库的 golden 载荷
-        是照「服务端还没实现」那一刻造的。
+
+        **v1.12 起这条断言的含义变了，但断言本身不变。** 提级之后
+        §4.6.7 的过渡判据作废，"没有该字段"不再是契约认可的路径；
+        推导能力保留下来是**对非合规载荷的防御**——服务端出 bug、版本错配、
+        中间件吞字段都会让这种载荷真的出现，那时还得靠 `steps[]` 说清楚
+        "这次查挂了"，而不是崩掉或者静默采信。所以：推导结论必须仍然算得对，
+        但按 §4.6.7 一律当不可信（见上一条用例的 `assess` 断言）。
 
         缺口关没关，要看**我方自己产出的载荷**是不是 `contract`——
         那条断言在 tests/test_business_outcome.py::
