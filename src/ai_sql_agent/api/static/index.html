@@ -4,7 +4,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title data-i18n="title">AI SQL Agent · Console</title>
 <style>
-/* ─── tokens — OpenAI design system (tokens.css, 原样绑定) ──────────── */
+/* ─── monochrome design tokens ──────────────────────────────────── */
 :root {
   /* ─── Surface ──────────────────────────────────────────────────── */
   --bg:           #ffffff;
@@ -22,15 +22,15 @@
   --border-soft: #ededed;             /* card outline on white surface */
 
   /* ─── Accent ───────────────────────────────────────────────────── */
-  --accent:        #10a37f;           /* OpenAI Teal — links, highlight, CTA */
+  --accent:        #171717;           /* black — links, highlight, CTA */
   --accent-on:     #ffffff;
-  --accent-hover:  #0a7a5e;           /* teal deep — hover/pressed */
+  --accent-hover:  #333333;           /* charcoal — hover/pressed */
   --accent-active: color-mix(in oklab, var(--accent), black 14%);
 
   /* ─── Semantic ─────────────────────────────────────────────────── */
-  --success: #10a37f;                 /* teal — success path */
-  --warn:    #f5a623;                 /* amber — advisory */
-  --danger:  #ef4146;                 /* error — validation, destructive */
+  --success: #171717;                 /* neutral — success path */
+  --warn:    #737373;                 /* gray — advisory, paired with labels and icons */
+  --danger:  #404040;                 /* charcoal — errors, paired with explicit labels */
 
   /* ─── Typography ───────────────────────────────────────────────── */
   --font-display: "Signifier", "Source Serif Pro", Georgia, ui-serif, serif;
@@ -77,7 +77,7 @@
   --elev-raised: 0 4px 16px rgba(13, 13, 13, 0.06);
 
   /* ─── Focus ────────────────────────────────────────────────────── */
-  --focus-ring: 0 0 0 3px rgba(16, 163, 127, 0.12);
+  --focus-ring: 0 0 0 3px rgba(0, 0, 0, 0.1);
 
   /* ─── Motion ───────────────────────────────────────────────────── */
   --motion-fast:   150ms;
@@ -435,125 +435,281 @@ dialog::backdrop { background: color-mix(in oklch, var(--fg) 34%, transparent); 
   }
 }
 
-/* ─── responsive ───────────────────────────────────────────────────── */
-@media (max-width: 1280px) {
-  :root { --rail-left: 264px; }
-  .rail { padding: var(--space-4); }
-  .console { grid-template-columns: var(--rail-left) minmax(0, 1fr); }
-  .rail-r {
-    grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border);
-    display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-8); align-items: start;
-  }
+/* Conversation workspace: readable surfaces and a single primary action. */
+:root {
+  --rail-left: 256px; --topbar-h: 64px; --bg: #fff; --surface: #f5f5f5;
+  --surface-warm: #f9f9f9; --fg: #171717; --fg-2: #333333; --muted: #666666;
+  --meta: #757575; --border: #e3e3e3; --border-soft: #ededed; --accent: #171717;
+  --accent-hover: #333333; --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
-@media (max-width: 920px) {
-  .console { grid-template-columns: minmax(0, 1fr); height: auto; }
-  .rail, .workbench { overflow: visible; height: auto; }
-  .workbench { order: 1; }
-  .rail-r { order: 2; grid-column: auto; border-left: 0; border-top: 1px solid var(--border); display: flex; }
-  .rail-l { order: 3; border-right: 0; border-bottom: 0; border-top: 1px solid var(--border); }
-  .workbench-inner { padding: var(--space-6) var(--container-gutter-phone) var(--space-12); }
-  .topbar { padding-inline: var(--container-gutter-phone); }
-  .brand .env { display: none; }
+body { height: 100dvh; overflow: hidden; font-size: 14px; }
+button:disabled { cursor: not-allowed; opacity: .45; }
+button, summary { -webkit-tap-highlight-color: transparent; }
+button:active:not(:disabled) { transform: scale(.98); }
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.icon { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+.icon-btn { width: 36px; height: 36px; border-radius: 9px; }
+.topbar { padding: 0 24px; border-bottom: 1px solid var(--border-soft); background: #fff; backdrop-filter: none; }
+.brand { align-items: center; gap: 10px; }
+.brand .mark { font-family: var(--font-body); font-size: 16px; font-weight: 650; letter-spacing: -.4px; }
+.brand-symbol { display: grid; place-items: center; width: 30px; height: 30px; background: var(--accent); color: #fff; border-radius: 9px; }
+.brand .env { display: none; }
+.topbar-actions { gap: 6px; }
+.status-chip { border: 0; background: transparent !important; font-size: 12px; max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+.status-chip.is-live { color: var(--accent); }
+.status-chip.is-demo { color: #666666; }
+.console { height: calc(100dvh - var(--topbar-h)); grid-template-columns: var(--rail-left) minmax(0,1fr); }
+.rail-l { margin: 0; padding: 20px 14px 16px; border: 0; border-right: 1px solid var(--border-soft); border-radius: 0; background: var(--surface-warm); gap: 22px; overflow: hidden; }
+.rail-title { text-transform: none; letter-spacing: .02em; font-size: 12px; font-weight: 600; color: var(--muted); }
+.rail .caption { font-size: 12px; font-weight: 400; }
+#btnNew { justify-content: flex-start; gap: 10px; padding: 12px 14px; min-height: 44px; font-size: 13px; flex: none; border-radius: 10px; color: var(--accent); border-color: #dedede; box-shadow: 0 2px 4px #00000003; }
+#btnNew:hover { background: #eeeeee; border-color: #cccccc; }
+.history-section { display: flex; flex-direction: column; min-height: 100px; flex: 1; overflow: hidden; }
+.rail-section-head { padding: 0 8px; margin-bottom: 10px; }
+.history-search { display: flex; gap: 8px; align-items: center; background: #fff; border: 1px solid var(--border); border-radius: 9px; padding: 0 10px; margin-bottom: 14px; }
+.history-search .icon { width: 15px; color: var(--muted); }
+.history-search:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
+.history-search input { width: 100%; min-width: 0; height: 36px; font: inherit; font-size: 12px; border: 0; background: none; color: var(--fg); outline: 0; box-shadow: none; }
+.history-search input::placeholder { color: var(--muted); }
+#historyList { overflow-y: auto; flex: 1; min-height: 0; scrollbar-width: thin; }
+.hist { padding: 10px; border-radius: 9px; }
+.hist[aria-current="true"] { background: #eaeaea; border-color: #dddddd; }
+.hist-q { font-size: 13px; -webkit-line-clamp: 2; }
+.hist-meta { gap: 6px; margin-top: 5px; font-size: 11px; }
+.hist-time { font: inherit; color: var(--muted); }
+.hist-meta .chip { font-size: 10px; padding: 1px 6px; }
+.history-group { border-radius: 10px; }
+.history-versions { margin: 0 8px 10px 12px; }
+.history-versions > summary { font-size: 11px; color: var(--muted); cursor: pointer; padding: 4px 0; }
+.history-versions .hist { border-left: 1px solid var(--border); border-radius: 0 8px 8px 0; margin-top: 3px; }
+.history-versions .hist-q { display: none; }
+.history-empty { padding: 10px; line-height: 1.8; color: var(--muted); }
+.audit-caption { font-size: 11px !important; line-height: 1.6; margin: 12px 8px 0; color: var(--muted); }
+#auditNote { max-height: 150px; overflow: auto; }
+.source-section { flex: none; max-height: 32%; overflow-y: auto; border-top: 1px solid var(--border); padding-top: 16px; scrollbar-width: thin; }
+.source-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; }
+.source-section > summary::-webkit-details-marker { display: none; }
+.source-section > summary .icon { width: 14px; height: 14px; }
+.source-section[open] > summary { margin-bottom: 12px; }
+.source-section[open] > summary .icon { transform: rotate(180deg); }
+#sourceList > .caption { padding: 0 8px; }
+.src { padding: 10px 8px; }
+.src-name { font-size: 12px; }
+.src-tables { display: block; font-size: 11px; line-height: 1.7; margin-top: 5px; }
+.src.is-hit { background: #efefef; border-color: #dddddd; }
+.src.is-hit .chip { box-shadow: none; background: #e3e3e3; color: #333333; }
+#sourcesPool { padding: 0 8px; }
+.workbench { position: relative; overflow: hidden; min-width: 0; min-height: 0; background: #fff; }
+.chat-header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 32px; flex: none; }
+.chat-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--muted); min-width: 0; }
+.chat-title .dot { width: 6px; height: 6px; background: #737373; }
+.chat-title-text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chat-header .btn { font-size: 12px; gap: 6px; flex: none; }
+.chat-header .icon { width: 15px; height: 15px; }
+.chat-scroll { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable both-edges; scroll-behavior: smooth; }
+.workbench-inner { max-width: 832px; padding: 24px 40px 32px; min-height: 100%; gap: 0; }
+#result { display: flex; flex-direction: column; gap: 40px; }
+.workbench.is-empty { overflow-y: auto; }
+.workbench.is-empty .chat-scroll { flex: 0 0 auto; overflow: visible; margin-top: clamp(24px,9vh,110px); }
+.workbench.is-empty .workbench-inner { min-height: 0; padding: 0 40px; }
+.welcome { width: 100%; margin: 0; text-align: left; padding: 0; }
+.welcome .eyebrow { color: var(--accent); font-size: 12px; text-transform: none; letter-spacing: .04em; display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }
+.welcome h1 { font-size: clamp(27px,3vw,38px); line-height: 1.35; font-weight: 570; letter-spacing: -.9px; }
+.welcome p { font-size: 14px; color: var(--muted); margin-top: 14px; line-height: 1.8; max-width: 520px; }
+.composer-dock { flex: none; width: 100%; max-width: 832px; margin: 0 auto; padding: 12px 40px 18px; position: relative; background: #fff; }
+.workbench.is-empty .composer-dock { margin-top: 26px; padding-top: 0; padding-bottom: 36px; }
+.composer { border: 1px solid #dedede; border-radius: 20px; padding: 18px 16px 12px; background: #fff; box-shadow: 0 4px 16px #00000006, 0 1px 3px #00000004; }
+.composer:focus-within { border-color: #a3a3a3; box-shadow: 0 0 0 3px #00000008, 0 4px 16px #00000006; }
+.composer textarea { display: block; min-height: 30px; max-height: 192px; padding: 0 4px; font-size: 15px; line-height: 26px; box-shadow: none; }
+.composer textarea::placeholder { color: #757575; }
+.workbench.is-empty .composer textarea { min-height: 62px; }
+.composer-foot { border: 0; padding: 0; margin-top: 12px; gap: 8px; }
+.composer-foot-left { gap: 6px; }
+.composer .toggle { font-size: 12px; min-height: 32px; padding: 0 6px; gap: 7px; }
+.composer .toggle .track { width: 26px; height: 16px; }
+.composer .toggle .track::after { width: 12px; height: 12px; }
+.composer .toggle[aria-pressed="true"] .track::after { transform: translateX(10px); }
+.composer .toggle[aria-pressed="true"] .track { background: var(--accent); }
+.session-label { display: none; }
+.composer-tools { display: flex; align-items: center; gap: 12px; }
+.composer-mode { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.composer-mode .icon { width: 13px; height: 13px; }
+.send-btn { width: 36px; height: 36px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: var(--accent); color: #fff; flex: none; }
+.send-btn:hover:not(:disabled) { background: var(--accent-hover); }
+.send-btn:disabled { background: #eeeeee; color: #a3a3a3; opacity: 1; }
+.composer-hint { text-align: center; font-size: 11px; color: var(--muted); padding-top: 12px; }
+.suggestions { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-top: 26px; }
+.suggestion { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; text-align: left; padding: 16px; border: 1px solid var(--border-soft); background: #fafafa; border-radius: 13px; font-size: 13px; color: var(--fg); }
+.suggestion:hover { background: #f0f0f0; border-color: #d0d0d0; }
+.suggestion .icon { color: var(--accent); margin-bottom: 3px; }
+.suggestion span { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.workbench:not(.is-empty) .suggestions, .workbench:not(.is-empty) #askChips { display: none; }
+#askChips { margin-top: 20px; gap: 6px; align-items: center; }
+#askChips:empty { display: none; }
+#askChips .caption { font-size: 11px; padding-right: 4px; }
+.ask-chip { font-size: 12px; min-height: 30px; padding: 4px 10px; max-width: 240px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: block; }
+.turn { min-width: 0; }
+.user-message { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; margin: 0 0 24px 48px; }
+.user-bubble { background: #f1f1f1; color: var(--fg); padding: 12px 16px; border-radius: 18px 18px 4px 18px; font-size: 15px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; max-width: 100%; }
+.message-actions { display: flex; gap: 3px; align-items: center; }
+.message-actions .icon-btn { width: 34px; height: 34px; border-radius: 8px; color: var(--muted); }
+.message-actions .icon { width: 16px; height: 16px; }
+.user-message .message-actions { opacity: 0; transition: opacity .15s; }
+.user-message:hover .message-actions, .user-message:focus-within .message-actions { opacity: 1; }
+.assistant-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; color: var(--accent); margin-bottom: 14px; }
+.assistant-label .icon { width: 18px; height: 18px; }
+.answer-card { border: 0; padding: 0; background: none; }
+.answer-text { font-size: 15px; font-weight: 400; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+.answer-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.answer-meta .chip { font-size: 11px; padding: 3px 8px; }
+.answer-reason { font-size: 12px; margin-top: 12px; color: var(--muted); line-height: 1.8; }
+.response > .stack-6 > * + * { margin-top: 18px; }
+.response .card { padding: 16px; border-radius: 12px; }
+.response .answer-card { padding: 0; }
+.response .sql { font-size: 12px; border-radius: 9px; }
+.response .h3 { font-size: 15px; }
+.response .caption { font-size: 12px; }
+.response .btn-sm { font-size: 12px; min-height: 34px; padding: 6px 10px; }
+.query-details { border: 1px solid var(--border); border-radius: 14px; padding: 0 16px; overflow: hidden; }
+.query-details > summary { cursor: pointer; color: var(--fg-2); font-weight: 500; font-size: 13px; padding: 14px 0; }
+.query-details > .card { border: 0; border-top: 1px solid var(--border-soft); border-radius: 0; margin: 0; padding: 16px 0; }
+.query-details .tabs { margin-top: 12px; gap: 8px; }
+.query-details .tab { padding: 6px 4px 10px; font-size: 12px; }
+.table-hint { font-size: 11px; color: var(--muted); margin-top: 8px; }
+.table-wrap { max-height: 360px; margin-top: 12px; scrollbar-width: thin; }
+.ds-table thead th { position: sticky; top: 0; z-index: 1; font-size: 11px; }
+.ds-table td { font-size: 13px; }
+.feedback-card { border: 0; background: none; padding: 4px 0 !important; }
+.feedback-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.feedback-top .fb { gap: 4px; }
+.feedback-card .btn { border-color: transparent; background: var(--surface-warm); }
+.feedback-note { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.feedback-note summary { cursor: pointer; }
+.fb-comment { margin-top: 10px; }
+.card-flag { font-size: 13px; }
+#jumpLatest { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); border-radius: 30px; background: #fff; border: 1px solid var(--border); box-shadow: 0 2px 10px #00000009; font-size: 12px; min-height: 34px; padding: 5px 12px; white-space: nowrap; }
+#jumpLatest .icon { width: 14px; height: 14px; }
+.thinking { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; padding: 8px 0; }
+.thinking .thinking-dot { width: 7px; height: 7px; background: var(--accent); border-radius: 50%; animation: pulse 1.2s infinite; }
+.rail-r { position: fixed; right: 16px; top: 76px; bottom: 16px; width: 340px; z-index: 22; border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 12px 48px #00000020; background: #fff; padding: 24px; gap: 24px; }
+.rail-r .pipe-detail { font-size: 12px; }
+.rail-r .pipe-label { font-size: 13px; }
+.rail-r .kv { font-size: 12px; }
+.trace-heading { display: flex; align-items: center; justify-content: space-between; }
+.edit-note { font-size: 12px; color: var(--accent); display: flex; align-items: center; justify-content: space-between; margin: 0 4px 8px; }
+#toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 18px; background: #262626; color: #fff; font-size: 13px; border-radius: 12px; box-shadow: 0 4px 20px #0002; z-index: 100; }
+#drawerBackdrop { position: fixed; inset: var(--topbar-h) 0 0; z-index: 24; background: #00000030; border: 0; border-radius: 0; }
+.history-status { color: #666666; }
+.conn-banner { margin: 0 32px; padding: 10px 14px; border: 1px solid #d4d4d4; background: #f7f7f7; border-radius: 10px; font-size: 12px; color: #404040; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.conn-banner button { border: 0; background: none; color: inherit; font-size: 12px; text-decoration: underline; flex: none; }
+@media (max-width: 1100px) { :root { --rail-left: 232px; } .topbar { padding: 0 18px; } }
+@media (max-width: 900px) {
+  .console { grid-template-columns: minmax(0,1fr); }
+  .rail-l { position: fixed; top: var(--topbar-h); bottom: 0; left: 0; width: min(290px,calc(100vw - 44px)); z-index: 25; border-right: 1px solid var(--border); box-shadow: 8px 0 40px #00000010; }
+  .rail-l:not(.is-open) { display: none; }
+  .workbench.is-empty .chat-scroll { margin-top: clamp(30px,7vh,80px); }
+}
+@media (max-width: 520px) {
+  :root { --topbar-h: 56px; }
+  .topbar { padding: 0 10px; gap: 4px; }
+  .brand { gap: 6px; }
+  .brand .mark { font-size: 14px; }
+  .brand-symbol { display: none; }
+  .topbar-actions { gap: 0; }
+  #connText { display: none; }
+  .status-chip { padding: 5px; }
+  #btnExplain, #btnHelp { display: none; }
+  .chat-header { padding: 0 20px; min-height: 48px; }
+  .chat-header .btn { padding: 6px; }
+  .workbench-inner { padding: 18px 20px 28px; }
+  .workbench.is-empty .workbench-inner { padding: 0 24px; }
+  .workbench.is-empty .chat-scroll { margin-top: 32px; }
+  .welcome .eyebrow { margin-bottom: 14px; }
+  .welcome h1 { font-size: 28px; max-width: 320px; }
+  .welcome p { font-size: 13px; margin-top: 12px; }
+  .composer-dock { padding: 10px 16px max(12px,env(safe-area-inset-bottom)); }
+  .workbench.is-empty .composer-dock { margin-top: 22px; }
+  .composer { border-radius: 17px; padding: 15px 12px 10px; }
+  .composer textarea { font-size: 16px; }
+  .composer-hint { font-size: 10px; }
+  .composer-mode { font-size: 10px; }
+  .suggestions { gap: 8px; margin-top: 22px; grid-template-columns: 1fr; }
+  .suggestion { display: grid; grid-template-columns: 20px 80px 1fr; gap: 10px; align-items: center; padding: 13px; font-size: 12px; }
+  .suggestion .icon { margin: 0; width: 17px; }
+  .suggestion span { font-size: 11px; }
+  .user-message { margin-left: 24px; }
+  .user-message .message-actions { opacity: 1; }
+  .user-bubble, .answer-text { font-size: 14px; }
+  .message-actions .icon-btn { width: 38px; height: 38px; }
+  .query-details { padding: 0 12px; }
+  .rail-r { width: min(340px,calc(100vw - 24px)); right: 12px; }
   .grid-2 { grid-template-columns: 1fr; }
+  .sheet { max-height: calc(100dvh - 32px); overflow: auto; padding: 22px; }
+  .conn-banner { margin: 0 16px; }
 }
+@media (hover: none) { .user-message .message-actions { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .chat-scroll { scroll-behavior: auto; } }
 </style>
 </head>
 <body>
+<svg xmlns="http://www.w3.org/2000/svg" class="sr-only" aria-hidden="true"><symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol><symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 4v16h16M8 15l4-5 4 2 4-7"/></symbol><symbol id="i-compare" viewBox="0 0 24 24"><path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/></symbol><symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol><symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V4H4v12h4"/></symbol><symbol id="i-edit" viewBox="0 0 24 24"><path d="m14 5 5 5M4 20l5-1L20 8a2 2 0 0 0-5-5L4 14Z"/></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></symbol><symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol><symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h7m4 0h5M4 17h3m4 0h9"/><circle cx="13" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 4-8 9-8 9s-8-5-8-9V6Z"/><path d="m8 12 3 3 5-5"/></symbol><symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/></symbol><symbol id="i-code" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></symbol><symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" stroke="none"/></symbol></svg>
 
 <a class="skip-link" href="#q" id="skipToAsk" data-od-id="skip-to-composer" data-i18n="skip">Skip to question box</a>
 
 <header class="topbar" data-od-id="topbar">
   <div class="brand">
-    <span class="mark">AI SQL Agent</span>
-    <span class="env" id="envLabel" data-i18n="env.readonly">read-only</span>
+    <button class="icon-btn" id="btnSidebar" aria-controls="sidebar" aria-expanded="true" data-i18n-aria="chat.sidebar"><svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg></button>
+    <span class="brand-symbol"><svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg></span><span class="mark">AI SQL Agent</span>
+    <span class="env" id="envLabel"></span>
   </div>
   <div class="topbar-actions">
-    <button class="btn btn-ghost btn-sm" id="btnLang" type="button" data-od-id="lang-toggle">中文</button>
-    <button class="toggle" id="btnExplain" aria-pressed="false" type="button" data-od-id="explain-toggle">
-      <span class="track" aria-hidden="true"></span><span data-i18n="explain">Explain mode</span>
-    </button>
-    <span class="chip status-chip is-demo" id="connChip" data-od-id="connection-status">
-      <span class="dot"></span><span id="connText" data-i18n="conn.checking">Checking connection…</span>
-    </span>
-    <button class="btn btn-secondary btn-sm" id="btnSettings" data-od-id="open-settings" data-i18n="settings">Connection settings</button>
-    <button class="icon-btn" id="btnHelp" data-od-id="open-help" data-i18n-aria="shortcuts" aria-label="Keyboard shortcuts">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"></circle><path d="M9.6 9.2a2.5 2.5 0 1 1 3.3 2.4c-.6.2-.9.7-.9 1.3v.5"></path><path d="M12 17h.01"></path></svg>
-    </button>
+    <span class="chip status-chip is-demo" id="connChip"><span class="dot"></span><span id="connText" data-i18n="conn.checking"></span></span>
+    <button class="btn btn-ghost btn-sm" id="btnLang">中文</button>
+    <button class="icon-btn" id="btnExplain" aria-pressed="false" data-i18n-aria="explain"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg></button>
+    <button class="icon-btn" id="btnSettings" data-od-id="open-settings" data-i18n-aria="settings"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg></button>
+    <button class="icon-btn" id="btnHelp" data-i18n-aria="shortcuts"><span aria-hidden="true">?</span></button>
   </div>
 </header>
-
-<div class="console">
-
-  <!-- ─── left rail ─────────────────────────────────────────────── -->
-  <aside class="rail rail-l" data-od-id="rail-sources">
-    <button class="btn btn-secondary" id="btnNew" data-od-id="new-query" style="width:100%" data-i18n="newQuery">New query</button>
-    <section>
-      <div class="row-between" style="margin-bottom:var(--space-3)">
-        <h2 class="rail-title" data-i18n="sources">Data sources</h2>
-        <span class="caption num" id="hitCount">—</span>
-      </div>
-      <div class="rail-list" id="sourceList"></div>
-      <div id="sourcesPool"></div>
-      <div id="sourcesNote"></div>
+<button id="drawerBackdrop" hidden data-i18n-aria="ui.closeSidebar"></button>
+<div class="console" id="console">
+  <aside class="rail rail-l" id="sidebar" data-od-id="rail-sources">
+    <button class="btn btn-secondary" id="btnNew" data-od-id="new-query"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span data-i18n="newQuery"></span></button>
+    <section class="history-section" data-od-id="rail-history">
+      <div class="row-between rail-section-head"><h2 class="rail-title" data-i18n="history"></h2><button class="icon-btn" style="width:24px;height:24px" id="btnRefreshHistory" data-i18n-aria="refresh"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button></div>
+      <label class="history-search"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="historySearch" data-i18n-ph="ui.search" data-i18n-aria="ui.search" autocomplete="off"></label><div class="rail-list" id="historyList"></div>
+      <p class="caption audit-caption" data-i18n="audit.note"></p><div id="auditNote"></div>
     </section>
-
-    <section data-od-id="rail-history">
-      <div class="row-between" style="margin-bottom:var(--space-3)">
-        <h2 class="rail-title" data-i18n="history">History</h2>
-        <button class="btn btn-ghost btn-sm" id="btnRefreshHistory" data-i18n="refresh">Refresh</button>
-      </div>
-      <div class="rail-list" id="historyList"></div>
-      <p class="caption" style="margin-top:var(--space-3); line-height:1.5">
-        <span data-i18n="audit.note">The audit log keeps questions, SQL and metadata — never result sets.</span>
-      </p>
-      <div id="auditNote"></div>
-    </section>
+    <details class="source-section" open>
+      <summary><h2 class="rail-title" data-i18n="ui.sources"></h2><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg></summary>
+      <span class="sr-only" id="hitCount"></span><div class="rail-list" id="sourceList"></div><div id="sourcesPool"></div><div id="sourcesNote"></div>
+    </details>
   </aside>
-
-  <!-- ─── center ────────────────────────────────────────────────── -->
-  <main class="workbench" id="workbench" data-od-id="workbench">
-    <div class="workbench-inner">
-
-      <section data-od-id="composer">
-        <div class="composer">
-          <label for="q" class="eyebrow" style="display:block;margin-bottom:var(--space-3)" data-i18n="ask">Ask</label>
-          <textarea id="q" rows="3" data-i18n-ph="ask.ph" placeholder="Describe the data you want."></textarea>
-          <div class="composer-foot">
-            <div class="composer-foot-left">
-              <button class="toggle" id="btnLongTerm" aria-pressed="false" type="button">
-                <span class="track" aria-hidden="true"></span><span data-i18n="longTerm">Long-term memory</span>
-              </button>
-              <span class="chip mono" id="sessionChip">s1</span>
-            </div>
-            <div class="composer-foot-left">
-              <span class="kbd">⌘ ↵</span>
-              <button class="btn btn-primary" id="btnRun" data-od-id="run-query" data-i18n="run">Run query</button>
-            </div>
-          </div>
+  <main class="workbench is-empty" id="workbench" data-od-id="workbench">
+    <div class="chat-header"><span class="chat-title"><span class="dot"></span><span class="chat-title-text" id="chatTitle" data-i18n="chat.workspace"></span></span><button class="btn btn-ghost btn-sm" id="btnTrace" aria-expanded="false" aria-controls="tracePanel"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg><span data-i18n="chat.details"></span></button></div>
+    <div class="conn-banner" id="connectionBanner" hidden><span data-i18n="ui.offline"></span><button type="button" id="reconnect" data-i18n="ui.reconnect"></button></div>
+    <div class="chat-scroll" id="chatScroll"><div class="workbench-inner"><section id="result" data-od-id="result" aria-label="Conversation" aria-live="polite" aria-relevant="additions text" aria-busy="false"></section></div></div>
+    <div class="composer-dock" data-od-id="composer">
+      <button class="btn" id="jumpLatest" hidden><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg><span data-i18n="chat.latest"></span></button>
+      <div class="edit-note" id="editNote" hidden><span data-i18n="chat.editing"></span><button class="btn btn-ghost btn-sm" id="cancelEdit" data-i18n="cancel"></button></div>
+      <form class="composer" id="composerForm">
+        <label for="q" class="sr-only" data-i18n="ask"></label>
+        <textarea id="q" rows="1" data-i18n-ph="ask.ph"></textarea>
+        <div class="composer-foot">
+          <div class="composer-foot-left"><button class="toggle" id="btnLongTerm" aria-pressed="false" type="button"><span class="track" aria-hidden="true"></span><span data-i18n="longTerm"></span></button><span class="session-label" id="sessionChip"></span></div>
+          <div class="composer-tools"><span class="composer-mode"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span data-i18n="chat.readonly"></span></span><button class="send-btn" id="btnRun" type="submit" data-od-id="run-query" data-i18n-aria="run" disabled><svg class="icon" aria-hidden="true"><use href="#i-arrow"/></svg></button></div>
         </div>
-        <div class="ask-chips" style="margin-top:var(--space-3)" id="askChips"></div>
-        <div id="composerNote"></div>
-      </section>
-
-      <section id="result" data-od-id="result" aria-live="polite" aria-busy="false"></section>
-
-      
-
+      </form>
+      <p class="composer-hint" data-i18n="chat.hint"></p><div class="suggestions" id="suggestions"></div><div class="ask-chips" id="askChips"></div><div id="composerNote"></div>
     </div>
   </main>
-
-  <!-- ─── right rail ────────────────────────────────────────────── -->
-  <aside class="rail rail-r" data-od-id="rail-trace">
-    <section>
-      <h2 class="rail-title" style="margin-bottom:var(--space-4)" data-i18n="pipe.title">Pipeline</h2>
-      <div class="pipe" id="pipeline"></div>
-    </section>
-    <section data-od-id="rail-meta">
-      <h2 class="rail-title" style="margin-bottom:var(--space-4)" data-i18n="meta.title">Metadata</h2>
-      <dl class="kv" id="metaList"></dl>
-    </section>
+  <aside class="rail rail-r" id="tracePanel" data-od-id="rail-trace" hidden>
+    <div class="trace-heading"><h2 class="rail-title" data-i18n="chat.details"></h2><button class="icon-btn" id="closeTrace" data-i18n-aria="chat.close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+    <section><h3 class="rail-title" style="margin-bottom:16px" data-i18n="pipe.title"></h3><div class="pipe" id="pipeline"></div></section>
+    <section data-od-id="rail-meta"><h3 class="rail-title" style="margin-bottom:16px" data-i18n="meta.title"></h3><dl class="kv" id="metaList"></dl></section>
   </aside>
 </div>
+<div id="toast" role="status" hidden></div>
 
 <!-- ─── settings dialog ─────────────────────────────────────────── -->
 <dialog id="dlgSettings" data-od-id="settings-dialog">
@@ -573,11 +729,11 @@ dialog::backdrop { background: color-mix(in oklch, var(--fg) 34%, transparent); 
       </div>
       <div class="grid-2">
         <div class="field">
-          <label for="setUser">user_id</label>
+          <label for="setUser" data-i18n="ui.user">User ID</label>
           <input class="input" id="setUser" placeholder="li" autocomplete="off">
         </div>
         <div class="field">
-          <label for="setSession">session_id</label>
+          <label for="setSession" data-i18n="ui.session">Session ID</label>
           <input class="input" id="setSession" placeholder="s1" autocomplete="off">
         </div>
       </div>
@@ -593,7 +749,7 @@ dialog::backdrop { background: color-mix(in oklch, var(--fg) 34%, transparent); 
   <div class="sheet stack-6">
     <h2 class="h3" data-i18n="shortcuts">Keyboard shortcuts</h2>
     <dl class="kv">
-      <dt data-i18n="sc.submit">Run query</dt><dd>⌘ / Ctrl + Enter</dd>
+      <dt data-i18n="sc.submit">Run query</dt><dd>Enter · Shift + Enter ↵</dd>
       <dt data-i18n="sc.focus">Focus question box</dt><dd>/</dd>
       <dt data-i18n="sc.settings">Open connection settings</dt><dd>⌘ / Ctrl + K</dd>
       <dt data-i18n="sc.close">Close dialog</dt><dd>Esc</dd>
@@ -606,10 +762,70 @@ dialog::backdrop { background: color-mix(in oklch, var(--fg) 34%, transparent); 
 
 <script>
 /* ─── i18n ──────────────────────────────────────────────────────────
-   界面文案字典。默认英文；中文为对照。业务数据（库名、表名、SQL、
+   界面文案字典。首次打开跟随浏览器语言；保留用户选择。业务数据（库名、表名、SQL、
    后端返回的 answer/reason/detail）不翻译——那是数据，不是界面。 */
 const I18N = {
   en: {
+    'ui.tableHint': 'Scroll horizontally to see all columns', 'ui.user': 'User ID', 'ui.session': 'Conversation ID', 'ui.errorDetails': 'Technical details',
+    "ui.search": "Search questions…",
+    "ui.noMatches": "No matching questions. Try a different keyword.",
+    "ui.versions": "{n} earlier runs",
+    "ui.sources": "Previously queried sources",
+    "ui.closeSidebar": "Close sidebar",
+    "ui.kicker": "YOUR DATA, IN CONVERSATION",
+    "ui.welcome": "Good questions. Clear answers.",
+    "ui.intro": "Explore your data in plain language. Start with a question, then go a little deeper.",
+    "ui.lookup": "Find records",
+    "ui.lookupHint": "Get the details you need",
+    "ui.lookupPrompt": "I want to find specific business records. Help me identify the relevant tables and filters.",
+    "ui.trends": "Explore trends",
+    "ui.trendsHint": "See what changed over time",
+    "ui.trendsPrompt": "Help me analyze trends in my business data. First identify the available metrics and date fields.",
+    "ui.compare": "Compare results",
+    "ui.compareHint": "Look at the differences",
+    "ui.comparePrompt": "I want to compare business performance across groups. Help me identify the available dimensions and metrics.",
+    "ui.comment": "Add a comment (optional)",
+    "ui.results": "Query results",
+    "ui.offline": "Connection lost. Your draft is kept here.",
+    "ui.reconnect": "Reconnect",
+    "ui.historyError": "Could not load history. Check the connection or API key and refresh.",
+    "ui.elapsed": "Waiting {n}s",
+    "ui.historyInfo": "Viewing a saved query. Run it again to get current data.",
+    "ui.retryHint": "Ask again",
+    "ui.workspace": "New conversation",
+
+    "chat.workspace": "Your data workspace",
+    "chat.details": "Query details",
+    "chat.latest": "Jump to latest",
+    "chat.sidebar": "Toggle sidebar",
+    "chat.readonly": "Read only",
+    "chat.hint": "Enter to send · Shift + Enter for a new line. Verify important results.",
+    "chat.close": "Close details",
+    "chat.editing": "Editing a message · send to ask again",
+    "chat.kicker": "A LITTLE CURIOSITY. A LOT OF CLARITY.",
+    "chat.welcome": "What would you like to explore?",
+    "chat.intro": "Ask a question in your own words. Turn your business data into answers you can work with.",
+    "chat.cap.data": "Connected data",
+    "chat.cap.sql": "Transparent SQL",
+    "chat.cap.safe": "Read-only queries",
+    "chat.emptyHistory": "Your questions will appear here.",
+    "chat.thinking": "Looking into your question…",
+    "chat.pending": "Waiting for the query result. Execution details appear when it completes.",
+    "chat.stop": "Stop waiting",
+    "chat.stopped": "Stopped waiting. The query may still finish on the server.",
+    "chat.copy": "Copy answer",
+    "chat.copyQuestion": "Copy question",
+    "chat.edit": "Edit and resend",
+    "chat.retry": "Ask again",
+    "chat.sql": "SQL & result tables",
+    "chat.copyFailed": "Copy failed. Please select and copy the text.",
+    "chat.you": "You",
+    "chat.error": "Could not complete this query",
+    "chat.session": "Session",
+    "chat.feedback": "Was this helpful?",
+    "chat.historyOnly": "Historical SQL · results are not saved",
+    "chat.more": "View query details",
+
     'title': 'AI SQL Agent · Console',
     'skip': 'Skip to question box',
     'env.readonly': 'read-only',
@@ -622,7 +838,7 @@ const I18N = {
     'conn.down': 'Service unreachable',
     'settings': 'Connection settings',
     'shortcuts': 'Keyboard shortcuts',
-    'newQuery': 'New query',
+    'newQuery': 'New conversation',
     'sources': 'Data sources',
     'sources.empty': 'Nothing yet. After a query runs, the databases and tables the backend actually hit will be listed here.',
     'sources.tables': '{n} tables',
@@ -634,9 +850,9 @@ const I18N = {
     'sources.prefill': 'In {db}, ',
     'history': 'History',
     'refresh': 'Refresh',
-    'audit.note': 'The audit log keeps questions, SQL and metadata — never result sets.',
+    'audit.note': 'History keeps questions and SQL. Result data stays in this tab.',
     'ask': 'Ask',
-    'ask.ph': 'Describe the data you want. For example: suppliers with an on-time rate below 0.9, plus their latest inbound batch and unit price',
+    'ask.ph': 'What would you like to know about your data?',
     'longTerm': 'Long-term memory',
     'run': 'Run query',
     'run.busy': 'Running',
@@ -775,6 +991,66 @@ const I18N = {
     'xp.validate.src': 'result_validation/',
   },
   zh: {
+    'ui.tableHint': '左右滑动可查看全部列', 'ui.user': '用户标识', 'ui.session': '会话标识', 'ui.errorDetails': '查看错误详情',
+    "ui.search": "搜索历史问题…",
+    "ui.noMatches": "没有找到相关问题，试试其他关键词。",
+    "ui.versions": "还有 {n} 次查询记录",
+    "ui.sources": "已查询的数据源",
+    "ui.closeSidebar": "关闭侧栏",
+    "ui.kicker": "让业务数据，成为对话的一部分",
+    "ui.welcome": "想了解什么，直接问。",
+    "ui.intro": "查明细、看趋势、做对比。从一个问题开始，逐步找到你需要的答案。",
+    "ui.lookup": "查找明细",
+    "ui.lookupHint": "找到你关心的业务记录",
+    "ui.lookupPrompt": "我想查找具体的业务记录，请先帮我确认可用的数据表和筛选条件。",
+    "ui.trends": "分析趋势",
+    "ui.trendsHint": "了解数据如何随时间变化",
+    "ui.trendsPrompt": "我想分析业务数据的变化趋势，请先帮我确认可用的指标和时间字段。",
+    "ui.compare": "对比数据",
+    "ui.compareHint": "看清不同维度之间的差异",
+    "ui.comparePrompt": "我想对比不同分组的业务表现，请先帮我确认可用的分组维度和指标。",
+    "ui.comment": "补充说明（选填）",
+    "ui.results": "查询结果",
+    "ui.offline": "服务连接已断开，你输入的内容会保留在这里。",
+    "ui.reconnect": "重新连接",
+    "ui.historyError": "历史记录加载失败，请检查连接或 API Key 后刷新。",
+    "ui.elapsed": "已等待 {n} 秒",
+    "ui.historyInfo": "正在查看历史查询，重新运行可获取最新数据。",
+    "ui.retryHint": "重新查询",
+    "ui.workspace": "新对话",
+
+    "chat.workspace": "数据工作台",
+    "chat.details": "查询详情",
+    "chat.latest": "回到最新消息",
+    "chat.sidebar": "展开或收起侧栏",
+    "chat.readonly": "只读查询",
+    "chat.hint": "Enter 发送 · Shift + Enter 换行 · 重要结果请核对",
+    "chat.close": "关闭详情",
+    "chat.editing": "正在编辑消息 · 发送后重新查询",
+    "chat.kicker": "从一个问题，到一个清晰的答案",
+    "chat.welcome": "今天，想从数据中发现什么？",
+    "chat.intro": "用日常语言提问，让业务数据给你答案。\n从查询到分析，在这里自然地聊下去。",
+    "chat.cap.data": "连接业务数据",
+    "chat.cap.sql": "SQL 清晰可查",
+    "chat.cap.safe": "数据只读保护",
+    "chat.emptyHistory": "问过的问题会出现在这里。",
+    "chat.thinking": "正在分析你的问题…",
+    "chat.pending": "正在等待查询结果，完成后可查看执行详情。",
+    "chat.stop": "停止等待",
+    "chat.stopped": "已停止等待。查询仍可能在服务端完成。",
+    "chat.copy": "复制回答",
+    "chat.copyQuestion": "复制问题",
+    "chat.edit": "编辑并重发",
+    "chat.retry": "重新查询",
+    "chat.sql": "SQL 与结果表",
+    "chat.copyFailed": "复制失败，请选中文字手动复制。",
+    "chat.you": "你",
+    "chat.error": "这次查询未能完成",
+    "chat.session": "会话",
+    "chat.feedback": "这条回答有帮助吗？",
+    "chat.historyOnly": "历史 SQL · 结果集未保存",
+    "chat.more": "查看查询详情",
+
     'title': 'AI SQL Agent · 查询控制台',
     'skip': '跳到提问框',
     'env.readonly': '只读',
@@ -787,7 +1063,7 @@ const I18N = {
     'conn.down': '服务不可达',
     'settings': '连接设置',
     'shortcuts': '键盘快捷键',
-    'newQuery': '新建查询',
+    'newQuery': '新建对话',
     'sources': '数据源',
     'sources.empty': '还没有记录。跑一次查询后，这里会列出后端实际命中的库与表。',
     'sources.tables': '{n} 表',
@@ -799,9 +1075,9 @@ const I18N = {
     'sources.prefill': '{db} 里',
     'history': '会话历史',
     'refresh': '刷新',
-    'audit.note': '审计只保存问题、SQL 与元数据，不保存结果集。',
+    'audit.note': '历史保存问题与 SQL，结果数据仅在本次会话展示。',
     'ask': '提问',
-    'ask.ph': '用中文描述你要的数据，例如：准时率低于 0.9 的供应商，最近入库批次和单价是多少',
+    'ask.ph': '描述你想了解的数据…',
     'longTerm': '长期记忆',
     'run': '运行查询',
     'run.busy': '查询中',
@@ -982,7 +1258,7 @@ const pipeNote = (id) => {
 };
 
 const routeLabel = (r) => (r ? t('route.' + r) : '') || r || '';
-const anomalyLabel = (a) => t('anomaly.' + a) || a;
+const anomalyLabel = (a) => esc(t('anomaly.' + a) || a);
 
 const ICON = {
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5 9 17.5 20 6.5"/></svg>',
@@ -995,7 +1271,7 @@ const ICON = {
 const LS = 'ai-sql-console/v1';
 const state = {
   base: '', apiKey: '', userId: 'li', sessionId: 's1',
-  longTerm: false, live: false, explain: false, lang: 'en',
+  longTerm: false, live: false, explain: false, lang: navigator.language.startsWith('zh') ? 'zh' : 'en',
   history: [], current: null, activeTrace: null,
   feedback: {},   // trace_id -> 已提交的判定，用于回显
 };
@@ -1030,6 +1306,70 @@ const save = () => {
   else sessionStorage.removeItem(LS + '/key');
 };
 
+const turns = [];
+let activeTurn = null;
+let requestController = null;
+let editingDraft = null;
+let historyError = false;
+const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const actionButton = (label, name, cls) => `<button class="icon-btn ${cls}" type="button" aria-label="${t(label)}" title="${t(label)}">${icon(name)}</button>`;
+let toastTimer;
+function toast(message) {
+  $('toast').textContent = message; $('toast').hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 2200);
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); toast(t('copied')); }
+  catch (_) { toast(t('chat.copyFailed')); }
+}
+function updateComposer() {
+  const q = $('q'); q.style.height = 'auto'; q.style.height = Math.min(q.scrollHeight, 192) + 'px';
+  $('btnRun').disabled = !busy && !q.value.trim();
+  $('btnRun').innerHTML = icon(busy ? 'stop' : 'arrow');
+  $('btnRun').setAttribute('aria-label', t(busy ? 'chat.stop' : 'run'));
+  $('btnRun').title = t(busy ? 'chat.stop' : 'run');
+  ['btnNew', 'btnSettings', 'btnLang', 'btnExplain', 'btnLongTerm', 'btnRefreshHistory', 'reconnect'].forEach((id) => { $(id).disabled = busy; });
+  document.querySelectorAll('.js-edit, .js-retry, .js-rerun, .hist, .js-fb, .js-fb-reset').forEach((el) => { el.disabled = busy; });
+}
+function setDraft(text) { $('q').value = text; updateComposer(); $('q').focus(); }
+function closeMobileSidebar() {
+  if (matchMedia('(max-width: 900px)').matches) { $('sidebar').classList.remove('is-open'); $('workbench').inert = false; $('drawerBackdrop').hidden = true; $('btnSidebar').setAttribute('aria-expanded', 'false'); }
+}
+function scrollLatest(force = false) {
+  const viewport = $('chatScroll');
+  if (force || viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 180) {
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+  }
+  requestAnimationFrame(updateJump);
+}
+function updateJump() {
+  const el = $('chatScroll'); $('jumpLatest').hidden = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+}
+function resetConversation() {
+  turns.length = 0; activeTurn = null; state.current = null; state.activeTrace = null;
+  $('chatTitle').textContent = t('ui.workspace');
+  $('result').innerHTML = ''; $('editNote').hidden = true; editingDraft = null;
+}
+function createTurn(question) {
+  if (!turns.length) $('result').innerHTML = '';
+  $('workbench').classList.remove('is-empty');
+  const turn = { id: 'turn-' + crypto.randomUUID(), question, result: null, opts: {} };
+  turns.push(turn); activeTurn = turn;
+  $('chatTitle').textContent = question; $('chatTitle').title = question;
+  const el = document.createElement('article'); el.className = 'turn fade-in'; el.id = turn.id;
+  el.innerHTML = `<div class="user-message"><div class="user-bubble">${esc(question)}</div><div class="message-actions">${actionButton('chat.copyQuestion','copy','js-copy-question')}${actionButton('chat.edit','edit','js-edit')}</div></div><div class="assistant-label">${icon('spark')}<span>AI SQL Agent</span></div><div class="response"></div>`;
+  $('result').append(el);
+  el.querySelector('.js-copy-question').onclick = () => copyText(question);
+  el.querySelector('.js-edit').onclick = () => {
+    if (busy) return;
+    if (editingDraft === null) editingDraft = $('q').value;
+    $('editNote').hidden = false; setDraft(question);
+  };
+  closeMobileSidebar();
+  return turn;
+}
+function responseRoot(turn = activeTurn) { return turn ? $(turn.id).querySelector('.response') : $('result'); }
+
 /* ─── left rail ─────────────────────────────────────────────────── */
 function renderSources() {
   const hits = new Set(state.current?.selected_databases || []);
@@ -1052,7 +1392,7 @@ function renderSources() {
     }).join('');
     $('hitCount').textContent = hits.size ? t('sources.hitCount', { n: hits.size, m: dbs.length }) : t('sources.count', { n: dbs.length });
     $('sourceList').querySelectorAll('.src').forEach((el) => {
-      el.addEventListener('click', () => { $('q').value = t('sources.prefill', { db: el.dataset.db }); $('q').focus(); });
+      el.addEventListener('click', () => { setDraft(t('sources.prefill', { db: el.dataset.db })); closeMobileSidebar(); });
     });
   }
   const pooled = [...state_tables_pool].filter((t) =>
@@ -1063,39 +1403,32 @@ function renderSources() {
   $('sourcesNote').innerHTML = note('sources', true);
 }
 
-/* 示例问题取自这个账号真实问过的最近几条，不预设话术。 */
+/* Suggestions are editable starting points; recent questions come from real history. */
 function renderExamples() {
-  const seen = new Set(); const qs = [];
-  for (const h of state.history) {
-    if (h.query && !seen.has(h.query)) { seen.add(h.query); qs.push(h.query); }
-    if (qs.length === 3) break;
-  }
-  $('askChips').innerHTML = qs.length
-    ? `<span class="caption" style="align-self:center;margin-right:var(--space-1)">${t('recent')}</span>`
-      + qs.map((e) => `<button class="ask-chip" data-q="${esc(e)}">${esc(e)}</button>`).join('')
-    : '';
-  $('askChips').querySelectorAll('.ask-chip').forEach((c) => {
-    c.addEventListener('click', () => { $('q').value = c.dataset.q; $('q').focus(); });
-  });
+  const suggestions = [['lookup', 'search'], ['trends', 'chart'], ['compare', 'compare']];
+  $('suggestions').innerHTML = suggestions.map(([key, glyph]) => `<button class="suggestion" type="button" data-key="${key}">${icon(glyph)}<strong>${t('ui.' + key)}</strong><span>${t('ui.' + key + 'Hint')}</span></button>`).join('');
+  $('suggestions').querySelectorAll('button').forEach((btn) => { btn.onclick = () => setDraft(t('ui.' + btn.dataset.key + 'Prompt')); });
+  const qs = [...new Set(state.history.map((h) => h.query).filter(Boolean))].slice(0, 2);
+  $('askChips').innerHTML = qs.length ? `<span class="caption">${t('recent')}</span>` + qs.map((q) => `<button class="ask-chip" title="${esc(q)}" data-q="${esc(q)}">${esc(q)}</button>`).join('') : '';
+  $('askChips').querySelectorAll('button').forEach((btn) => { btn.onclick = () => setDraft(btn.dataset.q); });
 }
 
 function renderHistory() {
-  $('historyList').innerHTML = state.history.map((h) => `
-    <button class="hist" data-trace="${esc(h.trace_id)}" aria-current="${h.trace_id === state.activeTrace}" data-od-id="history-${esc(h.trace_id)}">
-      <span class="hist-q">${esc(h.query)}</span>
-      <span class="hist-meta">
-        <span class="hist-time">${esc(h.created_at)}</span>
-        ${h.duration_ms ? `<span class="hist-time">${Math.round(h.duration_ms)} ms</span>` : ''}
-        ${(h.databases || []).map((d) => `<span class="chip chip-db">${esc(d)}</span>`).join('')}
-        ${h.route === 'data_qa' ? `<span class="chip">${t('chip.conversational')}</span>` : ''}
-        ${h.degraded ? `<span class="chip chip-warn" title="${t('chip.degraded.title')}">${t('chip.degraded')}</span>` : ''}
-        ${h.has_risk ? `<span class="chip chip-warn">${t('chip.needsCheck')}</span>` : ''}
-        ${h.success === false ? `<span class="chip chip-danger">${t('chip.failed')}</span>` : ''}
-      </span>
-    </button>`).join('');
-  $('historyList').querySelectorAll('.hist').forEach((el) => {
-    el.addEventListener('click', () => openHistory(el.dataset.trace));
+  const search = $('historySearch').value.trim().toLocaleLowerCase();
+  const groups = new Map();
+  const openGroups = new Set([...$('historyList').querySelectorAll('details[open]')].map((el) => el.dataset.group));
+  state.history.forEach((h) => {
+    if (search && ![h.query, h.trace_id, ...(h.databases || [])].join(' ').toLocaleLowerCase().includes(search)) return;
+    const key = h.query || h.trace_id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(h);
   });
+  const row = (h) => `<button class="hist" title="${esc(h.query)}" data-trace="${esc(h.trace_id)}" aria-current="${h.trace_id === state.activeTrace}" ${busy ? 'disabled' : ''}>
+    <span class="hist-q">${esc(h.query)}</span><span class="hist-meta"><span class="hist-time">${esc(h.created_at)}</span>
+    ${h.success === false ? `<span class="chip chip-danger">${t('chip.failed')}</span>` : h.has_risk ? `<span class="chip chip-warn">${t('chip.needsCheck')}</span>` : h.degraded ? `<span class="chip chip-warn">${t('chip.degraded')}</span>` : ''}</span></button>`;
+  $('historyList').innerHTML = [...groups.entries()].map(([key, items]) => `<div class="history-group">${row(items[0])}${items.length > 1 ? `<details class="history-versions" data-group="${esc(key)}" ${openGroups.has(key) || items.slice(1).some((h) => h.trace_id === state.activeTrace) ? 'open' : ''}><summary>${t('ui.versions', { n: items.length - 1 })}</summary>${items.slice(1).map(row).join('')}</details>` : ''}</div>`).join('') || `<p class="caption history-empty">${t(historyError ? 'ui.historyError' : search ? 'ui.noMatches' : 'chat.emptyHistory')}</p>`;
+  if (historyError && groups.size) $('historyList').insertAdjacentHTML('beforeend', `<p class="caption history-empty history-status" role="status">${t('ui.historyError')}</p>`);
+  $('historyList').querySelectorAll('.hist').forEach((el) => { el.onclick = () => openHistory(el.dataset.trace); });
 }
 
 function applyStaticI18n() {
@@ -1104,6 +1437,10 @@ function applyStaticI18n() {
   document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
   document.querySelectorAll('[data-i18n-ph]').forEach((el) => { el.placeholder = t(el.dataset.i18nPh); });
   document.querySelectorAll('[data-i18n-aria]').forEach((el) => { el.setAttribute('aria-label', t(el.dataset.i18nAria)); });
+  $('result').setAttribute('aria-label', state.lang === 'zh' ? '对话' : 'Conversation');
+  document.querySelectorAll('[data-i18n-aria]').forEach((el) => { el.title = el.getAttribute('aria-label'); });
+  $('chatTitle').textContent = activeTurn ? activeTurn.question : t('ui.workspace');
+  $('btnLongTerm').title = state.lang === 'zh' ? '开启后，系统会记住你的长期偏好' : 'Remember preferences across conversations';
   $('btnLang').textContent = state.lang === 'en' ? '中文' : 'EN';
   $('btnLang').setAttribute('aria-label', t('lang.aria'));
 }
@@ -1135,7 +1472,7 @@ function renderPipeline() {
     { id: 'guard',     detail: t('pipe.guard.d'), s: 'done' },
     { id: 'context',   detail: t('pipe.context.d', { sid: esc(state.sessionId), onoff: t(state.longTerm ? 'on' : 'off') }), s: 'done' },
     { id: 'route',     detail: `${routeLabel(r.route)} — ${esc(r.reason)}`, s: 'done' },
-    { id: 'retrieval', detail: db ? t('pipe.retrieval.d', { dbs: r.retrieved.join(' · ') }) : skip, s: db ? 'done' : 'skip' },
+    { id: 'retrieval', detail: db ? t('pipe.retrieval.d', { dbs: (r.selected_databases || []).map(esc).join(' · ') }) : skip, s: db ? 'done' : 'skip' },
     { id: 'plan',      detail: db ? t('pipe.plan.d', { n: r.step_logs.length, mode: t(r.step_logs.length > 1 ? 'pipe.plan.cross' : 'pipe.plan.single') }) : skip, s: db ? 'done' : 'skip' },
     { id: 'sqlgen',    detail: db ? t('pipe.sqlgen.d', { n: repairs }) : skip, s: db ? 'done' : 'skip' },
     { id: 'execute',   detail: db ? t('pipe.execute.d', { trunc: r.step_logs.some((s) => s.truncated) ? t('pipe.execute.trunc') : '' }) : skip, s: db ? 'done' : 'skip' },
@@ -1165,31 +1502,17 @@ function renderPipeline() {
 }
 
 function renderPipelineRunning() {
-  let at = 0;
-  const paint = () => {
-    $('pipeline').innerHTML = PIPE_IDS.map((id, i) => `
-      <div class="pipe-step ${i < at ? 'is-done' : i === at ? 'is-active' : 'is-skip'}">
-        <span class="pipe-node">${i < at ? ICON.check : i === at ? '<span class="pulse"></span>' : ICON.dot}</span>
-        <span><span class="pipe-label">${t('pipe.' + id)}</span><span class="pipe-detail">${i === at ? t('pipe.active') : i < at ? '' : t('pipe.pending')}</span></span>
-      </div>`).join('');
-    const el = $('runStage');
-    if (el) el.textContent = t('pipe.' + PIPE_IDS[at]);
-  };
-  paint();
-  $('metaList').innerHTML = ['trace_id', t('meta.route'), t('meta.confidence'), t('meta.dbAccess'),
-    t('meta.rows'), t('meta.duration'), 'tokens', t('meta.degraded')]
-    .map((k) => `<dt>${k}</dt><dd>${t('running')}</dd>`).join('');
-  const timer = setInterval(() => { if (at < PIPE_IDS.length - 1) { at += 1; paint(); } }, 320);
-  return () => clearInterval(timer);
+  $('pipeline').innerHTML = `<p class="body-sm muted">${t('chat.pending')}</p>`;
+  $('metaList').innerHTML = '';
 }
 
-/* ─── center ────────────────────────────────────────────────────── */
 function emptyState() {
-  // 生产工具的空态只说怎么用，不讲产品主张；讲解由 composerNote 承担
-  $('result').innerHTML = `
-    <div class="empty fade-in">
-      <p class="body-sm muted">${t('empty.a')} <span class="kbd">⌘ ↵</span> ${t('empty.b')}</p>
-    </div>`;
+  $('workbench').classList.add('is-empty');
+  $('result').innerHTML = `<div class="welcome fade-in">
+    <div class="eyebrow">${icon('spark')}${t('ui.kicker')}</div>
+    <h1>${t('ui.welcome')}</h1><p>${t('ui.intro')}</p>
+  </div>`;
+  updateJump();
 }
 
 function stepTable(step, idx) {
@@ -1200,12 +1523,17 @@ function stepTable(step, idx) {
         <thead><tr>${step.columns.map((c) => `<th class="${step.numeric.includes(c) ? 'num-col' : ''}">${esc(c)}</th>`).join('')}</tr></thead>
         <tbody>${step.rows.map((row) => `<tr>${row.map((cell, i) => `<td class="${step.numeric.includes(step.columns[i]) ? 'num-col' : ''}">${esc(cell)}</td>`).join('')}</tr>`).join('')}</tbody>
       </table>
-    </div>`;
+    </div><p class="table-hint" hidden>${t('ui.tableHint')}</p>`;
 }
 
 function renderResult(r, opts = {}) {
-  state.current = r;
-  state.currentOpts = opts;
+  const turn = opts.turn || turns.find((item) => item.result?.trace_id === r.trace_id) || activeTurn;
+  turn.result = r; turn.opts = { ...opts, turn: undefined };
+  if (turn === activeTurn) { state.current = r; state.currentOpts = turn.opts; }
+  const root = responseRoot(turn);
+  const comment = root.querySelector('.js-fb-comment')?.value;
+  const expanded = opts.keepScroll ? [...root.querySelectorAll('details')].map((el) => el.open) : [];
+  const selected = opts.keepScroll ? [...root.querySelectorAll('.js-tab[aria-selected="true"]')].map((el) => el.dataset.pane) : [];
   const flags = r.step_logs
     .flatMap((s, i) => (s.risk_findings || []).map((f) => ({ ...f, db: s.database, stepIdx: i })))
     .sort((a, b) => (a.severity === 'block' ? 0 : 1) - (b.severity === 'block' ? 0 : 1));
@@ -1213,18 +1541,14 @@ function renderResult(r, opts = {}) {
 
   parts.push(`
     <div class="fade-in stack-6">
-      <div class="card" data-od-id="answer">
-        <div class="row-between" style="margin-bottom:var(--space-4)">
-          <span style="display:flex;gap:var(--space-2);flex-wrap:wrap">
-            <span class="chip">${routeLabel(r.route) || esc(r.route)}</span>
-            ${(r.selected_databases || []).map((d) => `<span class="chip chip-db">${esc(d)}</span>`).join('')}
-            ${!r.queried_database ? `<span class="chip">${t('chip.noDb')}</span>` : ''}
-            ${r.degraded ? `<span class="chip chip-warn" title="${t('chip.degraded.title')}">${t('chip.degraded')}</span>` : ''}
-          </span>
-          <span class="caption mono">${esc(r.trace_id)}</span>
+      <div class="card answer-card" data-od-id="answer">
+        <p class="answer-text">${esc(r.answer)}</p>
+        <div class="answer-meta">
+          ${(r.selected_databases || []).map((d) => `<span class="chip chip-db">${esc(d)}</span>`).join('')}
+          ${r.degraded ? `<span class="chip chip-warn" title="${t('chip.degraded.title')}">${t('chip.degraded')}</span>` : ''}
         </div>
-        <p class="h3" style="font-weight:500;line-height:1.5">${esc(r.answer)}</p>
-        <p class="caption" style="margin-top:var(--space-4);line-height:1.55">${esc(r.reason)}</p>
+        ${r.reason ? `<p class="answer-reason">${esc(r.reason)}</p>` : ''}
+        <div class="message-actions" style="margin:10px 0 0 -6px">${actionButton('chat.copy','copy','js-copy-answer')}${actionButton('chat.retry','refresh','js-retry')}${actionButton('chat.more','sliders','js-inspect')}</div>
         ${note('answer')}
       </div>`);
 
@@ -1249,10 +1573,7 @@ function renderResult(r, opts = {}) {
       </div>`);
   }
 
-  if (!r.step_logs.length) {
-    parts.push(`<div class="card"><p class="body-sm muted">${t('memoryOnly')}</p></div>`);
-  }
-
+  if (r.step_logs.length) parts.push(`<details class="query-details" open><summary>${t('ui.results')} <span class="muted">· ${t('step.rows', { n: r.step_logs.reduce((sum, step) => sum + step.row_count, 0) })}</span></summary>`);
   r.step_logs.forEach((s, i) => {
     parts.push(`
       <div class="card" id="stepcard-${i}" data-od-id="step-${i + 1}">
@@ -1268,16 +1589,17 @@ function renderResult(r, opts = {}) {
             <button class="btn btn-ghost btn-sm js-copy" data-sql="${esc(s.sql)}">${t('copySql')}</button>
           </span>
         </div>
-        <div class="tabs" role="tablist">
-          <button class="tab js-tab" id="tab-sql-${i}" role="tab" aria-selected="true" aria-controls="sql-${i}" data-pane="sql-${i}">SQL</button>
-          <button class="tab js-tab" id="tab-rows-${i}" role="tab" aria-selected="false" aria-controls="rows-${i}" data-pane="rows-${i}">${t('tab.rows', { n: s.row_count })}</button>
+        <div class="tabs" role="tablist" aria-label="${t('step', { n: i + 1 })}">
+          <button class="tab js-tab" id="tab-rows-${i}" role="tab" aria-selected="true" aria-controls="rows-${i}" data-pane="rows-${i}">${t('tab.rows', { n: s.row_count })}</button>
+          <button class="tab js-tab" id="tab-sql-${i}" role="tab" aria-selected="false" aria-controls="sql-${i}" data-pane="sql-${i}">SQL</button>
         </div>
-        <div id="sql-${i}" role="tabpanel" aria-labelledby="tab-sql-${i}"><pre class="sql">${esc(s.sql)}</pre></div>
-        <div id="rows-${i}" role="tabpanel" aria-labelledby="tab-rows-${i}" hidden>${stepTable(s, i)}</div>
+        <div id="rows-${i}" role="tabpanel" aria-labelledby="tab-rows-${i}">${stepTable(s, i)}</div>
+        <div id="sql-${i}" role="tabpanel" aria-labelledby="tab-sql-${i}" hidden><pre class="sql">${esc(s.sql)}</pre></div>
         ${i === 0 ? note('step') : ''}
       </div>`);
   });
 
+  if (r.step_logs.length) parts.push('</details>');
   if (r.trace_id && r.trace_id !== '\u2014') parts.push(feedbackCard(r));
 
   if (opts.fromHistory) {
@@ -1289,41 +1611,30 @@ function renderResult(r, opts = {}) {
   }
 
   parts.push(`</div>`);
-  $('result').innerHTML = parts.join('');
-  bindResult();
+  root.innerHTML = parts.join('').replace(/(id|aria-controls|aria-labelledby|data-pane)="((?:tab-)?(?:stepcard|sql|rows)-\d+)"/g, (_, attr, id) => `${attr}="${turn.id}-${id}"`);
+  bindResult(root, r, turn);
+  if (comment && root.querySelector('.js-fb-comment')) root.querySelector('.js-fb-comment').value = comment;
+  root.querySelectorAll('details').forEach((el, i) => { if (expanded[i] !== undefined) el.open = expanded[i]; });
+  root.querySelectorAll('.js-tab').forEach((el) => { if (selected.includes(el.dataset.pane)) el.click(); });
   renderSources();
   renderPipeline();
-  if (!opts.keepScroll) $('workbench').scrollTo({ top: 0, behavior: 'smooth' });
+  if (!opts.keepScroll) scrollLatest();
+  updateComposer();
 }
 
 /* 用户判定：答错的进评测集，确认对的成为同类问题的参考写法。
    这是「工具越用越准」唯一不依赖我们自己出题的数据来源。 */
 function feedbackCard(r) {
   const sent = state.feedback[r.trace_id];
-  if (sent) {
-    return `
-      <div class="card" data-od-id="feedback">
-        <div class="fb-done">
-          ${ICON.check}
-          <span class="body-sm">${t('fb.sent.' + sent)}</span>
-          <button class="btn btn-ghost btn-sm js-fb-reset">${t('fb.change')}</button>
-        </div>
-      </div>`;
-  }
-  return `
-    <div class="card" data-od-id="feedback">
-      <div class="row-between" style="margin-bottom:var(--space-3)">
-        <span class="h3" style="font-size:var(--text-lg)">${t('fb.title')}</span>
-      </div>
-      <p class="caption" style="line-height:1.55;margin-bottom:var(--space-4)">${t('fb.hint')}</p>
-      <div class="fb">
-        <button class="btn btn-secondary btn-sm fb-btn js-fb" data-verdict="correct">${t('fb.correct')}</button>
-        <button class="btn btn-secondary btn-sm fb-btn js-fb" data-verdict="wrong">${t('fb.wrong')}</button>
-        <button class="btn btn-ghost btn-sm fb-btn js-fb" data-verdict="unsure">${t('fb.unsure')}</button>
-      </div>
-      <textarea class="fb-comment js-fb-comment" rows="1" placeholder="${t('fb.comment.ph')}"></textarea>
-      <p class="caption js-fb-status" role="status" style="margin-top:var(--space-3)"></p>
-    </div>`;
+  if (sent) return `<div class="card feedback-card" data-od-id="feedback"><div class="fb-done">${ICON.check}<span class="body-sm">${t('fb.sent.' + sent)}</span><button class="btn btn-ghost btn-sm js-fb-reset">${t('fb.change')}</button></div></div>`;
+  return `<div class="card feedback-card" data-od-id="feedback">
+    <div class="feedback-top"><span class="caption">${t('chat.feedback')}</span><div class="fb">
+      <button class="btn btn-secondary btn-sm fb-btn js-fb" data-verdict="correct">${t('fb.correct')}</button>
+      <button class="btn btn-secondary btn-sm fb-btn js-fb" data-verdict="wrong">${t('fb.wrong')}</button>
+      <button class="btn btn-ghost btn-sm fb-btn js-fb" data-verdict="unsure">${t('fb.unsure')}</button>
+    </div></div><details class="feedback-note"><summary>${t('ui.comment')}</summary>
+    <textarea class="fb-comment js-fb-comment" rows="2" aria-label="${t('ui.comment')}" placeholder="${t('fb.comment.ph')}"></textarea></details>
+    <p class="caption js-fb-status" role="status"></p></div>`;
 }
 
 async function submitFeedback(traceId, verdict, comment, statusEl) {
@@ -1341,73 +1652,69 @@ async function submitFeedback(traceId, verdict, comment, statusEl) {
     state.feedback[traceId] = verdict;
     const entry = state.history.find((x) => x.trace_id === traceId);
     if (entry) entry.verdict = verdict;
-    if (state.current && state.current.trace_id === traceId) {
-      renderResult(state.current, { ...state.currentOpts, keepScroll: true });
-    }
+    const turn = turns.find((item) => item.result?.trace_id === traceId);
+    if (turn) renderResult(turn.result, { ...turn.opts, turn, keepScroll: true });
     renderHistory();
   } catch (err) {
     if (statusEl) statusEl.textContent = `${t('fb.failed')}：${err.message}`;
   }
 }
 
-function bindResult() {
-  $('result').querySelectorAll('.js-tab').forEach((tab) => {
+function bindResult(root = responseRoot(), r = state.current, turn = activeTurn) {
+  root.querySelectorAll('.js-tab').forEach((tab) => {
+    tab.tabIndex = tab.getAttribute('aria-selected') === 'true' ? 0 : -1;
     tab.addEventListener('click', () => {
-      const group = tab.closest('.tabs');
-      group.querySelectorAll('.js-tab').forEach((t) => {
-        t.setAttribute('aria-selected', String(t === tab));
-        document.getElementById(t.dataset.pane).hidden = t !== tab;
+      tab.closest('.tabs').querySelectorAll('.js-tab').forEach((other) => {
+        other.setAttribute('aria-selected', String(other === tab)); other.tabIndex = other === tab ? 0 : -1;
+        $(other.dataset.pane).hidden = other !== tab;
       });
     });
-  });
-  $('result').querySelectorAll('.js-copy').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(btn.dataset.sql); } catch (_) {}
-      const old = btn.textContent; btn.textContent = t('copied');
-      setTimeout(() => { btn.textContent = old; }, 1400);
+    tab.addEventListener('keydown', (e) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+      e.preventDefault();
+      const tabs = [...tab.closest('.tabs').children];
+      const next = e.key === 'Home' ? tabs[0] : e.key === 'End' ? tabs.at(-1) : tabs.find((item) => item !== tab);
+      next.click(); next.focus();
     });
   });
-  $('result').querySelectorAll('.js-jump').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const i = btn.dataset.step;
-      const card = document.getElementById(`stepcard-${i}`);
+  root.querySelectorAll('.js-copy').forEach((btn) => { btn.onclick = () => copyText(btn.dataset.sql); });
+  root.querySelectorAll('.js-jump').forEach((btn) => {
+    btn.onclick = () => {
+      const card = $(turn.id + '-stepcard-' + btn.dataset.step);
       if (!card) return;
-      const rowsTab = card.querySelector(`.js-tab[data-pane="rows-${i}"]`);
-      if (rowsTab) rowsTab.click();
-      const wb = $('workbench');
-      wb.scrollTo({ top: card.getBoundingClientRect().top - wb.getBoundingClientRect().top + wb.scrollTop - 16, behavior: 'smooth' });
-      card.classList.remove('flash');
-      void card.offsetWidth;
-      card.classList.add('flash');
-      setTimeout(() => card.classList.remove('flash'), 900);
-    });
+      card.closest('details').open = true;
+      card.querySelector('.js-tab[data-pane$="rows-' + btn.dataset.step + '"]')?.click();
+      card.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+      card.classList.add('flash'); setTimeout(() => card.classList.remove('flash'), 900);
+    };
   });
-  $('result').querySelectorAll('.js-fb').forEach((btn) => {
-    btn.addEventListener('click', () => {
+  root.querySelectorAll('.js-fb').forEach((btn) => {
+    btn.onclick = async () => {
       const card = btn.closest('.card');
-      const comment = card.querySelector('.js-fb-comment');
-      const status = card.querySelector('.js-fb-status');
-      card.querySelectorAll('.js-fb').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
-      submitFeedback(state.current.trace_id, btn.dataset.verdict, comment ? comment.value.trim() : '', status);
-    });
+      const buttons = card.querySelectorAll('.js-fb'); buttons.forEach((b) => { b.disabled = true; });
+      await submitFeedback(r.trace_id, btn.dataset.verdict, card.querySelector('.js-fb-comment')?.value.trim(), card.querySelector('.js-fb-status'));
+      buttons.forEach((b) => { b.disabled = busy; });
+    };
   });
-  const fbReset = $('result').querySelector('.js-fb-reset');
-  if (fbReset) fbReset.addEventListener('click', () => {
-    delete state.feedback[state.current.trace_id];
-    renderResult(state.current, { ...state.currentOpts, keepScroll: true });
-  });
-
-  const rerun = $('result').querySelector('.js-rerun');
-  if (rerun) rerun.addEventListener('click', () => { run(); });
+  const reset = root.querySelector('.js-fb-reset');
+  if (reset) reset.onclick = () => { delete state.feedback[r.trace_id]; renderResult(r, { ...turn.opts, turn, keepScroll: true }); };
+  const copy = root.querySelector('.js-copy-answer'); if (copy) copy.onclick = () => copyText(r.answer);
+  root.querySelectorAll('.js-rerun, .js-retry').forEach((btn) => { btn.onclick = () => { if (!busy) run(turn.question); }; });
+  const inspect = root.querySelector('.js-inspect');
+  if (inspect) inspect.onclick = () => { state.current = r; renderPipeline(); showTrace(true); };
 }
 
 function openHistory(trace) {
+  if (busy) return;
   const h = state.history.find((x) => x.trace_id === trace);
   if (!h) return;
+  resetConversation();
+  createTurn(h.query);
+  activeTurn.historyTrace = trace;
   state.activeTrace = trace;
-  $('q').value = h.query;
+  setDraft('');
   renderHistory();
-  if (h.full) { renderResult(structuredClone(h.full), { fromHistory: true }); return; }
+  if (h.full) { renderResult(structuredClone(h.full), { fromHistory: true }); scrollLatest(true); return; }
 
   state.current = {
     trace_id: h.trace_id, route: h.route, queried_database: !!(h.databases || []).length,
@@ -1433,7 +1740,7 @@ function openHistory(trace) {
       </div>`;
   }).join('');
 
-  $('result').innerHTML = `
+  responseRoot().innerHTML = `
     <div class="fade-in stack-6">
       <div class="card" data-od-id="history-notice">
         <div class="row-between" style="margin-bottom:var(--space-4)">
@@ -1443,10 +1750,10 @@ function openHistory(trace) {
             ${h.degraded ? `<span class="chip chip-warn" title="${t('chip.degraded.title')}">${t('chip.degraded')}</span>` : ''}
             ${h.success === false ? `<span class="chip chip-danger">${t('chip.failed')}</span>` : ''}
           </span>
-          <span class="caption mono">${esc(h.trace_id)}</span>
+
         </div>
-        <p class="h3" style="font-weight:500;line-height:1.5">${esc(h.query)}</p>
-        ${h.error ? `<p class="body-sm" style="margin-top:var(--space-3);color:color-mix(in oklch, var(--danger), black 22%)">${esc(h.error)}</p>` : ''}
+        <p class="body-sm">${t('ui.historyInfo')}</p>
+        ${h.error ? `<details class="feedback-note"><summary>${t('ui.errorDetails')}</summary><pre class="sql">${esc(h.error)}</pre></details>` : ''}
         <p class="caption" style="margin-top:var(--space-4);line-height:1.55">${t('history.notice')}</p>
         <button class="btn btn-secondary btn-sm js-rerun" style="margin-top:var(--space-4)">${t('rerun')}</button>
       </div>
@@ -1455,6 +1762,7 @@ function openHistory(trace) {
   bindResult();
   renderSources();
   renderPipeline();
+  scrollLatest(true); updateComposer();
 }
 
 /* ─── 连接 & 查询 ───────────────────────────────────────────────── */
@@ -1467,12 +1775,12 @@ async function checkHealth() {
     // /health 不走鉴权，所以它只回答「服务在不在」
     const res = await fetch(api('/health'));
     if (!res.ok) throw new Error(String(res.status));
-    state.live = true;
+    state.live = true; $('connectionBanner').hidden = true;
     chip.className = 'chip status-chip is-live';
     $('connText').textContent = state.base ? t('conn.okTo', { base: state.base }) : t('conn.ok');
     loadHistory();
   } catch (_) {
-    state.live = false;
+    state.live = false; $('connectionBanner').hidden = false;
     chip.className = 'chip status-chip is-demo';
     $('connText').textContent = t('conn.down');
   }
@@ -1487,9 +1795,10 @@ async function loadHistory() {
     let res = await ask(true);
     // 鉴权开启时，拿别人的 user_id 查历史会被拒；退回查这个 Key 自己的
     if (res.status === 403) res = await ask(false);
-    if (!res.ok) return;
+    if (!res.ok) throw new Error(String(res.status));
     const data = await res.json();
-    if (!Array.isArray(data.items)) return;
+    if (!Array.isArray(data.items)) throw new Error('Invalid history response');
+    historyError = false;
     state.history = data.items.map((it) => {
       const prev = state.history.find((x) => x.trace_id === it.trace_id);
       return {
@@ -1499,13 +1808,13 @@ async function loadHistory() {
         databases: it.databases || [], tables: it.tables || [], sqls: it.sqls || [],
         success: it.success, degraded: it.degraded, error: it.error,
         duration_ms: it.duration_ms ?? null, total_tokens: it.total_tokens ?? null,
-        has_risk: prev ? prev.has_risk : false,
+        has_risk: !!it.has_risk || (prev ? prev.has_risk : false),
         full: prev ? prev.full : null,
       };
     });
     state.history.forEach((h) => absorbSources(h.databases, h.tables));
-    renderHistory(); renderExamples(); renderSources();
-  } catch (_) {}
+    renderHistory(); renderExamples(); renderSources(); updateComposer();
+  } catch (_) { historyError = true; renderHistory(); }
 }
 
 function normalize(payload, ms) {
@@ -1519,7 +1828,7 @@ function normalize(payload, ms) {
     confidence: typeof payload.confidence === 'number' ? payload.confidence : null,
     queried_database: !!payload.queried_database,
     selected_databases: payload.selected_databases || [],
-    retrieved: steps.map((s) => s.database),
+    retrieved: [], // /query does not include retrieved table names; /history supplies them.
     degraded: !!payload.degraded, degrade_reason: payload.degrade_reason || '',
     duration_ms: ms, total_tokens: null,   // /query 不返回用量，稍后从 /history 回填
     step_logs: steps.map((s) => {
@@ -1528,7 +1837,7 @@ function normalize(payload, ms) {
         return acc;
       }, []);
       const numeric = cols.filter((c) =>
-        s.rows.some((r) => typeof r[c] === 'number') && s.rows.every((r) => r[c] == null || typeof r[c] === 'number'));
+        (s.rows || []).some((r) => typeof r[c] === 'number') && (s.rows || []).every((r) => r[c] == null || typeof r[c] === 'number'));
       return {
         database: s.database, success: s.success, row_count: s.row_count, truncated: !!s.truncated,
         repair_attempts: s.repair_attempts || [], sql: s.final_sql || s.sql,
@@ -1541,30 +1850,27 @@ function normalize(payload, ms) {
 }
 
 let busy = false;
-async function run() {
-  const q = $('q').value.trim();
+async function run(question) {
+  const q = typeof question === 'string' ? question : $('q').value.trim();
   if (!q || busy) return;
-  busy = true;
-  const btn = $('btnRun');
-  btn.disabled = true;
-  btn.innerHTML = `<span class="spin" aria-hidden="true"></span>${t('run.busy')}`;
+  busy = true; state.current = null;
+  const turn = createTurn(q);
+  turn.pending = true;
+  if (typeof question !== 'string') { $('q').value = ''; editingDraft = null; $('editNote').hidden = true; }
+  requestController = new AbortController();
+  updateComposer();
   $('result').setAttribute('aria-busy', 'true');
-  $('result').innerHTML = `
-    <div class="card fade-in" data-od-id="running">
-      <span class="chip">${t('running')}</span>
-      <p class="h3" style="font-weight:500;margin-top:var(--space-4)">${esc(q)}</p>
-      <p class="body-sm muted" style="margin-top:var(--space-3)">${t('running.at', { stage: '<span id="runStage">' + t('pipe.guard') + '</span>' })}</p>
-    </div>`;
-  const stopPipeline = renderPipelineRunning();
-
+  responseRoot(turn).innerHTML = `<div class="thinking" role="status"><span class="thinking-dot"></span>${t('chat.thinking')}<span class="caption" id="waitElapsed"></span></div>`;
+  renderPipelineRunning(); scrollLatest(true);
   const started = performance.now();
+  const waitTimer = setInterval(() => { const el = $('waitElapsed'); if (el) el.textContent = t('ui.elapsed', { n: Math.floor((performance.now() - started) / 1000) }); }, 1000);
   try {
     const res = await fetch(api('/query'), {
-      method: 'POST',
+      method: 'POST', signal: requestController.signal,
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ user_id: state.userId || 'anonymous', session_id: state.sessionId || 's1', query: q, enable_long_term: state.longTerm }),
     });
-    const payload = await res.json().catch(() => ({}));
+    const payload = await res.json();
     if (!res.ok) throw Object.assign(new Error('http'), { status: res.status, detail: payload.detail });
     const r = normalize(payload, performance.now() - started);
     state.activeTrace = r.trace_id;
@@ -1576,18 +1882,22 @@ async function run() {
       duration_ms: r.duration_ms, total_tokens: null,
       has_risk: r.step_logs.some((s) => s.risk_findings.length), full: r,
     });
-    renderHistory(); renderExamples();
-    renderResult(r);
+    renderHistory(); renderExamples(); renderResult(r, { turn });
     backfillUsage(r.trace_id);
   } catch (err) {
-    if (!state.live) checkHealth();
-    errorNotice(err);
+    if (err.name === 'AbortError') {
+      turn.stopped = true;
+      responseRoot(turn).innerHTML = `<p class="body-sm muted">${t('chat.stopped')}</p><div class="message-actions">${actionButton('chat.retry','refresh','js-retry')}</div>`;
+      bindResult(responseRoot(turn), null, turn); renderPipeline();
+    } else {
+      if (!state.live) checkHealth();
+      turn.error = err; errorNotice(err, turn);
+    }
   } finally {
-    stopPipeline();
-    busy = false;
-    btn.disabled = false;
-    btn.textContent = t('run');
-    $('result').setAttribute('aria-busy', 'false');
+    clearInterval(waitTimer);
+    busy = false; turn.pending = false; requestController = null;
+    $('result').setAttribute('aria-busy', 'false'); updateComposer(); updateJump();
+    if (document.activeElement === $('btnRun')) $('q').focus();
   }
 }
 
@@ -1595,25 +1905,28 @@ async function run() {
 async function backfillUsage(traceId) {
   await loadHistory();
   const h = state.history.find((x) => x.trace_id === traceId);
-  if (!h) return;
-  h.full = state.current;
-  h.has_risk = !!(state.current && state.current.step_logs.some((x) => x.risk_findings.length));
-  if (!state.current || state.current.trace_id !== traceId) { renderHistory(); return; }
-  if (h.duration_ms != null) state.current.duration_ms = h.duration_ms;
-  if (h.total_tokens != null) state.current.total_tokens = h.total_tokens;
+  const turn = turns.find((x) => x.result?.trace_id === traceId);
+  if (!h || !turn) return;
+  h.full = turn.result;
+  h.has_risk = turn.result.step_logs.some((x) => x.risk_findings.length);
+  turn.result.retrieved = h.tables || [];
+  if (h.duration_ms != null) turn.result.duration_ms = h.duration_ms;
+  if (h.total_tokens != null) turn.result.total_tokens = h.total_tokens;
   renderHistory();
-  renderPipeline();
+  if (!busy) renderPipeline();
+  updateComposer();
 }
 
 const HTTP_HINT = (code) => (['401', '403', '429', '503'].includes(String(code)) ? t('err.' + code) : '');
-function errorNotice(err) {
+function errorNotice(err, turn = activeTurn) {
   state.current = null;
-  $('result').innerHTML = `
+  responseRoot(turn).innerHTML = `
     <div class="card fade-in" data-od-id="error-notice" style="border-color:color-mix(in oklch, var(--danger) 40%, var(--border))">
       <span class="chip chip-danger">${err.status ? `HTTP ${err.status}` : t('err.failed')}</span>
       <p class="h3" style="font-weight:500;margin-top:var(--space-4)">${esc(HTTP_HINT(err.status) || err.detail || t('err.generic'))}</p>
-      <button class="btn btn-secondary btn-sm" style="margin-top:var(--space-4)" onclick="document.getElementById('dlgSettings').showModal()">${t('err.check')}</button>
+      <button class="btn btn-secondary btn-sm" style="margin-top:var(--space-4)" onclick="document.getElementById('btnSettings').click()">${t('err.check')}</button><button class="btn btn-ghost btn-sm js-retry">${t('chat.retry')}</button>
     </div>`;
+  bindResult(responseRoot(turn), null, turn);
   renderSources();
   renderPipeline();
 }
@@ -1621,32 +1934,67 @@ function errorNotice(err) {
 /* ─── bindings ──────────────────────────────────────────────────── */
 $('skipToAsk').addEventListener('click', (e) => { e.preventDefault(); $('q').focus(); });
 function rerenderAll() {
-  applyStaticI18n();
-  renderStaticNotes();
-  renderSources();
-  renderHistory();
-  renderExamples();
-  if (state.current && state.current.step_logs && state.current.step_logs.length) {
-    renderResult(state.current, { ...(state.currentOpts || {}), keepScroll: true });
-  } else {
-    renderPipeline();
-  }
+  applyStaticI18n(); renderStaticNotes(); renderSources(); renderHistory(); renderExamples();
+  if (!turns.length) emptyState();
+  else if (activeTurn.historyTrace && !activeTurn.result) openHistory(activeTurn.historyTrace);
+  else turns.forEach((turn) => {
+    if (turn.result) renderResult(turn.result, { ...turn.opts, turn, keepScroll: true });
+    else if (turn.error) errorNotice(turn.error, turn);
+    else if (turn.stopped) {
+      responseRoot(turn).innerHTML = `<p class="body-sm muted">${t('chat.stopped')}</p><div class="message-actions">${actionButton('chat.retry','refresh','js-retry')}</div>`;
+      bindResult(responseRoot(turn), null, turn);
+    }
+    const el = $(turn.id);
+    el.querySelector('.js-copy-question').setAttribute('aria-label', t('chat.copyQuestion'));
+    el.querySelector('.js-copy-question').title = t('chat.copyQuestion');
+    el.querySelector('.js-edit').setAttribute('aria-label', t('chat.edit'));
+    el.querySelector('.js-edit').title = t('chat.edit');
+  });
+  renderPipeline(); updateComposer();
+  $('connText').textContent = t(state.live ? 'conn.ok' : 'conn.down');
 }
-$('btnLang').addEventListener('click', () => {
-  state.lang = state.lang === 'en' ? 'zh' : 'en';
-  save();
-  rerenderAll();
-  if (!state.live) $('connText').textContent = t('conn.down');
-});
+$('btnLang').addEventListener('click', () => { state.lang = state.lang === 'en' ? 'zh' : 'en'; save(); rerenderAll(); });
 $('btnExplain').addEventListener('click', () => {
-  state.explain = !state.explain;
-  $('btnExplain').setAttribute('aria-pressed', String(state.explain));
-  save();
-  rerenderAll();
+  state.explain = !state.explain; $('btnExplain').setAttribute('aria-pressed', String(state.explain)); save(); rerenderAll();
 });
-$('btnRun').addEventListener('click', run);
+$('composerForm').addEventListener('submit', (e) => { e.preventDefault(); busy ? requestController?.abort() : run(); });
+$('q').addEventListener('input', updateComposer);
 $('q').addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); if (!busy) run(); }
+});
+$('cancelEdit').onclick = () => { setDraft(editingDraft || ''); editingDraft = null; $('editNote').hidden = true; };
+$('chatScroll').addEventListener('scroll', updateJump, { passive: true });
+$('jumpLatest').onclick = () => scrollLatest(true);
+new ResizeObserver(() => {
+  updateJump();
+  document.querySelectorAll('.table-wrap').forEach((el) => { const hint = el.nextElementSibling; if (hint?.classList.contains('table-hint')) hint.hidden = el.scrollWidth <= el.clientWidth + 1; });
+}).observe($('result'));
+function showTrace(open) { $('tracePanel').hidden = !open; $('btnTrace').setAttribute('aria-expanded', String(open)); }
+$('btnTrace').onclick = () => showTrace($('tracePanel').hidden);
+$('closeTrace').onclick = () => { showTrace(false); $('btnTrace').focus(); };
+$('btnSidebar').onclick = () => {
+  if (matchMedia('(max-width: 900px)').matches) {
+    const open = $('sidebar').classList.toggle('is-open'); $('drawerBackdrop').hidden = !open; $('workbench').inert = open; $('btnSidebar').setAttribute('aria-expanded', String(open));
+    if (open) $('historySearch').focus();
+  } else {
+    $('sidebar').hidden = !$('sidebar').hidden;
+    $('console').style.gridTemplateColumns = $('sidebar').hidden ? 'minmax(0,1fr)' : '';
+    $('btnSidebar').setAttribute('aria-expanded', String(!$('sidebar').hidden));
+  }
+};
+const mobileLayout = matchMedia('(max-width: 900px)');
+function syncSidebar() {
+  $('drawerBackdrop').hidden = true; $('workbench').inert = false;
+  $('sidebar').hidden = false; $('sidebar').classList.remove('is-open'); $('console').style.gridTemplateColumns = '';
+  $('btnSidebar').setAttribute('aria-expanded', String(!mobileLayout.matches));
+}
+mobileLayout.addEventListener('change', syncSidebar); syncSidebar();
+$('historySearch').addEventListener('input', renderHistory);
+$('drawerBackdrop').onclick = () => { closeMobileSidebar(); $('btnSidebar').focus(); };
+$('reconnect').onclick = () => checkHealth();
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('#sidebar, #btnSidebar')) closeMobileSidebar();
+  if (!e.target.closest('#tracePanel, #btnTrace, .js-inspect')) showTrace(false);
 });
 $('btnLongTerm').addEventListener('click', () => {
   state.longTerm = !state.longTerm;
@@ -1654,8 +2002,11 @@ $('btnLongTerm').addEventListener('click', () => {
   save(); renderPipeline();
 });
 $('btnNew').addEventListener('click', () => {
-  state.current = null; state.activeTrace = null;
-  $('q').value = '';
+  if (busy) return;
+  resetConversation();
+  state.sessionId = 's-' + crypto.randomUUID().slice(0, 8);
+  $('sessionChip').textContent = state.sessionId; save();
+  setDraft(''); closeMobileSidebar();
   renderSources(); renderHistory(); renderPipeline(); emptyState();
   $('q').focus();
 });
@@ -1677,7 +2028,11 @@ $('dlgSettings').addEventListener('close', () => {
 });
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('btnSettings').click(); }
-  if (e.key === '/' && document.activeElement !== $('q') && !document.querySelector('dialog[open]')) { e.preventDefault(); $('q').focus(); }
+  if (e.key === 'Escape') {
+    if (!$('tracePanel').hidden) { showTrace(false); $('btnTrace').focus(); }
+    if ($('sidebar').classList.contains('is-open')) { closeMobileSidebar(); $('btnSidebar').focus(); }
+  }
+  if (e.key === '/' && !document.activeElement.matches('input, textarea, [contenteditable]') && !document.querySelector('dialog[open]')) { e.preventDefault(); $('q').focus(); }
 });
 
 /* ─── boot ──────────────────────────────────────────────────────── */
@@ -1691,8 +2046,11 @@ renderHistory();
 renderExamples();
 renderPipeline();
 emptyState();
+updateComposer();
 checkHealth();
 </script>
 
 
 </body></html>
+</body>
+</html>
