@@ -1,264 +1,185 @@
+<div align="center">
+
 # AI SQL Agent
 
-[English](README.md) | **简体中文**
+**用自然语言查询业务数据，让每条 SQL 都可控、可追溯。**
 
-> 让非技术用户用自然语言查询业务数据：系统理解问题、生成只读 SQL、执行并返回结果。
+面向 SQLite / PostgreSQL 的 Text2SQL 服务，支持跨库查询、业务语义、会话记忆与结果校验。
 
-AI SQL Agent 是一个可本地运行、也可部署到内网的 Text2SQL 服务。它支持多库查询、上下文记忆、数据权限、失败修复和全链路审计；没有模型 Key 时会自动使用 Mock，方便离线体验和测试。
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](pyproject.toml)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](src/ai_sql_agent/api)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?style=flat-square&logo=postgresql&logoColor=white)](deploy/docker-compose.pgvector.yml)
+[![CI](https://github.com/heyemlee/ai-sql-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/heyemlee/ai-sql-agent/actions/workflows/ci.yml)
 
-## 它能做什么
+[English](README.md) · **简体中文**
 
-| 能力 | 说明 |
-| --- | --- |
-| 自然语言查数 | 例如：`查询准时率低于 0.9 的供应商名称` |
-| 多库查询 | 自动拆分跨库问题；上一步结果会作为下一步的筛选条件 |
-| 对话与记忆 | 区分“查新数据”和“解释上次结果”，支持短期会话与个人长期记忆 |
-| 安全可控 | API Key、表/列权限、只读 SQL、行数与超时限制、限流与配额 |
-| 稳定可追踪 | SQL 失败自动修复；每次请求都有 `trace_id`、审计记录和指标 |
+[快速开始](#快速开始) · [系统架构](#系统架构) · [技术栈](#技术栈) · [关键设计](#关键设计) · [评测](#评测与当前边界)
 
-## 现在做到什么程度
+</div>
 
-2026-09-09 按 `benchmark/` 的发布门禁测量：模型 `claude-sonnet-5`，150 条全量跑三轮，
-使用内置演示元数据。**门禁尚未通过**；把数字写在这里，是让 README 和评测记录说同一句话。
+## 项目预览
 
-| 指标 | 门禁线 | 2026-09-08 | 2026-09-09 |
-| --- | --- | --- | --- |
-| 单库执行准确率 | ≥ 85% | 89.6% | **93.3%** ✅ |
-| 跨库执行准确率 | ≥ 90% | 73.3% | **85.3%** ❌ |
-| 静默错误率 | ≤ 3% | 10.0% | **5.3%** ❌ |
-| 风险提示误报率（护栏） | ≤ 20% | 5.9% | 5.6% ✅ |
-| 总体执行准确率 | — | 86.9% | **92.0%** |
+<!-- 截图准备好后：放到 docs/assets/screenshot.png，并把下方 src 改为 docs/assets/screenshot.png。 -->
+<p align="center">
+  <img src="docs/assets/screenshot-placeholder.svg" alt="项目主界面截图预留位置" width="960" />
+</p>
 
-两次之间的提升来自一处改动：SchemaGraph 给每条关联标注一对一 / 一对多 / 多对多，
-SQL 生成 Prompt 要求沿一对多 JOIN 之后按需加 `DISTINCT`，列举或分组时输出该表自己的主键。
-「漏 DISTINCT」这一桶由每轮约 8 条降到 1 条，没有把原本答对的题改错。引用前先读
-[测量记录](benchmark/baseline/2026-09-09/README.md)里的三条局限：演示元数据不是部署用的语义层，
-主键规则现在这版措辞只有一轮全量数据。
+> 例如：**“查询准时率低于 0.9 的供应商名称”** → 检索业务 Schema → 生成并执行只读 SQL → 返回结果、SQL 与风险提示。
 
-自己跑：`make gate`（需要模型凭证）或 `make gate-smoke`（离线子集）。
+- **跨库查数**：把问题拆成多个目标库上的查询，上一步结果作为下一步筛选条件。
+- **连续追问**：区分“查新数据”和“解释上次结果”，结合会话上下文与可选个人长期记忆。
+- **受控执行**：表列权限、只读连接、超时与行数限制；失败修复与结果风险检查分别处理。
+- **可复现验证**：内置四个演示库、离线 Mock、评测集与发布门禁，可本地运行或内网部署。
 
-## 一次请求如何流转
+## 系统架构
 
-```mermaid
-flowchart TD
-    A["1. 用户提问<br/>Web 页面或 POST /query"] --> B["2. 请求保护<br/>API Key · 权限 · 限流 · trace_id"]
-    B --> C["3. 读取上下文<br/>会话记忆 + 可选长期记忆"]
-    C --> D{"4. 意图路由"}
+![AI SQL Agent 系统架构](docs/assets/architecture.svg)
 
-    D -->|需要新数据| E["5. 理解问题<br/>时间归一化 · 关键词提取"]
-    E --> F["6. 找到可用 Schema<br/>库 → 表 → 字段检索<br/>BM25 + 向量 + RRF + 精排"]
-    F --> G["7. 规划查询步骤<br/>标注目标库，支持跨库回填"]
-    G --> H["8. 生成 SQL<br/>结合方言、Schema 和上一步结果"]
-    H --> I["9. 安全执行<br/>SQL 校验 · 只读连接 · 超时 · 行数上限"]
-    I --> J{"执行成功？"}
-    J -->|否| K["定位错误并修复 SQL<br/>最多重试 2 次"]
-    K --> I
-    J -->|是| L["10. 结果校验<br/>空结果、基数与语义风险提示"]
+使用 [Archify](https://github.com/tt-a1i/archify) 生成 · [交互版 HTML](docs/diagrams/architecture.html)（下载后用浏览器打开）· [可编辑 JSON](docs/diagrams/architecture.json)
 
-    D -->|解释历史结果 / 业务问答| M["基于记忆生成回答<br/>不访问数据库"]
-    L --> N["11. 返回结果<br/>答案 · SQL · 风险提示 · trace_id"]
-    M --> N
-    N --> O["12. 留痕与监控<br/>审计 · 日志 · 指标 · 调用用量"]
+图中展示逻辑模块，主体运行在同一个 Python 服务内。模型调用贯穿检索、规划、生成等阶段；会话、记忆与审计按配置使用 SQLite 或 PostgreSQL，向量索引可选 pgvector。
 
-    classDef entry fill:#EAF3FF,stroke:#3B82F6,stroke-width:2px,color:#172554;
-    classDef core fill:#F3EEFF,stroke:#8B5CF6,stroke-width:2px,color:#2E1065;
-    classDef safe fill:#FFF7E6,stroke:#F59E0B,stroke-width:2px,color:#78350F;
-    classDef result fill:#FFF1F2,stroke:#F43F5E,stroke-width:2px,color:#881337;
-    class A,B entry;
-    class C,D,E,F,G,H core;
-    class I,J,K,L safe;
-    class M,N,O result;
-```
+一次查数依次经过 **问题归一化 → 库 / 表 / 字段检索 → 分步规划 → SQL 生成 → 受控执行 → 结果校验**。解释历史结果走记忆问答分支；简单单库问题可跳过独立规划调用。默认使用进程内执行器，也提供可选的 MCP stdio 执行路径。
 
-说明：模型不可用时，路由会退回规则判断；SQL 主链路会优先重放该用户此前成功的同题 SQL，并在执行前重新检查权限。无法安全降级时，接口会明确返回降级原因。
+## 技术栈
 
-## 技术架构
+| 层次 | 技术 | 在项目中的作用 |
+| --- | --- | --- |
+| 运行时与 API | Python 3.11+ · FastAPI · Uvicorn · Pydantic v2 | 类型化请求响应、服务入口、配置校验 |
+| Web Console | 原生 HTML · CSS · JavaScript | 内置查询界面，由 FastAPI 提供静态页面 |
+| 模型接入 | HTTPX · OpenAI 兼容协议 · Anthropic 协议 | 规划、SQL 生成与问答；可连接 vLLM / Ollama 等兼容服务 |
+| Schema 检索 | 自实现 BM25 · NumPy 向量索引 · RRF · Rerank 客户端 | 融合关键词和语义召回，定位相关库、表与字段 |
+| 业务语义 | PyYAML · SchemaGraph | 定义字段含义、别名、指标口径、关联键与 JOIN 基数 |
+| SQL 与存储 | SQLite · PostgreSQL · psycopg · pgvector | 业务查询、状态持久化与可选向量检索后端 |
+| 权限与集成 | SQLGlot · MCP Python SDK · A2A / SSE | 基于 SQL AST 的授权检查、只读工具与 Agent 流式接口 |
+| 工程与运维 | pytest / unittest · GitHub Actions · Docker Compose | 自动化验证、镜像构建；结构化日志与 Prometheus 格式指标 |
 
-```mermaid
-flowchart TB
-    U["使用者 / BI 系统"] --> W["Web Console<br/>单页 HTML / JavaScript"]
-    U --> C["API 调用方"]
-    W --> A
-    C --> A
+依赖版本以 [pyproject.toml](pyproject.toml) 为准。默认无需向量数据库；未配置模型凭证时使用 Mock，适合验证链路，真实问答能力需要接入模型。
 
-    subgraph APP["AI SQL Agent · FastAPI 服务"]
-        A["入口层<br/>/query · /history · /memory/save"]
-        S["安全与治理<br/>API Key · 数据权限 · 限流 · 追踪"]
-        P["智能编排<br/>动态路由 · 记忆 · Text2SQL Pipeline"]
-        R["Schema 检索<br/>库 / 表 / 字段 · SchemaGraph"]
-        Q["查询生成与校验<br/>规划 · SQL 生成 · 修复 · 结果校验"]
-        X["MCP 路由执行<br/>SQL Guard · 方言 · 只读执行器"]
-        O["可观测性<br/>结构化日志 · Prometheus 指标 · 熔断"]
+## 关键设计
 
-        A --> S --> P
-        P --> R --> Q --> X
-        A -.记录.-> O
-        P -.记录.-> O
-        X -.记录.-> O
-    end
+| 工程问题 | 实现方式 | 源码入口 |
+| --- | --- | --- |
+| 业务问法与字段名不一致 | 用 YAML 管理业务描述、别名与指标口径，供检索、规划和口径解释共享 | [semantic](src/ai_sql_agent/semantic) |
+| Schema 太大，直接塞入 Prompt 成本高 | 库 → 表 → 字段分层召回，BM25 + 向量经 RRF 融合和精排；按相关性裁剪 SchemaGraph，优先保留关联键 | [retrieval](src/ai_sql_agent/retrieval) · [预算裁剪](src/ai_sql_agent/pipeline/schema_budget.py) |
+| 跨库不能直接执行一条 JOIN | 每步绑定目标库，通过中间结果回填条件；检查步骤与目标库是否一致，阻止 SQL 引用其他库的表 | [pipeline](src/ai_sql_agent/pipeline/text2sql_pipeline.py) |
+| SQL 能执行，却算错了 | SchemaGraph 标注 JOIN 基数，生成时约束去重与主键投影；执行后检查空结果、基数与语义一致性 | [graph_builder](src/ai_sql_agent/retrieval/graph_builder.py) · [validation](src/ai_sql_agent/validation) |
+| 模型生成了越权查询 | 在模型上下文中过滤无权 Schema；执行前用 SQLGlot 解析表、列与作用域，解析失败则拒绝，再叠加 SQL Guard 与数据库只读连接 | [AST 分析](src/ai_sql_agent/auth/sql_analysis.py) · [execution](src/ai_sql_agent/execution) |
+| 模型或 SQL 执行失败 | 错误定位与局部修复，默认最多 2 次；模型不可用时尝试重放该用户同题成功 SQL，重新授权并显式标记降级 | [repair](src/ai_sql_agent/repair) · [降级逻辑](src/ai_sql_agent/pipeline/text2sql_pipeline.py) |
+| 线上问题难定位、难复现 | `trace_id` 关联 SQL、库表、耗时、修复和 Token 用量；用户反馈可导出评测用例，确认正确的查询可用作生成范例 | [audit](src/ai_sql_agent/audit) · [feedback](src/ai_sql_agent/feedback) |
 
-    P -->|Prompt / Embedding| L["模型服务<br/>OpenAI 兼容 API / Anthropic / 内网 vLLM"]
-    R -->|向量索引| V["Schema 索引<br/>内存索引或 PostgreSQL + pgvector"]
-    P -->|会话与长期记忆| M["记忆存储<br/>SQLite 或 PostgreSQL + pgvector"]
-    A -->|审计与用量| D["审计存储<br/>SQLite 或 PostgreSQL"]
-    X -->|只读 SQL| DB["业务数据库<br/>SQLite Demo / PostgreSQL"]
-
-    classDef client fill:#EAF3FF,stroke:#3B82F6,stroke-width:2px,color:#172554;
-    classDef service fill:#F3EEFF,stroke:#8B5CF6,stroke-width:2px,color:#2E1065;
-    classDef external fill:#ECFDF5,stroke:#10B981,stroke-width:2px,color:#064E3B;
-    class U,W,C client;
-    class A,S,P,R,Q,X,O service;
-    class L,V,M,D,DB external;
-```
+执行默认限制为 **1,000 行、10 秒**，可通过 [PipelineConfig](src/ai_sql_agent/pipeline/objects.py) 调整。结果风险检查提供提示，不代表业务正确性保证。
 
 ## 快速开始
 
-### 1. 本地体验（无需模型 Key）
+需要 **Python 3.11+**。在全新目录中运行：
 
 ```bash
-pip install -e ".[dev]"          # 或 make install
+git clone https://github.com/heyemlee/ai-sql-agent.git
+cd ai-sql-agent
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 
-# 运行端到端示例（单库和跨库）
-python examples/end_to_end.py    # 或 make demo
-
-# 运行全部离线测试
-python -m pytest tests -q        # 或 make test
+# 无模型凭证时自动使用 Mock
+python examples/end_to_end.py
+./scripts/run_api.sh
 ```
 
-### 2. 启动网页和 API
-
-```bash
-./scripts/run_api.sh             # 或 make run
-```
-
-打开 [http://localhost:8000](http://localhost:8000) 即可提问。也可以直接调用接口：
+打开 [http://localhost:8000](http://localhost:8000) 使用查询页面，或直接请求 API：
 
 ```bash
 curl -X POST http://localhost:8000/query \
   -H 'Content-Type: application/json' \
-  -d '{
-    "user_id": "u1",
-    "session_id": "s1",
-    "query": "查询准时率低于 0.9 的供应商名称"
-  }'
+  -d '{"user_id":"u1","session_id":"s1","query":"查询准时率低于 0.9 的供应商名称"}'
 ```
 
-本地默认关闭 API Key 校验。生产环境请开启 `AI_SQL_AUTH_MODE=api_key`，并配置权限文件。
+### 接入真实模型
 
-### 3. 接入自己的业务库
+首次配置时复制 `.env.example` 为 `.env`，按服务商填写凭证、地址和模型名；已有 `.env` 时直接编辑。
 
-Demo 自带四个演示库。换成自己的库时，需要写一份**语义元数据**：每张表每个字段
-是什么意思、业务上怎么称呼、几个库之间靠什么字段对应。检索、规划和口径解释
-全都读它。
-
-```bash
-python -m ai_sql_agent.semantic export semantic/     # 导出演示元数据当模板
-# 按真实库改写 semantic/*.yaml：表名字段名、业务说法、连接方式
-python -m ai_sql_agent.semantic validate semantic/   # 与真实库比对结构
-```
-
-`validate` 会连上真实库双向比对：元数据里有、库里没有的表和字段（模型会照着
-写 SQL，执行必报错），以及库里有、元数据没写的表（对模型完全不存在，涉及它的
-问题永远答不出来）。改完把 `AI_SQL_SEMANTIC_DIR=semantic/` 配上即可。
-
-不配这一项，检索只能按字段名字面匹配，口语问法基本召不回来——现象是「模型
-答不准」，实际是没告诉它业务是什么。
-
-### 4. 接入真实模型（可选）
-
-```bash
-cp .env.example .env
-```
-
-在 `.env` 中至少填写以下内容之一：
-
-```bash
-# OpenAI 或任意 OpenAI 兼容服务
+```dotenv
 AI_SQL_MODEL_PROVIDER=openai
-OPENAI_API_KEY=sk-xxx
+OPENAI_API_KEY=your-api-key
 OPENAI_BASE_URL=https://api.openai.com/v1
-
-# 也可改为 Anthropic 协议
-# AI_SQL_MODEL_PROVIDER=anthropic
-# ANTHROPIC_API_KEY=sk-ant-xxx
+AI_SQL_CHAT_MODEL=your-chat-model
+AI_SQL_CODER_MODEL=your-coder-model
 ```
 
-服务也支持内网 vLLM、Ollama 等 OpenAI 兼容接口；完整配置见 [部署说明](docs/deployment.md)。
+Anthropic 使用 `AI_SQL_MODEL_PROVIDER=anthropic` 与 `ANTHROPIC_API_KEY`。Embedding 与 Rerank 的凭证和端点独立配置，详见 [.env.example](.env.example) 与 [部署指南](docs/deployment.zh-CN.md)。修改后重启服务。
 
-## 关键设计
+### 接入自己的数据库
 
-| 主题 | 实现方式 |
-| --- | --- |
-| 业务语义 | 表/字段含义、别名、跨库关联键、指标口径写在可编辑的 YAML 里，不在代码里。这是模型对业务的全部认知，接真实库时它是准确率的首要抓手 |
-| 越用越准 | 用户标记回答对错：答错的进评测集，确认对的成为参考写法，注入后续同类问题的生成 Prompt |
-| Schema 检索 | 先定位数据库，再找表和字段；混合检索后构建 SchemaGraph，并按 Token 预算裁剪。图中每条关联都标注 JOIN 基数，由主键判定，判不出时保守地记为多对多 |
-| SQL 生成 | Prompt 带方言、Schema 切片和上一步结果，另加两条规则，它们关掉了一半的跨库失败：列举或分组时输出该表自己的主键；沿一对多 JOIN 之后若只投影「一」那一侧必须加 `DISTINCT` |
-| 跨库查询 | 规划阶段明确每步目标库；上一条查询结果会被转为筛选条件回填到下一步 |
-| SQL 安全 | 仅允许 `SELECT` / `WITH`；拒绝多语句和写操作；连接层再使用只读事务或只读连接兜底 |
-| 执行可靠性 | 每条 SQL 有行数上限和超时；失败会定位错误子句并局部修复 |
-| 结果可信度 | 对空结果、结果规模异常、问题与 SQL 语义不一致给出可见提示 |
-| 权限控制 | 无权表/列不会进入模型上下文；执行前还会再次校验真实 SQL 引用 |
-| 可观测性 | `X-Trace-Id` 贯穿请求；审计记录 SQL、命中库表、耗时、修复与 Token 用量 |
+```bash
+python -m ai_sql_agent.semantic export semantic/
+# 编辑 semantic/*.yaml：连接、表列、业务别名、关联键与指标口径
+python -m ai_sql_agent.semantic validate semantic/
+```
 
-## 接口一览
+设置 `AI_SQL_SEMANTIC_DIR=semantic/` 后重启。校验会将元数据与真实库结构比对；未配置目录时使用内置演示语义层。
+
+部署到共享环境前，开启 `AI_SQL_AUTH_MODE=api_key` 并配置权限文件与业务库只读账号。Docker Compose、pgvector 与内网 vLLM 配置见 [部署指南](docs/deployment.zh-CN.md)。
+
+## 评测与当前边界
+
+以下为 **2026-09-09 历史基线**：150 条演示数据集，三轮汇总，模型标识 `claude-sonnet-5`，使用内置演示元数据。**发布门禁尚未通过。**
+
+| 指标 | 测量结果 | 门禁要求 |
+| --- | --- | --- |
+| 单库执行准确率 | **93.3%** | ≥ 85% |
+| 跨库执行准确率 | **85.3%** | ≥ 90%，未达标 |
+| 静默错误率 | **5.3%** | ≤ 3%，未达标 |
+| 风险提示误报率 | **5.6%** | ≤ 20% |
+| 总体执行准确率 | **92.0%** | — |
+
+这不是当前提交在真实业务库上的准确率承诺：三轮记录对应旧版主键提示规则，当前扩写版只有一轮全量数据；演示元数据也不等于实际部署语义层。条件、原始记录与改动归因见 [测量报告](benchmark/baseline/2026-09-09/README.md)。
+
+```bash
+python -m pytest tests -q   # 本地测试；部分集成用例需要外部服务 / 契约仓库
+make gate-smoke            # 离线冒烟，不代表完整发布门禁通过
+make gate                  # 完整门禁：需要模型凭证
+```
+
+CI 配置覆盖单元测试、pgvector 集成、固定版本的 A2A 契约、演示链路与容器冒烟。详见 [工作流](.github/workflows/ci.yml) 和 [评测说明](benchmark/README.zh-CN.md)。
+
+<details>
+<summary><strong>接口一览</strong></summary>
 
 | 接口 | 用途 |
 | --- | --- |
-| `GET /` | 内置查询页面 |
-| `POST /query` | 自然语言查询入口 |
-| `GET /history` | 查询历史（默认只返回自己的记录） |
-| `POST /memory/save` | 将结果保存到个人长期记忆 |
-| `POST /feedback` | 标记这条回答对不对（答错的进评测集，答对的成为参考写法） |
-| `GET /feedback/stats` | 真实使用中的准确率与静默错误率（管理员） |
-| `GET /health` | 存活检查 |
-| `GET /readyz` | 就绪检查（存储与向量后端） |
-| `GET /metrics` | Prometheus 指标 |
-| `POST /admin/schema/reload` | 管理员手动重建 Schema 索引 |
+| `POST /query` | 自然语言查询，返回答案、分步 SQL / 结果、风险与追踪信息 |
+| `GET /history` | 查询历史，默认仅自己的记录 |
+| `POST /memory/save` | 保存个人长期记忆 |
+| `POST /feedback` · `GET /feedback/stats` | 回答反馈与管理员统计 |
+| `GET /health` · `GET /readyz` | 存活与就绪检查 |
+| `GET /metrics` | Prometheus 格式指标 |
+| `POST /admin/schema/reload` | 管理员重建 Schema 索引 |
 
-`POST /query` 的响应包含 `answer`、每一步 SQL 与结果、`has_risk`、`degraded` 和 `trace_id`，方便前端展示与排查。
+`POST /query` 响应包含 `answer`、`has_risk`、`degraded`、`trace_id` 及分步执行信息。
 
-## 模块地图
+</details>
+
+<details>
+<summary><strong>项目结构</strong></summary>
 
 ```text
-src/ai_sql_agent/         应用包（pip install -e . 安装）
-  api/                    FastAPI 服务与内置网页
-  a2a/                    Agent 间流式接口（a2a-contract）
-  mcp_server/             对外 MCP 只读查询工具
-  pipeline/               动态路由和端到端编排
-  normalization/          问题归一化：日期与指代
-  retrieval/              三层 Schema 检索与 SchemaGraph
-  indexing/               Schema 索引构建：Embedding 与 pgvector
-  planning/               多步与跨库查询规划
-  generation/             SQL 生成
-  execution/              SQL 安全校验、方言与只读执行器（MCP 路由）
-  repair/                 失败 SQL 修复回路
-  validation/             结果风险校验
-  memory/                 短期会话与长期记忆
-  auth/                   API Key、身份与表列权限
-  audit/                  审计记录
-  semantic/               业务语义元数据：表/字段含义、别名、跨库关联键、指标口径
-  feedback/               用户判定：答错的进评测集，答对的成为认证范例
-  ops/                    业务库只读账号与最小授权
-  core/                   配置、模型传输、日志、指标、熔断
-  resources/demo_sql/     四个演示库的建库与样例数据
-tests/                    离线测试、pgvector 集成测试、跨仓库契约用例
-benchmark/                评测集、阈值、基线与发布门禁
-examples/                 可直接运行的 Demo，每个链路环节一个
-scripts/                  开发辅助：run_api.sh、check_env.py
-tools/sim_erp/            模拟多库 ERP，用于真实规模测试
-deploy/                   Dockerfile、Docker Compose 编排、API Key 模板
-docs/                     项目详解、部署运维、模块文档
+src/ai_sql_agent/
+  api/ · a2a/ · mcp_server/       网页、HTTP API 与 Agent 接口
+  pipeline/ · normalization/     意图路由、问题归一化与编排
+  semantic/ · retrieval/         业务语义、分层检索与 SchemaGraph
+  indexing/ · memory/            向量索引、会话与长期记忆
+  planning/ · generation/        跨库计划与 SQL 生成
+  execution/ · repair/           受控执行与失败修复
+  validation/ · feedback/        结果校验与反馈回路
+  auth/ · audit/ · core/ · ops/   权限、审计、运行时与只读账号工具
+tests/ · benchmark/              测试、评测集、基线与门禁
+examples/ · tools/sim_erp/        分模块示例与模拟多库 ERP
+deploy/                         Docker 镜像与 Compose 编排
+docs/                           深入文档、架构图与截图素材
 ```
 
-## 部署与深入阅读
+</details>
 
-- [项目详解手册](docs/walkthrough.zh-CN.md)：从 0 通读全项目——逐模块拆解、五条设计主线、讲解脚本与练习
-- [部署与运维](docs/deployment.zh-CN.md)：Docker Compose、权限、模型接入、监控和排障
-- [评测说明](benchmark/README.zh-CN.md)：数据集、准确率与发布门禁
-- [最新测量记录](benchmark/baseline/2026-09-09/README.md)：JOIN 基数改动的前后对比与局限
-- [授权模型](docs/authz-model.md)：策略模型里的行范围与 impersonation
-- [最小授权流程](docs/least-privilege-runbook.md)：给真实业务库建只读角色的运维步骤
-- [契约反馈](docs/contract-feedback.md)：交回 `a2a-contract` 仓库的问题
-- [端到端编排](docs/modules/pipeline.md)：动态路由与记忆示例（英文）
-- [Schema 检索](docs/modules/retrieval.md)：混合召回与 SchemaGraph（英文）
-- [MCP 执行](docs/modules/execution.md)：只读 SQL、方言与执行器（英文）
+## 深入阅读
+
+[项目详解](docs/walkthrough.zh-CN.md) · [部署与运维](docs/deployment.zh-CN.md) · [授权模型](docs/authz-model.md) · [最小权限配置](docs/least-privilege-runbook.md) · [检索设计](docs/modules/retrieval.md) · [执行器设计](docs/modules/execution.md) · [A2A 契约反馈](docs/contract-feedback.md)
