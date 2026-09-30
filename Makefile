@@ -21,8 +21,8 @@ test: ## 全量离线测试（pytest；conftest 会屏蔽本机 .env 与模型�
 test-ci: ## CI 同款入口（unittest；不读 .env 的环境里用）
 	AI_SQL_LOG_LEVEL=ERROR $(PY) -m unittest discover -s tests -v
 
-run: ## 本地起 API 与内置网页（http://localhost:8000）
-	uvicorn ai_sql_agent.api.app:app --host 0.0.0.0 --port 8000
+run: ## 本地起 API 与内置网页（默认 http://localhost:8000，端口见 .env 的 AI_SQL_PORT）
+	scripts/run_api.sh
 
 demo: ## 端到端 Demo：单库 + 跨库（离线 Mock 模型）
 	$(PY) examples/end_to_end.py
