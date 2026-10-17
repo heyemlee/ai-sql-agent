@@ -190,3 +190,7 @@ Model credentials, read-only database roles, metrics and backups are in [docs/de
 Design decisions: [docs/design.md](docs/design.md) · API: [docs/api.md](docs/api.md) · Known limits:
 [docs/limitations.md](docs/limitations.md) · Walkthrough: [docs/walkthrough.zh-CN.md](docs/walkthrough.zh-CN.md) (in
 Chinese).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

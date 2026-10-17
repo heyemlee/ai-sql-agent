@@ -139,3 +139,7 @@ make vllm-up                                          # 同上，外加内网自
 ```
 
 模型凭证、业务库只读账号、监控指标和备份见 [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)。关键设计见 [docs/design.zh-CN.md](docs/design.zh-CN.md) · 接口见 [docs/api.zh-CN.md](docs/api.zh-CN.md) · 已知限制见 [docs/limitations.zh-CN.md](docs/limitations.zh-CN.md) · [项目详解](docs/walkthrough.zh-CN.md)。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。
